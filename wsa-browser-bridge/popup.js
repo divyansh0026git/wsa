@@ -1,0 +1,185 @@
+/**
+ * popup.js — WSA Web Browser Bridge v2.0
+ * Engineered by Divyansh Saraf
+ */
+
+const $ = (id) => document.getElementById(id);
+
+const PROVIDER_META = [
+  { key: "claude", label: "Claude", host: "claude.ai" },
+  { key: "deepseek", label: "DeepSeek", host: "chat.deepseek.com" },
+  { key: "gemini", label: "Gemini", host: "gemini.google.com" },
+  { key: "chatgpt", label: "ChatGPT", host: "chatgpt.com" },
+  { key: "venice", label: "Venice", host: "venice.ai" },
+];
+
+let detectedIsBrave = null;
+let statusPollId = null;
+
+async function detectIsBrave() {
+  if (detectedIsBrave !== null) return detectedIsBrave;
+  try {
+    if (navigator.brave && typeof navigator.brave.isBrave === "function") {
+      detectedIsBrave = Boolean(await navigator.brave.isBrave());
+      return detectedIsBrave;
+    }
+  } catch { /* ignore */ }
+  detectedIsBrave = /Brave/i.test(navigator.userAgent || "");
+  return detectedIsBrave;
+}
+
+try {
+  const port = chrome.runtime.connect({ name: "relay-keepalive" });
+  port.onDisconnect.addListener(() => {});
+} catch { /* ignore */ }
+
+function setOutput(message, kind = "") {
+  const out = $("output");
+  if (!out) return;
+  out.textContent = message || "";
+  out.className = kind ? `output ${kind}` : "output";
+}
+
+function formatBrowserName(browser) {
+  const b = String(browser || "chrome").toLowerCase();
+  if (b === "brave") return "Brave";
+  if (b === "edge") return "Edge";
+  return "Chrome";
+}
+
+function applyStatusUI(res) {
+  if (!res) return;
+
+  const browserDisplay = formatBrowserName(res.browser);
+  const providers = res.providers || {};
+  const activeProvider = res.provider || "";
+  const srvReachable = Boolean(res.serverReachable);
+  const isBound = srvReachable && res.serverBinding?.isActive === true;
+
+  let openCount = 0;
+  for (const meta of PROVIDER_META) {
+    const info = providers[meta.key] || {};
+    const hasTab = Boolean(info.has_tab);
+    if (hasTab) openCount += 1;
+
+    const row = document.querySelector(`.site-row[data-provider="${meta.key}"]`);
+    const dotEl = $(`dot-${meta.key}`);
+    const modelEl = $(`model-${meta.key}`);
+    const emailEl = $(`email-${meta.key}`);
+
+    if (row) {
+      row.classList.toggle("is-open", hasTab);
+      row.classList.toggle("is-closed", !hasTab);
+      row.classList.toggle("is-active", hasTab && activeProvider === meta.key);
+    }
+    if (dotEl) {
+      if (!hasTab) dotEl.className = "dot";
+      else if (isBound) dotEl.className = "dot ok";
+      else dotEl.className = "dot warn";
+    }
+    if (modelEl) {
+      const badge = (info.model_badge || "").trim();
+      modelEl.textContent = hasTab ? (badge || "Auto-detecting") : "Not open";
+      modelEl.title = badge || meta.host;
+    }
+    if (emailEl) {
+      const email = (info.email || "").trim();
+      emailEl.textContent = hasTab ? (email || "Open tab") : "";
+      emailEl.title = email || "";
+    }
+  }
+
+  const browserEl = $("metaBrowser");
+  if (browserEl) {
+    browserEl.textContent = browserDisplay;
+    browserEl.className = "meta-val";
+    browserEl.title = `${browserDisplay} · ${res.clientId || ""}`;
+  }
+
+  const siteEl = $("metaSite");
+  if (siteEl) {
+    const activeInfo = PROVIDER_META.find(m => m.key === activeProvider);
+    const activeTxt = activeInfo ? activeInfo.host : (res.activeSite || "");
+    siteEl.textContent = activeTxt || "None";
+    siteEl.className = activeTxt ? "meta-val" : "meta-val muted";
+    siteEl.title = activeTxt || "No open web agent tab";
+  }
+
+  const totalProviders = PROVIDER_META.length;
+  const countEl = $("siteCount");
+  if (countEl) {
+    countEl.textContent = `${openCount}/${totalProviders} open`;
+  }
+
+  const dot = $("statusDot");
+  const statusText = $("statusText");
+  if (dot && statusText) {
+    if (!srvReachable) {
+      dot.className = "dot warn";
+      statusText.textContent = "Server offline";
+    } else if (openCount === 0) {
+      dot.className = "dot warn";
+      statusText.textContent = "Open AI tab";
+    } else if (res.injecting) {
+      dot.className = "dot ok";
+      statusText.textContent = "Streaming";
+    } else if (isBound) {
+      dot.className = "dot ok";
+      statusText.textContent = `Synced ${openCount}/${totalProviders}`;
+    } else {
+      dot.className = "dot";
+      statusText.textContent = "Standby";
+    }
+  }
+}
+
+async function refreshStatus() {
+  const isBrave = await detectIsBrave();
+  chrome.runtime.sendMessage({ type: "GET_STATUS", isBrave }, (res) => {
+    if (chrome.runtime.lastError || !res) return;
+    applyStatusUI(res);
+  });
+}
+
+$("syncBtn").addEventListener("click", async () => {
+  const btn = $("syncBtn");
+  const isBrave = await detectIsBrave();
+  btn.disabled = true;
+  btn.textContent = "Syncing...";
+  setOutput("");
+
+  chrome.runtime.sendMessage({ type: "SYNC_NOW", isBrave }, (res) => {
+    btn.disabled = false;
+    btn.textContent = "Sync";
+
+    if (chrome.runtime.lastError || !res?.ok) {
+      setOutput(res?.error || chrome.runtime.lastError?.message || "Sync failed", "err");
+      refreshStatus();
+      return;
+    }
+
+    const providers = res.providers || {};
+    const syncedLabels = PROVIDER_META
+      .filter(m => Boolean(providers[m.key]?.has_tab))
+      .map(m => m.label);
+    const browserName = formatBrowserName(res.browser);
+    const summary = syncedLabels.length
+      ? `Synced ${syncedLabels.join(", ")} in ${browserName}`
+      : `Synced ${browserName}`;
+    setOutput(summary, "ok");
+
+    if (res.status) {
+      applyStatusUI(res.status);
+    } else {
+      refreshStatus();
+    }
+  });
+});
+
+if (typeof window !== "undefined" && typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+  refreshStatus();
+  statusPollId = setInterval(refreshStatus, 2500);
+  window.addEventListener("unload", () => {
+    if (statusPollId) clearInterval(statusPollId);
+  });
+}
