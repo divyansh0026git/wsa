@@ -6,10 +6,10 @@ import pytest
 from wsa_agent import tools
 
 
-def test_posix_shell_command_uses_native_shell(tmp_path):
+def test_posix_shell_command_uses_native_shell():
     with patch.object(tools.sys, "platform", "darwin"), \
          patch.object(tools, "_run_subprocess_tree_safe", return_value=(37, "", "", False)) as run:
-        result = tools._run_command(command="exit 37", cwd=str(tmp_path))
+        result = tools._run_command(command="exit 37")
     assert run.call_args.args[0] == ["/bin/sh", "-c", "exit 37"]
     assert "Exit code: 37" in result
 
