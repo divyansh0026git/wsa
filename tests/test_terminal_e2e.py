@@ -15,6 +15,8 @@ def test_interactive_terminal_starts_server_and_exits(tmp_path):
 
     master, slave = pty.openpty()
     env = {**os.environ, "TERM": "xterm-256color", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+    (tmp_path / "sitecustomize.py").write_text("import faulthandler\nfaulthandler.dump_traceback_later(6, repeat=True)\n")
+    env["PYTHONPATH"] = str(tmp_path) + os.pathsep + env.get("PYTHONPATH", "")
     proc = subprocess.Popen(
         [sys.executable, "-m", "wsa_agent", "--project", str(tmp_path)],
         stdin=slave, stdout=slave, stderr=slave, env=env,
