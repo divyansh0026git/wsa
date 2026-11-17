@@ -6,6 +6,18 @@ import pytest
 from wsa_agent import tools
 
 
+def test_server_bind_does_not_resolve_hostname():
+    from wsa_server.server import ThreadedServer, WSAHandler
+
+    with patch("socket.getfqdn", side_effect=AssertionError("unexpected DNS lookup")):
+        server = ThreadedServer(("127.0.0.1", 0), WSAHandler)
+        try:
+            assert server.server_name == "127.0.0.1"
+            assert server.server_port == server.server_address[1] > 0
+        finally:
+            server.server_close()
+
+
 def test_posix_shell_command_uses_native_shell():
     with patch.object(tools.sys, "platform", "darwin"), \
          patch.object(tools, "_run_subprocess_tree_safe", return_value=(37, "", "", False)) as run:

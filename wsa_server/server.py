@@ -8,7 +8,7 @@ import time
 import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn
+from socketserver import ThreadingMixIn, TCPServer
 from typing import Optional
 
 from .accounts import get_account_pool, load_cookie
@@ -1056,6 +1056,14 @@ GeminiHandler = WSAHandler
 class ThreadedServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def server_bind(self):
+        # HTTPServer resolves a hostname synchronously here. A slow reverse DNS
+        # lookup can otherwise prevent the local bridge from starting at all.
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 ThreadedHTTPServer = ThreadedServer
