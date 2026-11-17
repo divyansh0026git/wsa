@@ -7,7 +7,7 @@ import re
 import time
 import urllib.parse
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn, TCPServer
 from typing import Optional
 
@@ -1053,7 +1053,7 @@ class WSAHandler(BaseHTTPRequestHandler):
 GeminiHandler = WSAHandler
 
 
-class ThreadedServer(ThreadingMixIn, HTTPServer):
+class ThreadedServer(ThreadingMixIn, TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
