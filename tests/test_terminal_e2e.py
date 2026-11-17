@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,7 @@ def test_interactive_terminal_starts_server_and_exits(tmp_path):
     import select
 
     master, slave = pty.openpty()
-    env = {**os.environ, "TERM": "xterm-256color", "PYTHONUTF8": "1"}
+    env = {**os.environ, "TERM": "xterm-256color", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
     proc = subprocess.Popen(
         [sys.executable, "-m", "wsa_agent", "--project", str(tmp_path)],
         stdin=slave, stdout=slave, stderr=slave, env=env,
@@ -38,7 +39,10 @@ def test_interactive_terminal_starts_server_and_exits(tmp_path):
                 sent = True
             if proc.poll() is not None:
                 break
-        assert proc.wait(timeout=3) == 0, data.decode(errors="replace")[-5000:]
+        code = proc.wait(timeout=3)
+        server_log = Path.home() / ".wsa-server.log"
+        diagnostic = server_log.read_text(encoding="utf-8", errors="replace")[-5000:] if server_log.exists() else "missing server log"
+        assert code == 0, data.decode(errors="replace")[-5000:] + "\nBackend log:\n" + diagnostic
         output = data.decode(errors="replace")
         assert "Backend ready" in output, output[-5000:]
         assert sent and "Goodbye" in output, output[-5000:]
