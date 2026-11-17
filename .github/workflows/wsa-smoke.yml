@@ -16,3 +16,15 @@ jobs:
       - run: python -m pytest tests/test_cross_platform_setup.py -q
       - if: runner.os == 'Windows'
         run: python -m pytest tests/test_process_outcomes.py -q
+      - if: runner.os == 'macOS'
+        run: |
+          sh scripts/install.sh
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/.venv/bin/wsa" --version
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/install.ps1
+          Set-Location $env:RUNNER_TEMP
+          & "$env:GITHUB_WORKSPACE\.venv\Scripts\wsa.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
