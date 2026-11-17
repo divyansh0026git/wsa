@@ -2,7 +2,7 @@
 
 A local coding assistant that connects your terminal to supported AI websites in Chrome or Brave through a browser extension. WSA can inspect a project, propose and apply changes, run commands with your approval, and coordinate multi-step work.
 
-**Supported bridges:** ChatGPT, Claude, Gemini, DeepSeek and Venice. Availability and behavior depend on the website, your account and the browser. Select the website's model and thinking mode in its tab.
+**Supported web agents:** ChatGPT, Claude, Gemini, DeepSeek and Venice. Availability and behavior depend on the website, your account and the browser. Select the website's model and thinking mode in its tab.
 
 ## Requirements
 
