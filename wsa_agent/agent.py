@@ -1823,18 +1823,21 @@ def _prompt_all_agents_exhausted(
         )
     try:
         from .renderer import console as _console
+        R._release_console_live(_console)
         if is_multiagent:
             _console.print(
                 "\n  All agents current account limits got exceed. "
-                "Please change your current account to continue the workflow: y/n"
+                "Please change your current account to continue the workflow: y/n",
+                markup=False,
             )
         else:
             target = model_name or getattr(state, "model", "gemini")
             _console.print(
                 f"\n  {R.friendly_model_name(target)} account limit got exceed. "
-                "Please change your current account to continue the workflow: y/n"
+                "Please change your current account to continue the workflow: y/n",
+                markup=False,
             )
-        resp = _console.input("  > ").strip().lower()
+        resp = _console.input("  > ", markup=False).strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
     except Exception:
@@ -1845,11 +1848,22 @@ def _prompt_all_agents_exhausted(
 def _offer_limit_multiagent(state: SessionState, client: Any, failed_model: str) -> str:
     """Offer a queue after a single-provider limit; return switch, single, or stop."""
     from .renderer import console
+    R._release_console_live(console)
+    R.sync_theme()
     while True:
         try:
-            console.print("\n  Do you want to switch to multiagent mode using the default queue or your custom queue?")
-            console.print("  [a] Default queue\n  [b] Custom queue\n  [c] Stick to single agent mode\n  [d] Stop (preserve context)")
-            choice = console.input("  > ").strip().lower()
+            console.print(
+                "\n  Do you want to switch to multiagent mode using the default queue or your custom queue?",
+                markup=False,
+            )
+            console.print(
+                f"  [bold {R.Theme.ACCENT}]\\[a][/] Default queue\n"
+                f"  [bold {R.Theme.ACCENT}]\\[b][/] Custom queue\n"
+                f"  [bold {R.Theme.ACCENT}]\\[c][/] Stick to single agent mode\n"
+                f"  [bold {R.Theme.ACCENT}]\\[d][/] Stop (preserve context)"
+            )
+            raw_choice = console.input("  > ", markup=False).strip().lower()
+            choice = raw_choice.strip("[](). ")
         except (EOFError, KeyboardInterrupt):
             return "stop"
         if choice in ("c", "d"):
@@ -1930,6 +1944,9 @@ def execute_agent_loop(
     extra_context_block: str = "",
     event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     allowed_write_paths: Optional[List[str]] = None,
+    stage_label: str = "",
+    live_ui: Optional[bool] = None,
+    flush_final_stream: bool = True,
 ) -> Dict[str, Any]:
     """
     Execute an agentic tool loop for either the main session (`run_turn`) or a scoped subagent role.
@@ -2122,16 +2139,27 @@ def execute_agent_loop(
                 or None
             )
 
+        use_live_ui = (not quiet_ui) if live_ui is None else bool(live_ui)
+
         def _make_renderer(cur_model: str, hint: str, r_idx: int) -> Any:
-            if quiet_ui:
+            if not use_live_ui:
                 return _QuietStreamSink(event_callback=event_callback, role=role)
             try:
-                return R.StreamRenderer(round_num=r_idx, status_hint=hint, model=cur_model)
+                return R.StreamRenderer(
+                    round_num=r_idx,
+                    status_hint=hint,
+                    model=cur_model,
+                    stage_label=stage_label,
+                    flush_final=flush_final_stream,
+                )
             except TypeError:
                 try:
-                    return R.StreamRenderer(round_num=r_idx, status_hint=hint)
+                    return R.StreamRenderer(round_num=r_idx, status_hint=hint, model=cur_model)
                 except TypeError:
-                    return R.StreamRenderer()
+                    try:
+                        return R.StreamRenderer(round_num=r_idx, status_hint=hint)
+                    except TypeError:
+                        return R.StreamRenderer()
 
         for round_num in range(max_rounds):
             rounds_used = round_num + 1
@@ -2768,6 +2796,7 @@ def execute_agent_loop(
                                 "result_class": rclass,
                                 "elapsed": 0.0,
                                 "preview": result[:160],
+                                "result": result,
                             },
                         )
                     _record_tool_history(state, {
@@ -2812,6 +2841,7 @@ def execute_agent_loop(
                                 "result_class": "dependency_blocked",
                                 "elapsed": 0.0,
                                 "preview": result[:160],
+                                "result": result,
                             },
                         )
                     _record_tool_history(state, {
@@ -2860,7 +2890,7 @@ def execute_agent_loop(
                     if event_callback:
                         event_callback("tool_result", {"role": role, "call_id": tc_id, "tool": name,
                             "ok": False, "execution_status": "rejected", "result_class": status,
-                            "elapsed": 0.0, "preview": result[:160]})
+                            "elapsed": 0.0, "preview": result[:160], "result": result})
                     _record_tool_history(state, {"turn": state.turn_count, "role": role, "call_id": tc_id,
                         "tool": name, "args": args, "ok": False, "execution_status": "rejected",
                         "result_class": status, "ts": time.time()})
@@ -2916,6 +2946,7 @@ def execute_agent_loop(
                             "result_class": rclass,
                             "elapsed": t_elapsed,
                             "preview": result[:160],
+                            "result": result,
                         },
                     )
 
@@ -3197,13 +3228,26 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
     from .subagents import _recover_orchestrated_stage_limit
     R.print_info("Assessing whether this request needs a long agentic workflow...")
     while True:
+        sr = None
         try:
             active_url = (
                 getattr(state, "active_chat_url", "")
                 or (getattr(state, "chat_urls", {}) or {}).get(state.model)
                 or ""
             )
-            response = client.stream(
+            try:
+                sr = R.StreamRenderer(
+                    round_num=0,
+                    status_hint="Assessing whether this request needs a long agentic workflow…",
+                    model=state.model,
+                    stage_label="router",
+                    flush_final=False,
+                )
+            except TypeError:
+                sr = None
+            if sr is not None:
+                sr.start_thinking()
+            stream_kwargs: Dict[str, Any] = dict(
                 messages=[{"role": "system", "content": WORKFLOW_JUDGMENT_PROMPT},
                           {"role": "user", "content": json.dumps({
                               "request": user_input.encode("utf-8", "replace")[:10000].decode("utf-8", "ignore"),
@@ -3215,6 +3259,15 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
                 chat_url=active_url or None,
                 new_chat=False,
             )
+            if sr is not None:
+                stream_kwargs["on_thinking"] = sr.feed_thinking
+                if hasattr(sr, "set_status_hint"):
+                    stream_kwargs["on_status"] = sr.set_status_hint
+            try:
+                response = client.stream(**stream_kwargs)
+            finally:
+                _close_stream_ui(sr)
+                sr = None
             if not isinstance(response, dict) or response.get("tool_calls"):
                 raise ValueError("invalid workflow decision")
             if isinstance(response.get("upstream_model"), dict):

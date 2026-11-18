@@ -1,20 +1,49 @@
 # WSA — Web Server Agent
 
-A local coding assistant that connects your terminal to supported AI websites in Chrome or Brave through a browser extension. WSA can inspect a project, propose and apply changes, run commands with your approval, and coordinate multi-step work.
+<p align="left">
+  <a href="https://github.com/divyansh0026git/wsa/actions/workflows/wsa-smoke.yml"><img src="https://github.com/divyansh0026git/wsa/actions/workflows/wsa-smoke.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg" alt="Platform: Windows | macOS">
+  <img src="https://img.shields.io/badge/Browsers-Chrome%20%7C%20Brave-orange.svg" alt="Browsers: Chrome | Brave">
+</p>
 
-**Supported web agents:** ChatGPT, Claude, Gemini, DeepSeek and Venice. Availability and behavior depend on the website, your account and the browser. Select the website's model and thinking mode in its tab.
+A local terminal coding assistant that connects your command line to supported AI websites in Chrome or Brave through a lightweight browser extension. WSA inspects workspaces, edits files with undo checkpoints, runs commands and tests with your approval, and coordinates multi-step coding work across open browser tabs.
+
+## Highlights
+
+- **No API Keys Required**: Works directly through your existing signed-in web sessions in Chrome or Brave.
+- **5 Supported Web Bridges**: Supports Claude, ChatGPT, Gemini, DeepSeek, and Venice.
+- **Background Tab Relay**: Streams responses without stealing browser focus or losing active turns to tab discarding.
+- **Multiagent Auto-Failover**: Preserves session context and rolls over to your next queued provider tab when an account hits its usage limit.
+- **Supervised Approval Gate**: Starts in `smart` mode—reads and ordinary workspace edits proceed automatically while shell commands, Python execution, deletions, and network/browser actions require per-action approval.
+- **Adaptive 4-Role Orchestration**: Built-in Explorer → Architect → Coder → Verifier workflow with dependency-ordered plans (`/plan`) and independent verification (`/verify`).
+
+## Supported Web Bridges & Models
+
+| Provider | Web Endpoint | Models & Thinking Modes |
+| :--- | :--- | :--- |
+| **Claude** | `claude.ai` | Claude Sonnet 5.5 Extra, Claude Opus 5.5, Claude Fable 5.2, Claude Mythos 5.2 |
+| **ChatGPT** | `chatgpt.com` | GPT-6 Astra, GPT-6.1 Astra, GPT-6.1 Sol / Terra, o3, o3-pro |
+| **Gemini** | `gemini.google.com` | Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen (1M Context, xhigh thinking) |
+| **DeepSeek** | `chat.deepseek.com` | DeepSeek-V4-Pro, DeepSeek-V4.1-Flash, DeepSeek-R1 (DeepThink) |
+| **Venice** | `venice.ai` | DeepSeek V4.1 Flash Uncensored (524K context) |
+
+*Select your exact model, web search toggle, and thinking mode directly inside the website's tab.*
 
 ## Requirements
 
-- Windows 10/11 or macOS, Python 3.10 or newer, and Git.
-- Chrome or Brave and a signed-in account for each website you want to use.
-- Internet access to install the Python packages and use the websites. Node.js is optional and is only needed for extension tests.
+- **OS & Runtime**: Windows 10/11 or macOS, Python 3.10+, and Git.
+- **Browser**: Chrome or Brave with a signed-in account for each website you want to use.
+- **Optional**: Node.js (only required to run browser extension tests).
 
-Keep the cloned folder in a stable location: the installed command and browser extension reference it. This project includes an MIT license; see [LICENSE](LICENSE).
+Keep the cloned folder in a stable location because both the installed `wsa` command and unpacked browser extension reference it.
 
-## Install on Windows
+## Installation
 
-Install Python from [python.org](https://www.python.org/downloads/) and Git, then open PowerShell:
+### Windows
+
+Install Python from [python.org](https://www.python.org/downloads/) and Git, then run in PowerShell:
 
 ```powershell
 git clone https://github.com/divyansh0026git/wsa.git wsa
@@ -22,11 +51,11 @@ cd wsa
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-The installer creates `.venv` and installs WSA and its Python dependencies. Add the displayed `.venv\Scripts` folder to your **user PATH** in Windows Environment Variables, then open a new terminal. Run `wsa --version` to check it. The installer does not change your PATH or require administrator access. You can instead invoke the displayed full path directly.
+The installer creates `.venv` and installs WSA without requiring administrator access or editing your PATH. Add the printed `.venv\Scripts` folder to your **user PATH** in Windows Environment Variables (or invoke the full path directly), open a new terminal, and verify with `wsa --version`.
 
-## Install on macOS
+### macOS
 
-Install Python 3.10 or newer and Git, then in Terminal:
+Install Python 3.10+ and Git, then run in Terminal:
 
 ```sh
 git clone https://github.com/divyansh0026git/wsa.git ~/wsa
@@ -34,59 +63,73 @@ cd ~/wsa
 sh scripts/install.sh
 ```
 
-The installer creates `.venv` and installs WSA and its Python dependencies. For the standard macOS zsh shell, add the following line to `~/.zshrc` and open a new terminal:
+Add the printed `.venv/bin` path to `~/.zshrc` (or your bash startup file), open a new terminal, and verify with `wsa --version`:
 
 ```sh
 export PATH="$HOME/wsa/.venv/bin:$PATH"
 ```
 
-If you cloned elsewhere, use the `.venv/bin` path printed by the installer instead. Run `wsa --version` to check it. For bash, add the line to your shell's startup file instead. Set `PYTHON` before running the installer to select a particular Python executable if necessary.
+Set `PYTHON=/path/to/python3` before running `scripts/install.sh` if you need a specific Python executable.
 
-## Connect the browser
+## Browser Setup
 
-1. Start `wsa` in a terminal. It normally starts its local server automatically.
-2. Open `chrome://extensions` or `brave://extensions`, enable Developer mode, and choose **Load unpacked**. Select the `wsa-browser-bridge` folder in your clone.
-3. Sign in to the supported website you want to use, keep its tab open, and select the desired model there.
-4. Open the WSA extension popup and press **Sync**. See [browser setup](wsa-browser-bridge/SETUP.md) for details.
-5. In any project directory, run `wsa` or `wsa --model chatgpt`. Use `/models` to choose a bridge and `/account` to inspect connected browsers. `wsa --project PATH` selects a different workspace.
+1. Run `wsa` in a terminal (the local server starts automatically on `127.0.0.1:8081`).
+2. Open `chrome://extensions` or `brave://extensions`, enable **Developer mode**, click **Load unpacked**, and select the `wsa-browser-bridge` folder inside your clone.
+3. Open and sign in to any supported AI website tab, select your model/thinking mode there, and keep the tab open.
+4. Click the **WSA** extension icon and press **Sync**. See [wsa-browser-bridge/SETUP.md](wsa-browser-bridge/SETUP.md) for detailed relay notes.
+5. In any project directory, run `wsa` (or `wsa --model claude`). Use `/models` to switch bridges and `/account` to inspect connected browsers.
 
-The extension requests broad website, tab and cookie access to provide its bridge and browser tools. Use it only in a browser profile you trust. WSA stores local runtime state and may contain account information; never publish your configuration, cookies, session data or logs. The server defaults to localhost; do not expose it to a network without securing it. See [open-source release checklist](OPEN-SOURCE.md).
+> The extension requests broad website, tab, and cookie access to bridge tabs and run browser tools. Use it only in a browser profile you trust, never publish local state or session logs, and keep the server bound to localhost. See [OPEN-SOURCE.md](OPEN-SOURCE.md).
+
+## CLI Options
+
+```sh
+wsa [options] [query ...]
+```
+
+| Option | Description |
+| :--- | :--- |
+| `-p`, `--project PATH` | Target project directory (default: current working directory) |
+| `-m`, `--model NAME` | Web bridge: `claude`, `chatgpt`, `gemini`, `deepseek`, or `venice` (default: `gemini`) |
+| `-a`, `--account NAME` | Bind a specific connected browser relay (e.g., `chrome`, `brave`) |
+| `-c`, `--continue` | Resume the last saved workspace session and browser chat thread |
+| `--permissions MODE` | Approval policy: `smart` (default), `strict`, or `auto` |
+| `--full-permissions` | Alias for `--permissions auto` (bypasses approval prompts for the current run only) |
+| `--api-base URL` | Local server API base URL (default: `http://127.0.0.1:8081/v1`) |
+| `--api-key KEY` | Local server API key (default: `sk-wsa`) |
+| `--no-server` | Do not auto-start the local backend server |
+| `--models` | List available web bridges and exit |
+| `-v`, `--version` | Show the installed WSA version and exit |
+
+## Interactive Commands & Shortcuts
+
+- **Session**: `/new [keep]`, `/clear`, `/compact`, `/save`, `/load`, `/status`, `/tokens`, `/theme [name]`, `/help`, `/exit`
+- **Web Bridges & Browser**: `/model [name]`, `/models`, `/singleagent [model]`, `/multiagent`, `/account [name]`
+- **Workspace**: `/init`, `/project [dir]`, `/read <path>`, `/run <cmd>`, `/search <pattern>`, `/diff`, `/undo`
+- **Orchestration & Controls**: `/team [auto|on|off|single-chat|role-chats|dual|single]`, `/plan [task]`, `/verify [scope]`, `/perm [smart|strict|auto]`, `/tools`, `/rules`
+- **Shortcuts**: `Shift+Tab` cycles permission mode, `?` shows keyboard shortcuts, `@path` attaches workspace files, and `Ctrl+C` interrupts the active turn cleanly.
+
+## Permissions & Safety
+
+WSA starts in **smart** mode. File reads and ordinary workspace edits proceed automatically, while shell commands, Python/test execution, deletions, rollbacks, protected config edits, custom tools, and browser/network actions prompt for one-time approval showing the exact action and arguments. Subagents inherit the same approval policy; denying an action stops dependent steps, and noninteractive runs fail closed when approval is required.
+
+- **Strict** (`--permissions strict` or `/perm strict`): Also requires approval for ordinary file edits.
+- **Smart** (`--permissions smart` or `/perm smart`): Default supervised coding mode.
+- **Auto / Bypass** (`--full-permissions`, `--permissions auto`, or `/perm auto`): Bypasses approval prompts for the current run only (never auto-restored when resuming saved sessions). Uses your OS account's normal privileges while keeping workspace/worker boundaries and process guards active. Use only for trusted tasks in an isolated environment.
+
+These controls are **not an OS sandbox**: approved commands run with your account's filesystem and network access. Worker file ownership is enforced for structured edits, while shell commands cannot be confined by those path checks; workers and overlapping turns in one process therefore run sequentially (use separate workspaces for concurrent CLI processes). The verifier reports success only with a valid final JSON verdict backed by locally executed verification evidence.
 
 ## Testing & Verification
 
-### Permissions and unattended runs
+Run the Python test suite:
 
-WSA starts in **smart** mode. Reads and ordinary workspace file edits proceed automatically.
-Running shell commands, Python, tests, background services or custom tools requires approval,
-as do deletion, rollback, protected configuration edits, and browser/network actions. The
-prompt shows the complete action and approves it **once**. Subagents use the same approval
-controls. A denial stops the turn and blocks dependent actions; a noninteractive run cannot
-grant approval and exits unsuccessfully when approval is needed.
-
-- `wsa --permissions strict` or `/perm strict`: also approve ordinary file edits.
-- `wsa --permissions smart` or `/perm smart`: normal supervised coding.
-- `wsa --full-permissions` (alias: `wsa --permissions auto`) or `/perm auto`: explicitly bypass approvals for the current run. The TUI footer shows the active permission mode alongside full model and account details. This uses your operating system account’s existing access, does not elevate OS privileges, and preserves workspace/worker boundaries and process self-preservation guards. Saved sessions do not silently re-enable bypass.
-  Use this only for trusted tasks in an appropriately isolated environment. Saved sessions
-  never restore bypass automatically.
-
-These controls are **not an operating-system sandbox**. Approved code runs with your account's
-filesystem and network access. Worker ownership is enforced for structured file edits;
-shell commands cannot be confined by those path checks. Workers and overlapping turns in
-one Python process therefore run sequentially, including `/team dual`. Separate CLI processes
-should use separate workspaces if running concurrently.
-
-A verifier can report success only with a valid final JSON verdict and local verification
-evidence. Failed or missing verification and denied approvals produce unsuccessful results.
-
-Run the test suite:
-
-```bash
+```sh
 pytest -v
 ```
 
 Syntax-check extension scripts (requires Node.js):
 
-```bash
+```sh
 node --check wsa-browser-bridge/background.js
 node --check wsa-browser-bridge/content_script_bridge.js
 node --check wsa-browser-bridge/content_script_main.js
@@ -100,3 +143,5 @@ MIT — see [LICENSE](LICENSE).
 ## Credits
 
 WSA builds on [gemini-web2api](https://github.com/Sophomoresty/gemini-web2api) and the work of its contributors. See the MIT license.
+
+<!-- Discovery Index: sonnet 5.5, sonnet 5.5 extra, claude sonnet 5.5, claude sonnet 5, sonnet 5, opus 5.5, claude opus 5.5, fable 5.2, fable 5.1, claude fable 5.2, mythos, mythos 5.2, mythos 5.1, claude mythos 5.2, gpt 6, gpt 6.1, gpt-6, gpt-6.1, gpt 6 astra, gpt 6.1 astra, gpt-6 astra, gpt-6.1 astra, gpt-6 sol, gpt-6.1 sol, gpt-6.1 terra, gpt-6 luna, deepseek v4, deepseek v4.1, deepseek v4.1 pro, deepseek-v4-pro, deepseek-v4.1-flash, gemini 4, gemini 4 carbon, gemini 4 argon, gemini 4 hydrogen, carbon 4, argon 4, hydrogen 4, gemini-4-carbon, gemini-4-argon, gemini-4-hydrogen, gemini 3.1 deep think, gemini 3.8 flash, o3, o3-pro, o3-mini, o1 pro, deepseek r1, deepseek v3, venice uncensored, coding agent, cli web agent, autonomous browser bridge -->

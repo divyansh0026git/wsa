@@ -126,3 +126,141 @@ def test_orchestrated_limit_switch_retries_stage(tmp_path):
         assert subagents._recover_orchestrated_stage_limit(state, object(), {"limit_exhausted": True}, pending_goal="build")
     assert state.model == "gemini"
     assert reset.call_args.args[3] == ["gemini"]
+
+
+def test_limit_menu_renders_all_four_options_without_rich_conceal(tmp_path):
+    from io import StringIO
+    from rich.console import Console
+    from wsa_agent import renderer
+
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    buf = StringIO()
+    test_console = Console(file=buf, force_terminal=True, width=100)
+    with patch.object(renderer, "console", test_console), patch.object(test_console, "input", return_value="d"):
+        assert agent._offer_limit_multiagent(state, object(), "claude") == "stop"
+
+    raw_ansi = buf.getvalue()
+    # Rich's [c] tag emits ANSI SGR 8 (conceal); escaped \[c] must never emit it.
+    assert "\x1b[8m" not in raw_ansi
+    plain = Console(file=StringIO(), force_terminal=False, width=100)
+    with patch.object(renderer, "console", plain), patch.object(plain, "input", return_value="[c]"):
+        assert agent._offer_limit_multiagent(state, object(), "claude") == "single"
+    out = plain.file.getvalue()
+    for expected in (
+        "[a] Default queue",
+        "[b] Custom queue",
+        "[c] Stick to single agent mode",
+        "[d] Stop (preserve context)",
+    ):
+        assert expected in out
+
+
+def test_subagent_role_uses_live_renderer_and_prints_read_line_range(tmp_path):
+    from io import StringIO
+    from rich.console import Console
+    from wsa_agent import renderer
+
+    sample = tmp_path / "sample.py"
+    sample.write_text("line_one = 1\nline_two = 2\n", encoding="utf-8")
+    state = SessionState(project_root=tmp_path, selected_model="claude", permission_mode="smart")
+
+    created_renderers = []
+
+    class TrackingRenderer(renderer.StreamRenderer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.started = False
+            self.thought_chunks = []
+            created_renderers.append(self)
+
+        def start_thinking(self) -> None:
+            self.started = True
+            super().start_thinking()
+
+        def feed_thinking(self, token: str) -> None:
+            self.thought_chunks.append(token)
+            super().feed_thinking(token)
+
+    class TwoRoundClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, messages, model, on_token=None, on_thinking=None, **kwargs):
+            self.calls += 1
+            if on_thinking:
+                on_thinking("Inspecting sample.py lines before editing.")
+            if self.calls == 1:
+                return {
+                    "content": "Reading sample.py now.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path": "sample.py", "start_line": 1, "end_line": 2}',
+                        },
+                    }],
+                }
+            if on_token:
+                on_token("Checked sample.py cleanly.")
+            return {"content": "Checked sample.py cleanly.", "tool_calls": []}
+
+    buf = StringIO()
+    test_console = Console(file=buf, force_terminal=False, width=120)
+    with patch.object(renderer, "console", test_console), patch.object(renderer, "StreamRenderer", TrackingRenderer):
+        res = subagents._run_role_agent(
+            role="coder",
+            prompt="Inspect sample.py",
+            state=state,
+            client=TwoRoundClient(),
+            label="coder:t3",
+        )
+
+    assert res["ok"]
+    assert len(created_renderers) == 2
+    assert all(r.started for r in created_renderers)
+    assert created_renderers[0]._stage_label == "coder:t3"
+    assert "Analyzing Read(sample.py:L1-2)" in created_renderers[1]._status_hint
+    out = buf.getvalue()
+    assert "coder:t3" in out
+    assert "Read(sample.py:L1-2)" in out
+    assert "Read lines 1–2 of 2" in out
+
+
+def test_judge_workflow_runs_live_thinking_spinner_and_closes(tmp_path):
+    from wsa_agent import renderer
+
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    events = []
+
+    class FakeJudgeRenderer:
+        def __init__(self, **kwargs):
+            events.append(("init", kwargs.get("stage_label"), kwargs.get("flush_final")))
+
+        def start_thinking(self):
+            events.append(("start",))
+
+        def feed_thinking(self, token):
+            events.append(("think", token))
+
+        def set_status_hint(self, hint):
+            events.append(("hint", hint))
+
+        def close(self):
+            events.append(("close",))
+
+    client = Mock()
+    def _fake_stream(**kwargs):
+        if kwargs.get("on_thinking"):
+            kwargs["on_thinking"]("Evaluating scope")
+        return {"content": '{"mode":"direct","reason":"small fix"}'}
+    client.stream.side_effect = _fake_stream
+
+    with patch.object(renderer, "StreamRenderer", FakeJudgeRenderer):
+        decision = agent._judge_workflow("Fix typo in README", state, client, {"mode": "direct"})
+
+    assert decision["mode"] == "direct"
+    assert ("init", "router", False) in events
+    assert ("start",) in events
+    assert ("think", "Evaluating scope") in events
+    assert ("close",) in events

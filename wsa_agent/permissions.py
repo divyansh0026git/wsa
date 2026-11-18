@@ -69,9 +69,12 @@ def request_approval(name, args, state, reason):
             return False
     if sys.stdin is None or not sys.stdin.isatty():
         return False
-    R.console.print("\nPermission required: " + reason, markup=False)
-    R.console.print("Project: " + str(state.project_root), markup=False)
-    R.console.print(name + " " + json.dumps(args, ensure_ascii=False, indent=2), markup=False)
+    R._release_console_live(R.console)
+    R.sync_theme()
+    from rich.markup import escape as _escape
+    R.console.print(f"\n  [bold {R.Theme.WARN}]Permission required:[/] {_escape(str(reason))}")
+    R.console.print(f"  [{R.Theme.DIM}]Project:[/] {_escape(str(state.project_root))}")
+    R.console.print("  " + name + " " + json.dumps(args, ensure_ascii=False, indent=2), markup=False)
     try:
         return R.console.input("Allow this action once? [y/N]: ", markup=False).strip().lower() in {"y", "yes"}
     except EOFError:

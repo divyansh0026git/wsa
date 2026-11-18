@@ -1,10 +1,29 @@
 [project]
 name = "wsa"
 version = "1.2.0"
-description = "WSA — local coding agent and browser bridge"
+description = "Local terminal coding agent and browser bridge for web AI models (Claude, Gemini, ChatGPT, DeepSeek, Venice)"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
+keywords = [
+    "ai-agent",
+    "coding-agent",
+    "browser-bridge",
+    "gpt-6",
+    "gpt-6-astra",
+    "gpt-6-1-astra",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+    "claude-fable-5-2",
+    "claude-mythos-5-2",
+    "gemini-4-carbon",
+    "gemini-4-argon",
+    "gemini-4-hydrogen",
+    "deepseek-v4-pro",
+    "deepseek-v4-1-flash",
+    "deepseek-r1",
+    "terminal-assistant",
+]
 dependencies = [
     "httpx>=0.25",
     "rich>=13.0",

@@ -1232,7 +1232,14 @@ class StreamRenderer:
     )
     _RENDER_INTERVAL = 0.035  # Adaptive frame batching interval (~28fps max Markdown re-parse)
 
-    def __init__(self, round_num: int = 0, status_hint: str = "", model: str = ""):
+    def __init__(
+        self,
+        round_num: int = 0,
+        status_hint: str = "",
+        model: str = "",
+        stage_label: str = "",
+        flush_final: bool = True,
+    ):
         self._thinking_buf: str = ""
         self._answer_buf: str = ""
         self._phase: str = "thinking"
@@ -1252,6 +1259,8 @@ class StreamRenderer:
         self._round_num: int = max(0, int(round_num or 0))
         self._status_hint: str = sanitize_surrogates(status_hint or "").strip()
         self._model: str = (model or "").strip().lower()
+        self._stage_label: str = sanitize_surrogates(stage_label or "").strip()
+        self._flush_final: bool = bool(flush_final)
 
     def set_status_hint(self, hint: str) -> None:
         """Update contextual status hint shown beneath the live thinking spinner."""
@@ -1275,6 +1284,8 @@ class StreamRenderer:
         t.append(verb, style=f"bold {pulse_style}" if (frame_pos % 4 == 0) else pulse_style)
 
         meta_parts = []
+        if self._stage_label:
+            meta_parts.append(self._stage_label)
         if elapsed >= 0.2:
             meta_parts.append(f"{elapsed:.1f}s")
         if self._round_num > 0:
@@ -1321,7 +1332,10 @@ class StreamRenderer:
         t.append("  ")
         t.append(f"{frame} ", style=f"bold {pulse_style}")
         t.append(label, style=pulse_style)
-        meta = [f"{elapsed:.1f}s"]
+        meta = []
+        if self._stage_label:
+            meta.append(self._stage_label)
+        meta.append(f"{elapsed:.1f}s")
         if ans_words > 0:
             meta.append(f"{ans_words}w")
         if self._round_num > 0:
@@ -1436,17 +1450,20 @@ class StreamRenderer:
         steps = _clean_thinking_lines(raw_think)
         secs = max(0.0, float(elapsed))
         thought_g = ui_glyph("thought")
+        stage_suffix = f" · {escape(self._stage_label)}" if self._stage_label else ""
         if not steps:
-            console.print(f"  [{Theme.DIM}]{thought_g} Thought {secs:.1f}s[/]")
+            console.print(f"  [{Theme.DIM}]{thought_g} Thought {secs:.1f}s{stage_suffix}[/]")
             return
 
         width = max(32, (console.size.width or 80) - 8)
         if len(steps) == 1 and len(steps[0]) <= max(24, width - 22):
-            console.print(f"  [{Theme.DIM}]{thought_g} Thought {secs:.1f}s · {escape(steps[0])}[/]")
+            console.print(f"  [{Theme.DIM}]{thought_g} Thought {secs:.1f}s{stage_suffix} · {escape(steps[0])}[/]")
             return
 
         summary = Text()
         summary.append(f"  {thought_g} Thought {secs:.1f}s", style=Theme.DIM)
+        if self._stage_label:
+            summary.append(f" · {self._stage_label}", style=Theme.DIM)
         if len(steps) > 1:
             summary.append(f" · {len(steps)} steps", style=Theme.DIM)
 
@@ -1540,9 +1557,10 @@ class StreamRenderer:
             elapsed = time.time() - (self._thinking_start or self._start_time or time.time())
             self._print_thinking_summary(elapsed)
 
-        final_text = _strip_internal_tags(sanitize_surrogates(self._answer_buf)).lstrip("\n")
-        if final_text:
-            console.print(Padding(_CleanMarkdown(final_text, code_theme=Theme.CODE_THEME), (0, 2)))
+        if self._flush_final:
+            final_text = _strip_internal_tags(sanitize_surrogates(self._answer_buf)).lstrip("\n")
+            if final_text:
+                console.print(Padding(_CleanMarkdown(final_text, code_theme=Theme.CODE_THEME), (0, 2)))
 
     def get_full_text(self) -> str:
         return self._answer_buf
@@ -1557,22 +1575,28 @@ _TOOL_VERBS = {
     "read_file": "Read",
     "read_files": "Read",
     "get_file_outline": "Outline",
+    "get_file_info": "FileInfo",
     "inspect_image": "InspectImage",
     "browser_tabs": "BrowserTabs",
     "browser_inspect": "BrowserInspect",
     "browser_interact": "BrowserAct",
     "patch_file": "Update",
+    "apply_patch": "Patch",
     "write_file": "Write",
     "delete_file": "Delete",
+    "move_file": "Move",
+    "copy_file": "Copy",
     "run_command": "Bash",
     "run_python": "Python",
     "run_tests": "Test",
+    "git": "Git",
     "rollback": "Rollback",
     "start_background": "BgStart",
     "list_background": "BgList",
     "stop_background": "BgStop",
     "restart_service": "RestartSvc",
     "http_request": "HTTP",
+    "web_fetch": "Fetch",
     "list_dir": "List",
     "glob_files": "Glob",
     "search_files": "Search",
@@ -2066,16 +2090,22 @@ def print_subagent_banner(role: str, label: str) -> None:
 
 
 def print_subagent_event(stage_label: str, kind: str, payload: dict) -> None:
-    """Print concise subagent tree progress line without cluttering live markdown."""
+    """Print live subagent tool headers, structured tool results, and failover events."""
     sync_theme()
     if kind == "tool_call":
         tname = str(payload.get("tool") or "tool")
         verb, preview = _format_tool_header(tname, payload.get("args") or {})
-        detail = f"({escape(preview)})" if preview else "()"
-        console.print(
-            f"    [{Theme.DIM}]├─[/] [{Theme.INFO}]{escape(stage_label)}[/] "
-            f"[{Theme.PRIMARY}]{escape(verb)}[/][{Theme.DIM}]{detail}[/]"
-        )
+        t = Text()
+        t.append("  ")
+        t.append("● ", style=Theme.ACCENT)
+        if stage_label:
+            t.append(f"{sanitize_surrogates(str(stage_label))} ", style=Theme.INFO)
+        t.append(verb, style=f"bold {Theme.PRIMARY}")
+        if preview:
+            t.append("(", style=Theme.DIM)
+            t.append(sanitize_surrogates(preview), style=Theme.SECONDARY)
+            t.append(")", style=Theme.DIM)
+        console.print(t)
     elif kind == "failover":
         frm = escape(str(payload.get("from_model") or payload.get("from") or "?"))
         to = escape(str(payload.get("to_model") or payload.get("to") or "?"))
@@ -2084,11 +2114,14 @@ def print_subagent_event(stage_label: str, kind: str, payload: dict) -> None:
             f"    [{Theme.DIM}]├─[/] [{Theme.WARN}]{escape(stage_label)}[/] "
             f"[{Theme.WARN}]failover {frm} → {to}[/] [{Theme.DIM}]({reason})[/]"
         )
-    elif kind == "tool_result" and not payload.get("ok", True):
-        prev = escape(str(payload.get("preview") or "")[:90])
-        console.print(
-            f"    [{Theme.DIM}]└─[/] [{Theme.ERROR}]{escape(stage_label)} ✗ {prev}[/]"
-        )
+    elif kind == "tool_result":
+        tname = str(payload.get("tool") or "tool")
+        ok = bool(payload.get("ok", True))
+        raw_res = payload.get("result")
+        if raw_res is None:
+            raw_res = payload.get("preview") or ""
+        elapsed = payload.get("elapsed")
+        print_tool_result(str(raw_res), tname, is_error=not ok, elapsed=elapsed)
 
 
 def print_plan_table(tasks: list) -> None:
