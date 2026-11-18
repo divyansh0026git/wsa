@@ -1580,6 +1580,7 @@ _TOOL_VERBS = {
     "browser_tabs": "BrowserTabs",
     "browser_inspect": "BrowserInspect",
     "browser_interact": "BrowserAct",
+    "visual_inspect": "VisualInspect",
     "patch_file": "Update",
     "apply_patch": "Patch",
     "write_file": "Write",

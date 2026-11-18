@@ -3014,6 +3014,25 @@ def execute_agent_loop(
                         browser_verified_after_ui_edit = True
                         if not tests_exist:
                             verified_after_last_edit = True
+                elif name == "visual_inspect" and not is_err:
+                    visual_clean = (
+                        "Console/JS Errors: 0" in result
+                        and "OVERFLOW_X=" not in result
+                        and "BLANK/UNIFORM RENDER" not in result
+                        and "BROKEN_IMAGES=" not in result
+                        and "OCCLUDED=" not in result
+                        and "Failed Network Requests" not in result
+                    )
+                    verification_evidence.pop(approval_key, None)
+                    verification_evidence[approval_key] = {
+                        "tool": name,
+                        "ok": bool(visual_clean),
+                        "result_class": "ok" if visual_clean else "visual_defects",
+                    }
+                    if visual_clean:
+                        browser_verified_after_ui_edit = True
+                        if not tests_exist:
+                            verified_after_last_edit = True
 
                 _record_tool_history(state, {
                     "turn": state.turn_count,

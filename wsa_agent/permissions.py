@@ -35,6 +35,14 @@ def approval_reason(name, args, state):
         return f"Destructive or process-control action: {name}"
     if name in {"http_request", "browser_inspect", "browser_interact", "web_fetch"}:
         return f"Access a network endpoint or browser session: {name}"
+    if name == "visual_inspect":
+        target = str(args.get("target") or "").strip().lower()
+        if target.startswith(("http://", "https://")):
+            import urllib.parse
+            host = (urllib.parse.urlparse(target).hostname or "").lower()
+            if host not in {"127.0.0.1", "localhost", "::1"}:
+                return f"Access an external network endpoint in headless browser: {target[:80]}"
+        return ""
     if name == "git":
         sub = str(args.get("action") or "").strip().lower()
         git_args = args.get("args") or []

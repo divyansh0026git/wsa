@@ -712,6 +712,33 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "visual_inspect",
+            "description": (
+                "Render a local HTML/SVG/project path or URL in an isolated headless browser (zero focus stealing), "
+                "capture a multi-viewport 2x2 contact sheet (desktop, mobile, optional interaction/drag, and pixel diff) "
+                "with Set-of-Mark [1][2][3] element badges, audit console/network errors, overflow, occlusion, and "
+                "blank-canvas renders, and attach the composite image to the next turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target":        {"type": "string",  "description": "Local HTML/SVG path, workspace dir (serving index.html), or http(s) URL (default: 'index.html')"},
+                    "viewports":     {"type": "array",   "description": "Optional viewport list, e.g. [{\"name\":\"desktop\",\"width\":1440,\"height\":900}, {\"name\":\"mobile\",\"width\":390,\"height\":844,\"mobile\":true}]"},
+                    "actions":       {"type": "array",   "description": "Optional interactions before interactive tile: click, hover, scroll, drag (for 3D/canvas), type, wait"},
+                    "annotate":      {"type": "boolean", "description": "Overlay Set-of-Mark [1][2][3] element badges on primary tile (default: true)"},
+                    "full_page":     {"type": "boolean", "description": "Capture full scroll height on primary tile (default: false)"},
+                    "include_diff":  {"type": "boolean", "description": "Include pixel-diff heatmap tile vs previous capture (default: true)"},
+                    "color_scheme":  {"type": "string",  "description": "Optional CSS prefers-color-scheme emulation: 'dark' or 'light'"},
+                    "disable_webgl": {"type": "boolean", "description": "Disable WebGL to test 2D/poster fallback rendering (default: false)"},
+                    "wait_ms":       {"type": "integer", "description": "Settle delay in ms after page load (default: 500)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_command",
             "description": (
                 "Run a shell command (PowerShell on Windows, /bin/sh on macOS) or direct argv array in the project root; use run_python for multi-line Python."
@@ -1934,6 +1961,7 @@ def _execute_tool_unlocked(name: str, args: dict) -> str:
         if name == "browser_tabs":     return _browser_tabs()
         if name == "browser_inspect":  return _browser_inspect(**args)
         if name == "browser_interact": return _browser_interact(**args)
+        if name == "visual_inspect":   return _visual_inspect(**args)
         if name == "run_command":      return _run_command(**args)
         if name == "delete_file":      return _delete_file(**args)
         if name == "move_file":        return _move_file(**args)
@@ -5686,3 +5714,90 @@ def _browser_interact(
         timeout=30.0,
     )
     return _format_browser_diagnostics(res)
+
+
+def _queue_visual_bytes(
+    raw: bytes,
+    mime: str = "image/webp",
+    *,
+    width: int = 0,
+    height: int = 0,
+    label: str = "visual_sheet",
+) -> Optional[str]:
+    """Persist a temporary visual contact sheet and queue it for the next multimodal agent turn."""
+    if not raw or len(raw) > 8 * 1024 * 1024:
+        return None
+    ext_map = {"image/webp": ".webp", "image/jpeg": ".jpg", "image/png": ".png"}
+    ext = ext_map.get(str(mime or "").lower(), ".png")
+    shot_dir = Path(tempfile.gettempdir()) / "wsa_browser_shots"
+    shot_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"{label}_{int(time.time() * 1000)}{ext}"
+    shot_path = shot_dir / fname
+    try:
+        shot_path.write_bytes(raw)
+        old_shots = sorted(shot_dir.glob("*"), key=lambda p: p.stat().st_mtime)[:-12]
+        for old_p in old_shots:
+            old_p.unlink(missing_ok=True)
+    except Exception:
+        pass
+    b64 = base64.b64encode(raw).decode("ascii")
+    with _pending_images_lock:
+        _pending_images.append({
+            "filename": fname,
+            "path": str(shot_path),
+            "mime_type": str(mime or "image/png"),
+            "url": f"data:{mime or 'image/png'};base64,{b64}",
+            "width": str(width or ""),
+            "height": str(height or ""),
+        })
+    dims = f"{width}x{height}" if width and height else "captured"
+    fmt = ext.lstrip(".").upper()
+    return f"{shot_path} ({fmt} {dims}, {len(raw) // 1024 or 1} KB)"
+
+
+def _visual_inspect(
+    target: str = "index.html",
+    viewports: Optional[List[Dict[str, Any]]] = None,
+    actions: Optional[List[Dict[str, Any]]] = None,
+    annotate: bool = True,
+    full_page: bool = False,
+    include_diff: bool = True,
+    color_scheme: str = "",
+    disable_webgl: bool = False,
+    wait_ms: int = 500,
+) -> str:
+    """Headless CDP visual inspection tool: zero focus stealing, 2x2 contact sheet + Set-of-Mark + telemetry."""
+    from .visual import capture_visual_inspection, format_visual_report
+
+    raw_target = str(target or "index.html").strip()
+    root = get_project_root()
+    if not raw_target.startswith(("http://", "https://")):
+        try:
+            resolved_path = _resolve(raw_target)
+        except Exception as exc:
+            return f"[Error] Visual target outside workspace: {exc}"
+        raw_target = str(resolved_path)
+
+    res = capture_visual_inspection(
+        raw_target,
+        project_root=root,
+        viewports=viewports,
+        actions=actions,
+        annotate=bool(annotate),
+        full_page=bool(full_page),
+        include_diff=bool(include_diff),
+        color_scheme=str(color_scheme or ""),
+        disable_webgl=bool(disable_webgl),
+        wait_ms=max(0, min(int(wait_ms or 500), 8000)),
+    )
+    if not res.get("ok"):
+        return format_visual_report(res)
+
+    saved_desc = _queue_visual_bytes(
+        res.get("image_bytes") or b"",
+        res.get("image_mime") or "image/webp",
+        width=int(res.get("image_width") or 0),
+        height=int(res.get("image_height") or 0),
+        label="visual_contact_sheet",
+    )
+    return format_visual_report(res, saved_path_summary=saved_desc or "queued")
