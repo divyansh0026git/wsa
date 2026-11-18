@@ -3407,19 +3407,46 @@ function _domInstallPageRuntimeFn() {
     return submittedViaForm ? "requestSubmit+enter" : "enter";
   }
 
-  function countComposerMediaPreviews() {
-    return document.querySelectorAll(
+  function resolveComposerAttachmentRoot(editorEl) {
+    if (editorEl && typeof editorEl.closest === "function") {
+      return (
+        editorEl.closest("form, [role='region'], [class*='input-area'], [class*='composer']") ||
+        editorEl.parentElement ||
+        document
+      );
+    }
+    return document;
+  }
+
+  function countComposerMediaPreviews(rootEl) {
+    const scope = rootEl && typeof rootEl.querySelectorAll === "function" ? rootEl : document;
+    return scope.querySelectorAll(
       'img[src^="blob:"], img[src^="data:image/"], [data-test-id*="image-preview"], ' +
-      '[class*="thumbnail"], button[aria-label*="Remove image" i], button[aria-label*="Delete image" i]'
+      '[data-testid*="file-thumbnail"], [data-testid*="attachment"], [class*="thumbnail"], ' +
+      '[class*="attachment-preview"], [class*="file-preview"], ' +
+      'button[aria-label*="Remove image" i], button[aria-label*="Remove" i], button[aria-label*="Delete image" i]'
     ).length;
+  }
+
+  function hasActiveUploadSpinner(rootEl) {
+    const scope = rootEl && typeof rootEl.querySelectorAll === "function" ? rootEl : document;
+    const spinners = scope.querySelectorAll(
+      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading"], ' +
+      '[class*="upload-progress"], [class*="uploading"], svg[class*="animate-spin"]'
+    );
+    for (const sp of spinners) {
+      if (isVisible(sp)) return true;
+    }
+    return false;
   }
 
   async function attachImagesToPage(images, inputEl) {
     if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") {
-      return 0;
+      return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
     }
     const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     const dt = new DataTransfer();
+    const names = [];
     for (let idx = 0; idx < images.length; idx++) {
       const item = images[idx];
       if (!item || !item.data) continue;
@@ -3430,56 +3457,118 @@ function _domInstallPageRuntimeFn() {
         const mime = String(item.mime_type || "image/png");
         const name = String(item.filename || ("screenshot_" + (idx + 1) + ".png"));
         dt.items.add(new File([bytes], name, { type: mime }));
+        names.push(name);
       } catch (e) {
         log("Image decode skip #" + idx + ": " + e.message);
       }
     }
-    if (!dt.files || dt.files.length === 0) return 0;
+    if (!dt.files || dt.files.length === 0) {
+      return { ok: false, attached: 0, expected: images.length, verified: false, method: "decode", error: "No valid image bytes to attach" };
+    }
 
-    const beforeCount = countComposerMediaPreviews();
+    const expected = dt.files.length;
     const targetEd = findEditor() || inputEl;
-    if (targetEd) {
+    const root = resolveComposerAttachmentRoot(targetEd);
+    const beforeCount = countComposerMediaPreviews(root);
+    const beforeGlobal = countComposerMediaPreviews(document);
+    const hasAttachedSignal = () => {
+      if (countComposerMediaPreviews(root) > beforeCount) return true;
+      if (countComposerMediaPreviews(document) > beforeGlobal) return true;
+      const txt = String((root && root.textContent) || "");
+      return names.some(n => n && txt.includes(n));
+    };
+    const waitForAttachment = async (polls, stepMs) => {
+      for (let i = 0; i < polls; i++) {
+        await sleepMs(stepMs);
+        if (hasAttachedSignal()) return true;
+      }
+      return false;
+    };
+    const waitUploadSettled = async () => {
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline && hasActiveUploadSpinner(root)) {
+        await sleepMs(200);
+      }
+      await sleepMs(300);
+    };
+
+    const tried = [];
+    let attachedMethod = "";
+
+    // Method 1: ClipboardEvent paste
+    if (targetEd && typeof ClipboardEvent === "function") {
+      tried.push("paste");
       try {
         targetEd.focus();
-        const pasteEvt = new ClipboardEvent("paste", {
+        targetEd.dispatchEvent(new ClipboardEvent("paste", {
           bubbles: true,
           cancelable: true,
           clipboardData: dt,
-        });
-        targetEd.dispatchEvent(pasteEvt);
+        }));
       } catch (e) {
         log("ClipboardEvent paste image error: " + e.message);
       }
-    }
-
-    for (let i = 0; i < 6; i++) {
-      await sleepMs(160);
-      if (countComposerMediaPreviews() > beforeCount) {
-        await sleepMs(450);
-        log("Attached " + dt.files.length + " image(s) via composer paste");
-        return dt.files.length;
+      if (await waitForAttachment(10, 180)) {
+        attachedMethod = "paste";
       }
     }
 
-    const fileInput =
-      document.querySelector('input[type="file"][accept*="image" i]') ||
-      document.querySelector('input[type="file"]');
-    if (fileInput) {
-      try {
-        fileInput.files = dt.files;
-        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-        for (let i = 0; i < 8; i++) {
-          await sleepMs(180);
-          if (countComposerMediaPreviews() > beforeCount) break;
+    // Method 2: File input (with native HTMLInputElement setter)
+    if (!attachedMethod) {
+      const fileInput =
+        (root && root.querySelector && root.querySelector('input[type="file"][accept*="image" i]')) ||
+        document.querySelector('input[type="file"][accept*="image" i]') ||
+        document.querySelector('input[type="file"]');
+      if (fileInput) {
+        tried.push("fileInput");
+        try {
+          const desc = typeof HTMLInputElement !== "undefined"
+            ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")
+            : null;
+          if (desc && typeof desc.set === "function") {
+            desc.set.call(fileInput, dt.files);
+          } else {
+            fileInput.files = dt.files;
+          }
+          fileInput.dispatchEvent(new Event("input", { bubbles: true }));
+          fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+        } catch (e) {
+          log("File input image attach error: " + e.message);
         }
-        await sleepMs(450);
-        log("Attached " + dt.files.length + " image(s) via file input");
-        return dt.files.length;
-      } catch (e) {
-        log("File input image attach error: " + e.message);
+        if (await waitForAttachment(12, 200)) {
+          attachedMethod = "fileInput";
+        }
       }
     }
-    return 0;
+
+    // Method 3: Synthetic drag-and-drop fallback
+    if (!attachedMethod && typeof DragEvent === "function" && (targetEd || root)) {
+      tried.push("drop");
+      const dropTarget = targetEd || root;
+      try {
+        for (const evType of ["dragenter", "dragover", "drop"]) {
+          dropTarget.dispatchEvent(new DragEvent(evType, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: dt,
+          }));
+        }
+      } catch (e) {
+        log("Drop image attach error: " + e.message);
+      }
+      if (await waitForAttachment(10, 200)) {
+        attachedMethod = "drop";
+      }
+    }
+
+    if (attachedMethod) {
+      await waitUploadSettled();
+      log("Attached " + expected + " image(s) via " + attachedMethod + " (verified)");
+      return { ok: true, attached: expected, expected, verified: true, method: attachedMethod, error: "" };
+    }
+    const err = `Could not verify image upload in Gemini composer (tried: ${tried.join(", ") || "none"})`;
+    log(err);
+    return { ok: false, attached: 0, expected, verified: false, method: tried.join(","), error: err };
   }
 
   async function submitPromptToPage(prompt, inputEl, initialCtx, beforeDomCount) {
@@ -3681,7 +3770,18 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
   const selectedBadge = rt.readModePickerBadge();
 
   if (Array.isArray(images) && images.length > 0 && rt.attachImagesToPage) {
-    await rt.attachImagesToPage(images, inputEl);
+    const attachRes = await rt.attachImagesToPage(images, inputEl);
+    if (attachRes && attachRes.verified === false) {
+      const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+      const limitHit = typeof rt.detectLimitMessage === "function" ? rt.detectLimitMessage(errBanner, true) : "";
+      if (limitHit) {
+        return { ok: false, error: `[LIMIT_REACHED] Gemini: ${limitHit}` };
+      }
+      return {
+        ok: false,
+        error: `[IMAGE_ATTACH_FAILED] Gemini: ${attachRes.error || "Image upload could not be verified before sending."}`,
+      };
+    }
     inputEl = rt.findEditor() || inputEl;
   }
 
@@ -5168,8 +5268,12 @@ function _claudeInstallPageRuntimeFn() {
   }
 
   async function attachImagesToClaude(images, editorEl) {
-    if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") return;
+    if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") {
+      return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
+    }
+    const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     const files = [];
+    const names = [];
     for (let i = 0; i < images.length; i++) {
       const item = images[i];
       let mime = "image/png";
@@ -5195,26 +5299,127 @@ function _claudeInstallPageRuntimeFn() {
         const arr = new Uint8Array(bin.length);
         for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
         files.push(new File([arr], fname, { type: mime }));
+        names.push(fname);
       } catch { /* skip malformed image payload */ }
     }
-    if (!files.length) return;
+    if (!files.length) {
+      return { ok: false, attached: 0, expected: images.length, verified: false, method: "decode", error: "No valid image bytes to attach" };
+    }
+
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(f);
-    const fileInput = document.querySelector("input[type='file']");
-    if (fileInput) {
+    const root =
+      (editorEl && typeof editorEl.closest === "function"
+        ? editorEl.closest("form, fieldset, [class*='composer'], [class*='input']") || editorEl.parentElement
+        : null) || document;
+    const attachSel =
+      'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], ' +
+      '[data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], ' +
+      'button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
+    const spinnerSel =
+      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading"], ' +
+      '[class*="uploading"], svg[class*="animate-spin"]';
+    const countAttachments = (scope) => {
+      try { return (scope || document).querySelectorAll(attachSel).length; } catch { return 0; }
+    };
+    const hasUploadSpinner = () => {
       try {
-        fileInput.files = dt.files;
+        const els = (root || document).querySelectorAll(spinnerSel);
+        for (const el of els) {
+          if (el && el.offsetParent !== null) return true;
+        }
+      } catch { /* ignore */ }
+      return false;
+    };
+    const beforeRoot = countAttachments(root);
+    const beforeDoc = countAttachments(document);
+    const hasAttachedSignal = () => {
+      if (countAttachments(root) > beforeRoot) return true;
+      if (countAttachments(document) > beforeDoc) return true;
+      const txt = String((root && root.textContent) || "");
+      return names.some(n => n && txt.includes(n));
+    };
+    const waitForAttachment = async (polls, stepMs) => {
+      for (let i = 0; i < polls; i++) {
+        await sleepMs(stepMs);
+        if (hasAttachedSignal()) return true;
+      }
+      return false;
+    };
+
+    const tried = [];
+    let attachedMethod = "";
+
+    // Method 1: File input with native HTMLInputElement setter
+    const fileInput =
+      (root && root.querySelector && root.querySelector("input[type='file']")) ||
+      document.querySelector("input[type='file']");
+    if (fileInput) {
+      tried.push("fileInput");
+      try {
+        const desc = typeof HTMLInputElement !== "undefined"
+          ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")
+          : null;
+        if (desc && typeof desc.set === "function") {
+          desc.set.call(fileInput, dt.files);
+        } else {
+          fileInput.files = dt.files;
+        }
+        fileInput.dispatchEvent(new Event("input", { bubbles: true }));
         fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-        await new Promise(r => setTimeout(r, 450));
-        return;
-      } catch { /* fall back to paste */ }
+      } catch { /* fall through */ }
+      if (await waitForAttachment(12, 200)) {
+        attachedMethod = "fileInput";
+      }
     }
-    if (editorEl) {
-      editorEl.focus();
-      const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
-      editorEl.dispatchEvent(ev);
-      await new Promise(r => setTimeout(r, 450));
+
+    // Method 2: ClipboardEvent paste on editor
+    if (!attachedMethod && editorEl && typeof ClipboardEvent === "function") {
+      tried.push("paste");
+      try {
+        editorEl.focus();
+        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+        editorEl.dispatchEvent(ev);
+      } catch { /* fall through */ }
+      if (await waitForAttachment(10, 200)) {
+        attachedMethod = "paste";
+      }
     }
+
+    // Method 3: Synthetic drag-and-drop fallback
+    if (!attachedMethod && typeof DragEvent === "function" && (editorEl || root)) {
+      tried.push("drop");
+      const dropTarget = editorEl || root;
+      try {
+        for (const evType of ["dragenter", "dragover", "drop"]) {
+          dropTarget.dispatchEvent(new DragEvent(evType, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: dt,
+          }));
+        }
+      } catch { /* fall through */ }
+      if (await waitForAttachment(10, 200)) {
+        attachedMethod = "drop";
+      }
+    }
+
+    if (attachedMethod) {
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline && hasUploadSpinner()) {
+        await sleepMs(200);
+      }
+      await sleepMs(300);
+      return { ok: true, attached: files.length, expected: files.length, verified: true, method: attachedMethod, error: "" };
+    }
+    return {
+      ok: false,
+      attached: 0,
+      expected: files.length,
+      verified: false,
+      method: tried.join(","),
+      error: `Could not verify image upload in Claude composer (tried: ${tried.join(", ") || "none"})`,
+    };
   }
 
   function normalizeCompareText(s) {
@@ -5500,7 +5705,18 @@ async function _claudeStartTurnFn(reqId, prompt, images = []) {
   }
 
   if (Array.isArray(images) && images.length > 0 && rt.attachImagesToClaude) {
-    await rt.attachImagesToClaude(images, editor);
+    const attachRes = await rt.attachImagesToClaude(images, editor);
+    if (attachRes && attachRes.verified === false) {
+      const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+      const limitHit = typeof rt.detectLimitMessage === "function" ? rt.detectLimitMessage(errBanner, true) : "";
+      if (limitHit) {
+        return { ok: false, error: `[LIMIT_REACHED] Claude: ${limitHit}` };
+      }
+      return {
+        ok: false,
+        error: `[IMAGE_ATTACH_FAILED] Claude: ${attachRes.error || "Image upload could not be verified before sending."}`,
+      };
+    }
     editor = rt.findEditor() || editor;
   }
 
@@ -6139,8 +6355,12 @@ function _installWsaDomUtilsFn() {
   }
 
   async function attachImagesToEditor(images, editorEl) {
-    if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") return;
+    if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") {
+      return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
+    }
+    const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     const files = [];
+    const names = [];
     for (let i = 0; i < images.length; i++) {
       const item = images[i];
       let mime = "image/png";
@@ -6166,26 +6386,124 @@ function _installWsaDomUtilsFn() {
         const arr = new Uint8Array(bin.length);
         for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
         files.push(new File([arr], fname, { type: mime }));
+        names.push(fname);
       } catch { /* skip malformed image */ }
     }
-    if (!files.length) return;
+    if (!files.length) {
+      return { ok: false, attached: 0, expected: images.length, verified: false, method: "decode", error: "No valid image bytes to attach" };
+    }
+
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(f);
-    const fileInput = document.querySelector("input[type='file']");
-    if (fileInput) {
+    const root =
+      (editorEl && typeof editorEl.closest === "function"
+        ? editorEl.closest("form, [role='region'], [class*='composer'], [class*='input']") || editorEl.parentElement
+        : null) || document;
+    const attachSel =
+      'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], ' +
+      '[data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], ' +
+      '[class*="file-preview"], button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
+    const spinnerSel =
+      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading"], ' +
+      '[class*="uploading"], svg[class*="animate-spin"]';
+    const countAttachments = (scope) => {
+      try { return (scope || document).querySelectorAll(attachSel).length; } catch { return 0; }
+    };
+    const hasUploadSpinner = () => {
       try {
-        fileInput.files = dt.files;
+        const els = (root || document).querySelectorAll(spinnerSel);
+        for (const el of els) {
+          if (el && el.offsetParent !== null) return true;
+        }
+      } catch { /* ignore */ }
+      return false;
+    };
+    const beforeRoot = countAttachments(root);
+    const beforeDoc = countAttachments(document);
+    const hasAttachedSignal = () => {
+      if (countAttachments(root) > beforeRoot) return true;
+      if (countAttachments(document) > beforeDoc) return true;
+      const txt = String((root && root.textContent) || "");
+      return names.some(n => n && txt.includes(n));
+    };
+    const waitForAttachment = async (polls, stepMs) => {
+      for (let i = 0; i < polls; i++) {
+        await sleepMs(stepMs);
+        if (hasAttachedSignal()) return true;
+      }
+      return false;
+    };
+
+    const tried = [];
+    let attachedMethod = "";
+
+    const fileInput =
+      (root && root.querySelector && root.querySelector("input[type='file']")) ||
+      document.querySelector("input[type='file']");
+    if (fileInput) {
+      tried.push("fileInput");
+      try {
+        const desc = typeof HTMLInputElement !== "undefined"
+          ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")
+          : null;
+        if (desc && typeof desc.set === "function") {
+          desc.set.call(fileInput, dt.files);
+        } else {
+          fileInput.files = dt.files;
+        }
+        fileInput.dispatchEvent(new Event("input", { bubbles: true }));
         fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-        await new Promise(r => setTimeout(r, 450));
-        return;
-      } catch { /* fall back to paste */ }
+      } catch { /* fall through */ }
+      if (await waitForAttachment(12, 200)) {
+        attachedMethod = "fileInput";
+      }
     }
-    if (editorEl) {
-      editorEl.focus();
-      const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
-      editorEl.dispatchEvent(ev);
-      await new Promise(r => setTimeout(r, 450));
+
+    if (!attachedMethod && editorEl && typeof ClipboardEvent === "function") {
+      tried.push("paste");
+      try {
+        editorEl.focus();
+        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+        editorEl.dispatchEvent(ev);
+      } catch { /* fall through */ }
+      if (await waitForAttachment(10, 200)) {
+        attachedMethod = "paste";
+      }
     }
+
+    if (!attachedMethod && typeof DragEvent === "function" && (editorEl || root)) {
+      tried.push("drop");
+      const dropTarget = editorEl || root;
+      try {
+        for (const evType of ["dragenter", "dragover", "drop"]) {
+          dropTarget.dispatchEvent(new DragEvent(evType, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: dt,
+          }));
+        }
+      } catch { /* fall through */ }
+      if (await waitForAttachment(10, 200)) {
+        attachedMethod = "drop";
+      }
+    }
+
+    if (attachedMethod) {
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline && hasUploadSpinner()) {
+        await sleepMs(200);
+      }
+      await sleepMs(300);
+      return { ok: true, attached: files.length, expected: files.length, verified: true, method: attachedMethod, error: "" };
+    }
+    return {
+      ok: false,
+      attached: 0,
+      expected: files.length,
+      verified: false,
+      method: tried.join(","),
+      error: `Could not verify image upload in composer (tried: ${tried.join(", ") || "none"})`,
+    };
   }
 
   function setEditablePromptText(editorEl, promptText) {
@@ -6491,7 +6809,18 @@ function _installWsaDomUtilsFn() {
     }
 
     if (Array.isArray(images) && images.length > 0 && attachImagesToEditor) {
-      await attachImagesToEditor(images, editor);
+      const attachRes = await attachImagesToEditor(images, editor);
+      if (attachRes && attachRes.verified === false) {
+        const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+        const limitHit = typeof rt.detectLimitMessage === "function" ? rt.detectLimitMessage(errBanner, true) : "";
+        if (limitHit) {
+          return { ok: false, error: `[LIMIT_REACHED] ${provLabel}: ${limitHit}` };
+        }
+        return {
+          ok: false,
+          error: `[IMAGE_ATTACH_FAILED] ${provLabel}: ${attachRes.error || "Image upload could not be verified before sending."}`,
+        };
+      }
       editor = rt.findEditor() || editor;
     }
 

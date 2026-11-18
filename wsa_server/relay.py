@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -1369,6 +1370,79 @@ def _clean_streaming_gemini_text(text: str) -> str:
     return cleaned
 
 
+def _optimize_image_for_vlm(
+    data: bytes,
+    mime: str,
+    *,
+    max_edge: int = 1568,
+    max_bytes: int = 650_000,
+) -> tuple[bytes, str]:
+    """Resize oversized screenshots to <=1568px and compress to WebP/JPEG when Pillow is available.
+
+    Gracefully returns `(data, mime)` unchanged if Pillow is unavailable, the image is
+    already compact and within bounds, or the image is an animated GIF.
+    """
+    if not data:
+        return data, mime
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:
+        return data, mime
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1:
+                return data, mime
+            w, h = im.size
+            needs_resize = max(w, h) > max_edge
+            needs_compress = len(data) > max_bytes
+            if not needs_resize and not needs_compress:
+                return data, mime
+            work = im.copy()
+        if needs_resize:
+            scale = max_edge / float(max(work.size))
+            new_size = (max(1, int(round(work.size[0] * scale))), max(1, int(round(work.size[1] * scale))))
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+            work = work.resize(new_size, resample=resample)
+        candidates: list[tuple[bytes, str]] = []
+        # Try WebP first (best text/UI edge sharpness per byte and preserves alpha).
+        try:
+            buf = io.BytesIO()
+            webp_img = work if work.mode in ("RGB", "RGBA") else work.convert("RGBA")
+            webp_img.save(buf, format="WEBP", quality=86, method=4)
+            candidates.append((buf.getvalue(), "image/webp"))
+        except Exception:
+            pass
+        # Also try JPEG (universally accepted across all web AI uploaders).
+        try:
+            buf = io.BytesIO()
+            if work.mode in ("RGBA", "LA") or (work.mode == "P" and "transparency" in work.info):
+                bg = Image.new("RGB", work.size, (255, 255, 255))
+                rgba = work.convert("RGBA")
+                bg.paste(rgba, mask=rgba.split()[-1])
+                rgb_img = bg
+            else:
+                rgb_img = work.convert("RGB")
+            rgb_img.save(buf, format="JPEG", quality=86, optimize=True)
+            candidates.append((buf.getvalue(), "image/jpeg"))
+        except Exception:
+            pass
+        # Also try optimized PNG (often smallest for crisp flat UI / sparse synthetic graphics).
+        try:
+            buf = io.BytesIO()
+            work.save(buf, format="PNG", optimize=True)
+            candidates.append((buf.getvalue(), "image/png"))
+        except Exception:
+            pass
+        if not candidates:
+            return data, mime
+        best_bytes, best_mime = min(candidates, key=lambda pair: len(pair[0]))
+        if needs_resize or len(best_bytes) < len(data):
+            return best_bytes, best_mime
+        return data, mime
+    except Exception:
+        return data, mime
+
+
 def _serialize_relay_images(images: Optional[list]) -> list:
     """Convert `(bytes, mime)` or URL image items into JSON-safe base64 payloads for DOM relay."""
     if not images:
@@ -1396,9 +1470,12 @@ def _serialize_relay_images(images: Optional[list]) -> list:
                 data = bytes(src)
             else:
                 continue
-            if not data or len(data) > 8 * 1024 * 1024:
+            if not data or len(data) > 24 * 1024 * 1024:
                 continue
             mime = detect_fn(data, mime or "image/png")
+            data, mime = _optimize_image_for_vlm(data, mime)
+            if not data or len(data) > 8 * 1024 * 1024:
+                continue
             ext = ext_map.get(mime, "png")
             serialized.append({
                 "filename": f"screenshot_{idx + 1}.{ext}",
