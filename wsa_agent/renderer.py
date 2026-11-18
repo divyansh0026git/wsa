@@ -1612,8 +1612,10 @@ def _format_tool_header(name: str, args: Optional[dict]) -> tuple[str, str]:
     if name == "read_file":
         path = str(a.get("path", ""))
         s_line, e_line = a.get("start_line"), a.get("end_line")
-        if s_line is not None and e_line is not None:
-            return verb, f"{path}:L{s_line}-{e_line}"
+        if e_line is not None:
+            return verb, f"{path}:L{s_line or 1}-{e_line}"
+        if s_line is not None:
+            return verb, f"{path} from L{s_line}"
         return verb, path
 
     if name == "get_file_outline":
@@ -1776,6 +1778,12 @@ def print_tool_result(
         elif trunc_match:
             shown_l, total_l = trunc_match.groups()
             summary = f"Read first {shown_l} of {total_l} lines"
+        elif name == "read_file" and lines and re.match(r"^\s*\d+ \|", lines[0]):
+            first = lines[0].partition("|")[0].strip()
+            last = lines[-1].partition("|")[0].strip()
+            summary = f"Read lines {first}-{last}"
+        elif len(lines) == 1 and clean.startswith("["):
+            summary = clean[:140]
         else:
             summary = f"Read {len(lines)} line{'s' if len(lines) != 1 else ''}"
         _print_tree_line(f"{summary}{dur}", style=Theme.DIM, first=True)
@@ -2093,7 +2101,11 @@ def print_subagent_banner(role: str, label: str) -> None:
 def print_subagent_event(stage_label: str, kind: str, payload: dict) -> None:
     """Print live subagent tool headers, structured tool results, and failover events."""
     sync_theme()
-    if kind == "tool_call":
+    if kind == "round" and payload.get("activity"):
+        activity = Text("  " + sanitize_surrogates(stage_label) + "  ", style=Theme.INFO)
+        activity.append(sanitize_surrogates(str(payload["activity"])), style=Theme.DIM)
+        console.print(activity)
+    elif kind == "tool_call":
         tname = str(payload.get("tool") or "tool")
         verb, preview = _format_tool_header(tname, payload.get("args") or {})
         t = Text()
@@ -2123,6 +2135,10 @@ def print_subagent_event(stage_label: str, kind: str, payload: dict) -> None:
             raw_res = payload.get("preview") or ""
         elapsed = payload.get("elapsed")
         print_tool_result(str(raw_res), tname, is_error=not ok, elapsed=elapsed)
+        if ok and tname == "read_file":
+            for line in str(raw_res).splitlines()[:2]:
+                if re.match(r"^\s*\d+ \|", line):
+                    _print_tree_line(line[:120], style=Theme.SECONDARY)
 
 
 def print_plan_table(tasks: list) -> None:

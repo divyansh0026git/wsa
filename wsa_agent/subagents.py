@@ -16,6 +16,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from .task_skills import select_task_skills, skill_guidance
 from . import renderer as R
 from .agent import (
     ACCOUNT_SWITCH_WAIT_SECS,
@@ -622,7 +623,7 @@ def _run_role_agent(
         quiet_ui=True,
         live_ui=True,
         stage_label=stage_label,
-        flush_final_stream=(role == "coder"),
+        flush_final_stream=True,
         allow_auto_decisions=False,
         extra_context_block=extra_ctx,
         event_callback=_make_role_event_cb(stage_label),
@@ -981,6 +982,18 @@ def run_orchestrated_turn(
     reason_str = f" ({', '.join(reasons)})" if reasons else ""
     _ui_stage_banner("orchestrator", f"Engaging scoped 4-role build pipeline{reason_str}")
 
+    names = select_task_skills(user_input)
+    if names:
+        R.print_info("Skills: " + ", ".join(names))
+
+    def _run_stage(**kwargs):
+        stage_skills = names
+        if str(kwargs.get("label", "")).startswith("repair#") and "systematic-debugging" not in names:
+            stage_skills = (*names, "systematic-debugging")
+        if stage_skills:
+            kwargs["prompt"] += "\n\n" + skill_guidance(stage_skills)
+        return _run_role_agent(**kwargs)
+
     ledger = getattr(state, "file_ledger", None)
     if not isinstance(ledger, FileContextLedger):
         ledger = FileContextLedger(state.project_root)
@@ -1005,7 +1018,7 @@ def run_orchestrated_turn(
             extra_notes=f"Primary user objective:\n{user_input[:1200]}",
         )
         while True:
-            exp_res = _run_role_agent(
+            exp_res = _run_stage(
                 role="explorer",
                 prompt=(
                     f"Perform fast targeted read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
@@ -1041,7 +1054,7 @@ def run_orchestrated_turn(
             extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:4000]}",
         )
         while True:
-            arch_res = _run_role_agent(
+            arch_res = _run_stage(
                 role="architect",
                 prompt=(
                     f"Create a minimal dependency-ordered task DAG to complete:\n{user_input}\n\n"
@@ -1088,7 +1101,7 @@ def run_orchestrated_turn(
             R.print_warn("Dual-lane execution is serialized: shell tools require isolated workspaces before safe parallel execution.")
 
         completed_ids: Set[str] = set()
-        failed_ids: Set[str] = set()
+        worker_failures: List[Dict[str, str]] = []
         task_summaries: List[str] = []
 
         def _execute_task_slice(
@@ -1121,13 +1134,10 @@ def run_orchestrated_turn(
                 ),
             )
             desc_text = f"Task Description:\n{task_item['description']}\n\n" if task_item.get("description") else ""
-            is_verify_task = not owned or _is_verification_task(task_item)
             task_guidance = (
-                "Run the required verification checks (test suite, packaging, syntax), diagnose any failures, "
-                "and summarize observed check results."
-                if is_verify_task
-                else "Outline/read existing target ranges first, apply surgical `patch_file` edits (or targeted `write_file` "
-                     "for new modules), run targeted local verification before concluding, and summarize exact files & check results."
+                "Implement any requested deliverables within the assigned scope. Read existing targets before editing "
+                "and use `write_file` for new modules. For verification-only tasks, run the requested checks. "
+                "Verify the acceptance criteria and summarize the observed results."
             )
             worker_prompt = (
                 f"Execute task `{tid}`: {task_item['title']}\n"
@@ -1141,7 +1151,7 @@ def run_orchestrated_turn(
                 session_override = state.resolve_stage_session_id("coder")
             else:
                 session_override = state.role_session_id("coder")
-            res = _run_role_agent(
+            worker_args = dict(
                 role="coder",
                 prompt=worker_prompt,
                 state=state,
@@ -1153,6 +1163,15 @@ def run_orchestrated_turn(
                 label=f"coder:{tid}",
                 owned_files=owned or None,
             )
+            res = _run_stage(**worker_args)
+            reason = str(res.get("aborted_reason") or "")
+            if (
+                not res.get("ok") and not res.get("limit_exhausted")
+                and res.get("tool_calls_count") == 0 and not res.get("written_files")
+                and re.search(r"DOM relay timeout \(\d+s\) waiting for the .+? tab to finish answering", reason)
+            ):
+                R.print_warn(f"{tid}: browser response timed out before any tool calls. Retrying this task once.")
+                res = _run_stage(**worker_args)
             with state_lock:
                 wf = list(res.get("written_files") or [])
                 all_written.update(wf)
@@ -1197,7 +1216,10 @@ def run_orchestrated_turn(
             if res.get("ok"):
                 completed_ids.add(done_item["id"])
             else:
-                failed_ids.add(done_item["id"])
+                worker_failures.append({
+                    "file": done_item["id"],
+                    "issue": str(res.get("aborted_reason") or "Worker returned failure without a reason"),
+                })
             pending.remove(done_item)
             if res.get("aborted_reason") == "permission_denied":
                 aborted_reason = "permission_denied"
@@ -1218,8 +1240,13 @@ def run_orchestrated_turn(
         if aborted_reason == "dependency_blocked":
             verdict = {
                 "verdict": "fail", "checks": [],
-                "failures": [{"file": t["id"], "issue": "Unsatisfied task dependencies"} for t in pending],
-                "summary": "Execution stopped at failed, missing, or cyclic prerequisites.",
+                "failures": [
+                    {"file": t["id"], "issue": "Blocked by " + ", ".join(
+                        dep for dep in t.get("depends_on", []) if dep not in completed_ids
+                    )}
+                    for t in pending
+                ],
+                "summary": "Prerequisites did not complete. Final verification was skipped.",
             }
         elif aborted_reason == "permission_denied":
             verdict = {"verdict": "fail", "checks": [],
@@ -1260,7 +1287,7 @@ def run_orchestrated_turn(
                 extra_notes=f"Task summaries:\n" + "\n".join(task_summaries),
             )
             while True:
-                ver_res = _run_role_agent(
+                ver_res = _run_stage(
                     role="verifier",
                     prompt=(
                         f"Verify all work completed for the user request:\n{user_input[:1200]}\n\n"
@@ -1333,7 +1360,7 @@ def run_orchestrated_turn(
             )
             while True:
                 with relay_seq_lock:
-                    rep_res = _run_role_agent(
+                    rep_res = _run_stage(
                         role="coder",
                         prompt=(
                             "Fix the exact defects reported by the independent Verifier below.\n"
@@ -1371,13 +1398,11 @@ def run_orchestrated_turn(
                 }
                 break
 
-        if failed_ids and verdict["verdict"] == "pass":
-            verdict["verdict"] = "fail"
-            verdict.setdefault("failures", []).extend(
-                {"file": tid, "issue": "Task execution failed; a verifier verdict cannot mark it completed"}
-                for tid in sorted(failed_ids)
-            )
-            verdict["summary"] = "Some tasks did not complete successfully."
+        if worker_failures:
+            if verdict["verdict"] == "pass":
+                verdict["verdict"] = "fail"
+                verdict["summary"] = "Some tasks did not complete successfully."
+            verdict["failures"] = worker_failures + verdict["failures"]
         if verdict["verdict"] == "pass" and all_written:
             ledger.mark_verified(all_written)
             state.verified_files.update(all_written)
@@ -1402,7 +1427,8 @@ def run_orchestrated_turn(
         if fail_lines:
             final_lines.extend(["", "**Remaining Failures:**", fail_lines])
         if verdict.get("summary"):
-            final_lines.extend(["", f"**Verifier Verdict:** {verdict['summary']}"])
+            label = "Execution status" if aborted_reason == "dependency_blocked" else "Verifier Verdict"
+            final_lines.extend(["", f"**{label}:** {verdict['summary']}"])
         final_report = "\n".join(final_lines)
 
         state.messages.append({"role": "user", "content": user_input})

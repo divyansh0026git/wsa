@@ -1713,12 +1713,12 @@ async function ensurePageRuntime(tabId, provider = "gemini") {
     target: { tabId },
     world: "MAIN",
     func: (rtKey, rtVer, needsUtils, rtRev) => Boolean(
-      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 5 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
+      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 6 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
       globalThis[rtKey] &&
       globalThis[rtKey].version === rtVer &&
       globalThis[rtKey].rev === rtRev
     ),
-    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), p === "chatgpt" ? 5 : 4],
+    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), p === "chatgpt" ? 6 : 5],
   });
   if (probe?.[0]?.result) return true;
   if (spec.needsDomUtils) {
@@ -1992,8 +1992,6 @@ async function pollActiveRelayJob() {
 
     if (changed) {
       job.seq = (job.seq || 0) + 1;
-      job.sentText = curText;
-      job.sentThinking = curThink;
       job.lastHeartbeatAt = Date.now();
       if (!await setStoredActiveJob(job)) return;
       try {
@@ -2024,8 +2022,12 @@ async function pollActiveRelayJob() {
             return;
           }
           if (!await setStoredActiveJob(job)) return;
-        } else if (pjson?.ok) {
+        } else if (pr.ok && pjson?.ok) {
+          // Watermarks represent acknowledged data. Resend an unchanged snapshot after a lost POST.
+          job.sentText = curText;
+          job.sentThinking = curThink;
           job.serverMissCount = 0;
+          if (!await setStoredActiveJob(job)) return;
         }
       } catch { /* retry next tick */ }
     } else if ((Date.now() - (job.lastHeartbeatAt || 0)) >= 2500) {
@@ -3441,8 +3443,20 @@ function _domInstallPageRuntimeFn() {
   }
 
   async function attachImagesToPage(images, inputEl) {
-    if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") {
+    if (!Array.isArray(images) || images.length === 0) {
       return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
+    }
+    if (typeof DataTransfer === "undefined") {
+      return { ok: false, attached: 0, expected: images.length, verified: false, error: "Image transfer unavailable" };
+    }
+    if (images.length > 1) {
+      let attached = 0;
+      for (const image of images) {
+        const result = await attachImagesToPage([image], inputEl);
+        if (!result.ok) return { ...result, attached, expected: images.length };
+        attached++;
+      }
+      return { ok: true, attached, expected: images.length, verified: true, method: "sequential" };
     }
     const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     const dt = new DataTransfer();
@@ -3470,12 +3484,11 @@ function _domInstallPageRuntimeFn() {
     const targetEd = findEditor() || inputEl;
     const root = resolveComposerAttachmentRoot(targetEd);
     const beforeCount = countComposerMediaPreviews(root);
-    const beforeGlobal = countComposerMediaPreviews(document);
+    const beforeText = String(root?.textContent || "");
     const hasAttachedSignal = () => {
       if (countComposerMediaPreviews(root) > beforeCount) return true;
-      if (countComposerMediaPreviews(document) > beforeGlobal) return true;
       const txt = String((root && root.textContent) || "");
-      return names.some(n => n && txt.includes(n));
+      return names.some(n => n && txt.includes(n) && !beforeText.includes(n));
     };
     const waitForAttachment = async (polls, stepMs) => {
       for (let i = 0; i < polls; i++) {
@@ -3563,6 +3576,9 @@ function _domInstallPageRuntimeFn() {
 
     if (attachedMethod) {
       await waitUploadSettled();
+      if (hasActiveUploadSpinner(root) || !hasAttachedSignal()) {
+        return { ok: false, attached: 0, expected, verified: false, error: "Upload did not settle" };
+      }
       log("Attached " + expected + " image(s) via " + attachedMethod + " (verified)");
       return { ok: true, attached: expected, expected, verified: true, method: attachedMethod, error: "" };
     }
@@ -3705,7 +3721,7 @@ function _domInstallPageRuntimeFn() {
 
   globalThis.__wsaRuntime = {
     version: 2,
-    rev: 4,
+    rev: 5,
     log,
     computeTailDomRange,
     isVisibleElement,
@@ -4506,7 +4522,7 @@ async function handleBrowserCommand(cmd) {
 }
 
 function _claudeInstallPageRuntimeFn() {
-  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 4) {
+  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 5) {
     return true;
   }
 
@@ -5268,8 +5284,20 @@ function _claudeInstallPageRuntimeFn() {
   }
 
   async function attachImagesToClaude(images, editorEl) {
-    if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") {
+    if (!Array.isArray(images) || images.length === 0) {
       return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
+    }
+    if (typeof DataTransfer === "undefined") {
+      return { ok: false, attached: 0, expected: images.length, verified: false, error: "Image transfer unavailable" };
+    }
+    if (images.length > 1) {
+      let attached = 0;
+      for (const image of images) {
+        const result = await attachImagesToClaude([image], editorEl);
+        if (!result.ok) return { ...result, attached, expected: images.length };
+        attached++;
+      }
+      return { ok: true, attached, expected: images.length, verified: true, method: "sequential" };
     }
     const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     const files = [];
@@ -5332,12 +5360,11 @@ function _claudeInstallPageRuntimeFn() {
       return false;
     };
     const beforeRoot = countAttachments(root);
-    const beforeDoc = countAttachments(document);
+    const beforeText = String(root?.textContent || "");
     const hasAttachedSignal = () => {
       if (countAttachments(root) > beforeRoot) return true;
-      if (countAttachments(document) > beforeDoc) return true;
       const txt = String((root && root.textContent) || "");
-      return names.some(n => n && txt.includes(n));
+      return names.some(n => n && txt.includes(n) && !beforeText.includes(n));
     };
     const waitForAttachment = async (polls, stepMs) => {
       for (let i = 0; i < polls; i++) {
@@ -5410,6 +5437,9 @@ function _claudeInstallPageRuntimeFn() {
         await sleepMs(200);
       }
       await sleepMs(300);
+      if (hasUploadSpinner() || !hasAttachedSignal()) {
+        return { ok: false, attached: 0, expected: files.length, verified: false, error: "Upload did not settle" };
+      }
       return { ok: true, attached: files.length, expected: files.length, verified: true, method: attachedMethod, error: "" };
     }
     return {
@@ -5657,7 +5687,7 @@ function _claudeInstallPageRuntimeFn() {
 
   globalThis.__wsaClaudeRuntime = {
     version: 4,
-    rev: 4,
+    rev: 5,
     turns: Object.create(null),
     findEditor: findClaudeEditor,
     findSendButton: findClaudeSendButton,
@@ -5959,7 +5989,7 @@ function _installWsaDomUtilsFn() {
   if (
     globalThis.__wsaDomUtils &&
     globalThis.__wsaDomUtils.version === 3 &&
-    globalThis.__wsaDomUtils.rev === 5 &&
+    globalThis.__wsaDomUtils.rev === 6 &&
     typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function"
   ) {
     return true;
@@ -6355,8 +6385,20 @@ function _installWsaDomUtilsFn() {
   }
 
   async function attachImagesToEditor(images, editorEl) {
-    if (!Array.isArray(images) || images.length === 0 || typeof DataTransfer === "undefined") {
+    if (!Array.isArray(images) || images.length === 0) {
       return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
+    }
+    if (typeof DataTransfer === "undefined") {
+      return { ok: false, attached: 0, expected: images.length, verified: false, error: "Image transfer unavailable" };
+    }
+    if (images.length > 1) {
+      let attached = 0;
+      for (const image of images) {
+        const result = await attachImagesToEditor([image], editorEl);
+        if (!result.ok) return { ...result, attached, expected: images.length };
+        attached++;
+      }
+      return { ok: true, attached, expected: images.length, verified: true, method: "sequential" };
     }
     const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     const files = [];
@@ -6419,12 +6461,11 @@ function _installWsaDomUtilsFn() {
       return false;
     };
     const beforeRoot = countAttachments(root);
-    const beforeDoc = countAttachments(document);
+    const beforeText = String(root?.textContent || "");
     const hasAttachedSignal = () => {
       if (countAttachments(root) > beforeRoot) return true;
-      if (countAttachments(document) > beforeDoc) return true;
       const txt = String((root && root.textContent) || "");
-      return names.some(n => n && txt.includes(n));
+      return names.some(n => n && txt.includes(n) && !beforeText.includes(n));
     };
     const waitForAttachment = async (polls, stepMs) => {
       for (let i = 0; i < polls; i++) {
@@ -6494,6 +6535,9 @@ function _installWsaDomUtilsFn() {
         await sleepMs(200);
       }
       await sleepMs(300);
+      if (hasUploadSpinner() || !hasAttachedSignal()) {
+        return { ok: false, attached: 0, expected: files.length, verified: false, error: "Upload did not settle" };
+      }
       return { ok: true, attached: files.length, expected: files.length, verified: true, method: attachedMethod, error: "" };
     }
     return {
@@ -7071,7 +7115,7 @@ function _installWsaDomUtilsFn() {
 
   globalThis.__wsaDomUtils = {
     version: 3,
-    rev: 5,
+    rev: 6,
     getClassStr,
     isVisible,
     normalizeCompareText,
@@ -7091,7 +7135,7 @@ function _installWsaDomUtilsFn() {
 }
 
 function _chatgptInstallPageRuntimeFn() {
-  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 5) {
+  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 6) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -7413,7 +7457,7 @@ function _chatgptInstallPageRuntimeFn() {
 
   globalThis.__wsaChatgptRuntime = {
     version: 3,
-    rev: 5,
+    rev: 6,
     turns: Object.create(null),
     findEditor,
     findSendButton,
@@ -7450,7 +7494,7 @@ function _chatgptPollTurnFn(reqId) {
 }
 
 function _deepseekInstallPageRuntimeFn() {
-  if (globalThis.__wsaDeepseekRuntime && globalThis.__wsaDeepseekRuntime.version === 3 && globalThis.__wsaDeepseekRuntime.rev === 4) {
+  if (globalThis.__wsaDeepseekRuntime && globalThis.__wsaDeepseekRuntime.version === 3 && globalThis.__wsaDeepseekRuntime.rev === 5) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -7740,7 +7784,7 @@ function _deepseekInstallPageRuntimeFn() {
 
   globalThis.__wsaDeepseekRuntime = {
     version: 3,
-    rev: 4,
+    rev: 5,
     turns: Object.create(null),
     findEditor,
     findSendButton,
@@ -7777,7 +7821,7 @@ function _deepseekPollTurnFn(reqId) {
 }
 
 function _veniceInstallPageRuntimeFn() {
-  if (globalThis.__wsaVeniceRuntime && globalThis.__wsaVeniceRuntime.version === 1 && globalThis.__wsaVeniceRuntime.rev === 4) {
+  if (globalThis.__wsaVeniceRuntime && globalThis.__wsaVeniceRuntime.version === 1 && globalThis.__wsaVeniceRuntime.rev === 5) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -8145,7 +8189,7 @@ function _veniceInstallPageRuntimeFn() {
 
   globalThis.__wsaVeniceRuntime = {
     version: 1,
-    rev: 4,
+    rev: 5,
     turns: Object.create(null),
     findEditor,
     findSendButton,

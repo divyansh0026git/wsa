@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Tuple, Any, Callable
 
+from .task_skills import select_task_skills, skill_guidance
 from .session import SessionState, is_provider_thread_url
 from .client import WSAClient, ProviderLimitError, PromptTooLongError
 from .tools import (
@@ -1904,7 +1905,7 @@ def _run_visual_critic_bridge(
     state: SessionState,
     client: Any,
     vision_model: str,
-) -> Optional[str]:
+) -> Optional[Dict[str, Any]]:
     """Delegate a 1-turn multimodal visual critique to a synced vision-capable web bridge."""
     if not pending_imgs or not vision_model or not callable(getattr(client, "stream", None)):
         return None
@@ -1938,7 +1939,13 @@ def _run_visual_critic_bridge(
             new_chat=True,
         )
         txt = str((resp or {}).get("content") or "").strip() if isinstance(resp, dict) else ""
-        return txt[:3000] if txt else None
+        # Accept a fenced reply from a web tab, but only consume an explicit verdict.
+        body = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", txt, flags=re.I)
+        verdict = json.loads(body)
+        if (not isinstance(verdict, dict) or type(verdict.get("pass")) is not bool
+                or not isinstance(verdict.get("defects"), list)):
+            return None
+        return verdict
     except Exception:
         return None
 
@@ -2063,7 +2070,18 @@ def execute_agent_loop(
         messages.extend(list(history_messages))
     elif persist_to_state:
         messages.extend(state.messages)
-    messages.append({"role": "user", "content": user_content})
+    outgoing_content = user_content
+    if role == "main" and not free_mode:
+        names = select_task_skills(user_input)
+        if names:
+            block = skill_guidance(names)
+            if isinstance(user_content, list):
+                outgoing_content = [*user_content, {"type": "text", "text": block}]
+            else:
+                outgoing_content = f"{user_content}\n\n{block}"
+            if not quiet_ui:
+                R.print_info("Skills: " + ", ".join(names))
+    messages.append({"role": "user", "content": outgoing_content})
 
     new_messages: List[Dict] = [{"role": "user", "content": user_content}]
 
@@ -2241,7 +2259,7 @@ def execute_agent_loop(
                 R.begin_agent_response()
 
             if event_callback:
-                event_callback("round", {"role": role, "round": round_num + 1})
+                event_callback("round", {"role": role, "round": round_num + 1, "activity": last_tool_hint})
 
             response: Optional[Dict[str, Any]] = None
             stream_aborted = False
@@ -3061,14 +3079,8 @@ def execute_agent_loop(
                         if not tests_exist:
                             verified_after_last_edit = True
                 elif name == "visual_inspect" and not is_err:
-                    visual_clean = (
-                        "Console/JS Errors: 0" in result
-                        and "OVERFLOW_X=" not in result
-                        and "BLANK/UNIFORM RENDER" not in result
-                        and "BROKEN_IMAGES=" not in result
-                        and "OCCLUDED=" not in result
-                        and "Failed Network Requests" not in result
-                    )
+                    visual_clean = result.rstrip().endswith("\nVisual checks: pass")
+                    browser_verified_after_ui_edit = visual_clean
                     verification_evidence.pop(approval_key, None)
                     verification_evidence[approval_key] = {
                         "tool": name,
@@ -3196,29 +3208,44 @@ def execute_agent_loop(
                 from .session import pick_vision_critic_provider, provider_supports_vision
                 critic_text = None
                 critic_model = None
-                if not provider_supports_vision(effective_model):
+                sheets = [img for img in pending_imgs if img.get("source_tool") == "visual_inspect"]
+                if sheets and not provider_supports_vision(effective_model):
                     critic_model = pick_vision_critic_provider(state, exclude=effective_model)
                     if critic_model:
                         telemetry_blob = "\n".join(
                             str(m.get("content") or "")
                             for m in tool_result_messages
-                            if m.get("name") in ("visual_inspect", "browser_inspect", "browser_interact", "inspect_image")
+                            if m.get("name") == "visual_inspect"
                         )
                         if not quiet_ui:
                             R.print_info(f"Routing visual critique to {R.friendly_model_name(critic_model)}…")
                         critic_text = _run_visual_critic_bridge(
-                            pending_imgs, telemetry_blob, state, client, critic_model
+                            sheets, telemetry_blob, state, client, critic_model
                         )
                 if critic_text and critic_model:
+                    verification_evidence.pop("visual_critic", None)
+                    if not critic_text["pass"]:
+                        browser_verified_after_ui_edit = False
+                        verified_after_last_edit = False
+                        verification_evidence["visual_critic"] = {
+                            "tool": "visual_critic", "ok": False, "result_class": "visual_defects",
+                        }
                     vis_msg = {
                         "role": "user",
                         "content": (
                             f"[Visual Critic via {R.friendly_model_name(critic_model)}]:\n"
-                            f"{critic_text}\n\n"
+                            f"{json.dumps(critic_text, ensure_ascii=False)[:3000]}\n\n"
                             "Use these visual findings together with the exact telemetry above to fix any defects "
                             "and verify cleanly."
                         ),
                     }
+                    messages.append(vis_msg)
+                    new_messages.append(vis_msg)
+                elif sheets and not provider_supports_vision(effective_model):
+                    vis_msg = {"role": "user", "content": (
+                        "[Visual inspection] No visual critique was available. Use the reported telemetry "
+                        "and identify any visual judgments that still require inspection."
+                    )}
                     messages.append(vis_msg)
                     new_messages.append(vis_msg)
                 else:

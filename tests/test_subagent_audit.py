@@ -129,6 +129,53 @@ def test_invalid_architect_plan_is_rejected(raw):
     assert subagents._architect_plan_error(raw)
 
 
+@pytest.mark.parametrize("tool_calls,retry_ok,attempts,completed", [
+    (0, False, 2, False), (0, True, 2, True), (1, True, 1, False),
+])
+def test_orchestrated_rule_checker_prerequisite(tmp_path, tool_calls, retry_ok, attempts, completed):
+    state = SessionState(project_root=tmp_path)
+    plan = [
+        {"id": "t5", "title": "Dependency-free unslop rule checker", "owned_files": ["scripts/check.mjs"]},
+        {"id": "t6", "title": "Integration pass", "depends_on": ["t5"], "owned_files": ["README.md"]},
+    ]
+    calls = []
+    timeout = "DOM relay timeout (300s) waiting for the Claude tab to finish answering"
+
+    def role(**kwargs):
+        stage = kwargs.get("label") or kwargs["role"]
+        calls.append(stage)
+        if stage == "architect":
+            return {"ok": True, "final_text": json.dumps(plan)}
+        if stage == "coder:t5":
+            assert "Implement any requested deliverables" in kwargs["prompt"]
+            assert kwargs["owned_files"] == ["scripts/check.mjs"]
+            if calls.count(stage) == 2 and retry_ok:
+                return {"ok": True}
+            return {"ok": False, "aborted_reason": timeout, "tool_calls_count": tool_calls}
+        if kwargs["role"] == "verifier":
+            return {"ok": True, "final_text": '{"verdict":"pass","checks":["checked"],"failures":[]}',
+                    "verification_evidence": [{"ok": True}]}
+        return {"ok": True, "final_text": "done"}
+
+    with patch.object(subagents, "_run_role_agent", side_effect=role), \
+         patch.object(subagents, "_discover_live_relays", return_value=[]), \
+         patch.object(state, "auto_checkpoint"):
+        result = subagents.run_orchestrated_turn("Implement the checker and verify integration", state, Mock())
+
+    assert calls.count("coder:t5") == attempts
+    assert result["ok"] is completed
+    if completed:
+        assert calls[-2:] == ["coder:t6", "verifier#1"]
+    else:
+        assert calls[-1] == "coder:t5"
+        assert [task["status"] for task in result["tasks"]] == ["failed", "blocked"]
+        assert result["verdict"]["failures"] == [
+            {"file": "t5", "issue": timeout}, {"file": "t6", "issue": "Blocked by t5"}
+        ]
+        assert result["summary"] == state.messages[-1]["content"]
+        assert timeout in result["summary"]
+
+
 def test_long_dependency_chain_runs_in_order(tmp_path):
     previous = tools.get_project_root()
     state = SessionState(project_root=tmp_path, dual_lane=True)

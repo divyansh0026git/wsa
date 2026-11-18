@@ -2,3 +2,4 @@ httpx>=0.25
 websocket-client>=1.6
 rich>=13.0
 prompt_toolkit>=3.0
+Pillow>=9.1

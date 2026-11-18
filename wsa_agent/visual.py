@@ -10,7 +10,6 @@ import mimetypes
 import os
 import re
 import shutil
-import socketserver
 import subprocess
 import sys
 import tempfile
@@ -239,14 +238,13 @@ class _EphemeralStaticServer:
 
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = Path(root_dir).resolve()
-        self._httpd: Optional[socketserver.TCPServer] = None
+        self._httpd: Optional[http.server.ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self.base_url: str = ""
 
     def __enter__(self) -> "_EphemeralStaticServer":
         handler = functools.partial(_QuietStaticHandler, directory=str(self.root_dir))
-        socketserver.TCPServer.allow_reuse_address = True
-        self._httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         port = self._httpd.server_address[1]
         self.base_url = f"http://127.0.0.1:{port}"
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
@@ -311,24 +309,32 @@ class _HeadlessCDPClient:
         args.append("about:blank")
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
-        self._proc = subprocess.Popen(
-            args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            creationflags=creationflags,
-        )
+        try:
+            self._proc = subprocess.Popen(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=creationflags,
+            )
 
-        port = self._wait_for_debug_port(timeout=min(self.timeout, 15.0))
-        page_ws_url = self._resolve_page_ws_url(port, timeout=min(self.timeout, 10.0))
-        self._ws = websocket.create_connection(page_ws_url, timeout=self.timeout)
-        self.call("Page.enable")
-        self.call("Runtime.enable")
-        self.call("Network.enable")
-        self.call("Log.enable")
+            port = self._wait_for_debug_port(timeout=min(self.timeout, 15.0))
+            page_ws_url = self._resolve_page_ws_url(port, timeout=min(self.timeout, 10.0))
+            self._ws = websocket.create_connection(page_ws_url, timeout=self.timeout, suppress_origin=True)
+            self.call("Page.enable")
+            self.call("Runtime.enable")
+            self.call("Network.enable")
+            self.call("Log.enable")
+        except BaseException:
+            self.close()
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
+
+    def close(self) -> None:
         try:
             if self._ws is not None:
                 self._ws.close()
@@ -342,6 +348,7 @@ class _HeadlessCDPClient:
             except Exception:
                 try:
                     self._proc.kill()
+                    self._proc.wait(timeout=3.0)
                 except Exception:
                     pass
             try:
@@ -353,7 +360,6 @@ class _HeadlessCDPClient:
         if self._profile_dir is not None:
             shutil.rmtree(self._profile_dir, ignore_errors=True)
             self._profile_dir = None
-        return False
 
     def _wait_for_debug_port(self, timeout: float = 12.0) -> int:
         assert self._profile_dir is not None and self._proc is not None
@@ -612,7 +618,7 @@ def analyze_screenshot_pixels(png_bytes: bytes) -> Dict[str, Any]:
                 "height": im.size[1],
             }
     except Exception:
-        return {"ok": True, "blank": False, "unique_buckets": -1, "std_luma": -1.0}
+        return {"ok": False, "blank": False, "unique_buckets": -1, "std_luma": -1.0}
 
 
 def build_pixel_diff_tile(prev_png: bytes, curr_png: bytes) -> Tuple[Optional[bytes], float]:
@@ -802,18 +808,17 @@ def capture_visual_inspection(
 
                 want_som = bool(annotate and idx == 0)
                 audit = cdp.evaluate(f"{_AUDIT_AND_SOM_JS}({json.dumps(want_som)}, 24, {int(vw)})") or {}
-                png = cdp.screenshot_png(full_page=bool(full_page and idx == 0))
+                display_png = cdp.screenshot_png(full_page=bool(full_page and idx == 0))
                 if want_som:
-                    try:
-                        cdp.evaluate(_REMOVE_SOM_JS)
-                    except Exception:
-                        pass
-
-                pix = analyze_screenshot_pixels(png)
+                    cdp.evaluate(_REMOVE_SOM_JS)
+                    clean_png = cdp.screenshot_png(full_page=bool(full_page))
+                else:
+                    clean_png = display_png
+                pix = analyze_screenshot_pixels(clean_png)
                 if idx == 0:
-                    primary_png = png
+                    primary_png = clean_png
                 lbl = f"{vname.upper()} {vw}x{vh}" + (" [SoM]" if want_som else "")
-                tiles.append((lbl, png))
+                tiles.append((lbl, display_png))
                 viewport_reports.append({
                     "name": vname,
                     "width": vw,
@@ -892,6 +897,7 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
     if res.get("diff_pct") is not None:
         lines.append(f"Pixel diff vs previous capture: {res['diff_pct']:.2f}% pixels changed")
 
+    passed = bool(res.get("viewports")) and not any(res.get(k) for k in ("console_errors", "page_exceptions", "failed_requests"))
     for vp in res.get("viewports") or []:
         audit = vp.get("audit") or {}
         pix = vp.get("pixels") or {}
@@ -899,6 +905,8 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
         vw, vh = vp.get("width", 0), vp.get("height", 0)
         ovx = int(audit.get("overflow_x") or 0)
         status_flags = []
+        if not audit or not pix.get("ok"):
+            status_flags.append("INCOMPLETE_CAPTURE")
         if ovx > 0:
             status_flags.append(f"OVERFLOW_X=+{ovx}px")
         if pix.get("blank"):
@@ -909,6 +917,8 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
             status_flags.append(f"OCCLUDED={len(audit['occluded_controls'])}")
         if audit.get("clipped_texts"):
             status_flags.append(f"CLIPPED_TEXT={len(audit['clipped_texts'])}")
+        if status_flags:
+            passed = False
         flag_str = " | ".join(status_flags) if status_flags else "layout clean"
         lines.append(
             f"Viewport [{vname} {vw}x{vh}]: {flag_str} "
@@ -945,4 +955,5 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
         lines.append(f"Failed Network Requests ({len(res['failed_requests'])}):")
         for fr in res["failed_requests"][:6]:
             lines.append(f"  - {fr}")
+    lines.append("Visual checks: pass" if passed else "Visual checks: fail")
     return "\n".join(lines)

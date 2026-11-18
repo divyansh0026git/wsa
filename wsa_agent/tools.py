@@ -5743,6 +5743,7 @@ def _queue_visual_bytes(
     b64 = base64.b64encode(raw).decode("ascii")
     with _pending_images_lock:
         _pending_images.append({
+            "source_tool": "visual_inspect",
             "filename": fname,
             "path": str(shot_path),
             "mime_type": str(mime or "image/png"),
@@ -5800,4 +5801,6 @@ def _visual_inspect(
         height=int(res.get("image_height") or 0),
         label="visual_contact_sheet",
     )
-    return format_visual_report(res, saved_path_summary=saved_desc or "queued")
+    if not saved_desc:
+        return "[Error] Visual capture could not be attached (empty or over the image size limit)."
+    return format_visual_report(res, saved_path_summary=saved_desc)

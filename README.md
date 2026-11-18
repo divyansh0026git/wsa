@@ -109,6 +109,24 @@ wsa [options] [query ...]
 - **Orchestration & Controls**: `/team [auto|on|off|single-chat|role-chats|dual|single]`, `/plan [task]`, `/verify [scope]`, `/perm [smart|strict|auto]`, `/tools`, `/rules`
 - **Shortcuts**: `Shift+Tab` cycles permission mode, `?` shows keyboard shortcuts, `@path` attaches workspace files, and `Ctrl+C` interrupts the active turn cleanly.
 
+## Built-in task skills and orchestrator output
+
+WSA selects local skill excerpts from the original request. A website build uses
+Anthropic's [frontend-design](https://github.com/anthropics/skills/tree/main/skills/frontend-design).
+Feature implementation uses [test-driven-development](https://github.com/obra/superpowers/tree/main/skills/test-driven-development).
+Crashes, failing tests, and repair passes use [systematic-debugging](https://github.com/obra/superpowers/tree/main/skills/systematic-debugging).
+Relevant skills can run together. WSA prints the selection once and passes it to each scoped
+role. Naming a skill explicitly also selects it. Free mode omits the skills.
+
+The upstream Markdown and license files ship under `wsa_agent/skills/`. Anthropic's
+skill uses Apache-2.0, and the two Superpowers skills use MIT. Updates are distributed
+with WSA. Selecting a skill works offline and adds no model round-trip.
+
+Orchestrator mode streams the web provider's available response text, keeps stage output
+in terminal history, and shows tool calls, returned line ranges, and short file previews.
+A coder whose browser response times out before its first tool call can retry once.
+If it still fails, the report includes the worker error and the tasks waiting on it.
+
 ## Permissions & Safety
 
 WSA starts in **smart** mode. File reads and ordinary workspace edits proceed automatically, while shell commands, Python/test execution, deletions, rollbacks, protected config edits, custom tools, and browser/network actions prompt for one-time approval showing the exact action and arguments. Subagents inherit the same approval policy; denying an action stops dependent steps, and noninteractive runs fail closed when approval is required.

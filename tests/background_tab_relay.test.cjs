@@ -427,8 +427,44 @@ async function cancelledMutationCannotRaceStorageWrite() {
   assert.equal(await h.run('setStoredActiveJob('+JSON.stringify(job)+')'),false);
 }
 
+async function unavailableImageTransferFailsForEveryRuntime() {
+  const {run} = harness();
+  for (const name of ['attachImagesToPage', 'attachImagesToClaude', 'attachImagesToEditor']) {
+    const start = source.indexOf('  async function ' + name + '(');
+    assert.ok(start >= 0);
+    const definition = source.slice(start).match(/^[\s\S]*?\r?\n  }(?=\r?\n)/);
+    assert.ok(definition);
+    const attach = run('(' + definition[0] + ')');
+    assert.equal((await attach([], null)).ok, true);
+    const unavailable = await attach([{filename: 'screen.png', data: 'YQ=='}], null);
+    assert.equal(unavailable.ok, false);
+    assert.equal(unavailable.verified, false);
+    assert.equal(unavailable.expected, 1);
+  }
+}
+
+async function unchangedProgressRetriesAfterLostPost() {
+  const h = harness({activeRelayJob: job});
+  h.ctx.sendBusyHeartbeat = async () => true;
+  h.ctx.ensurePageRuntime = async () => true;
+  h.ctx.chrome.scripting = {executeScript: async () => [{result: {text: 'Inspecting layout', done: false}}]};
+  const sent = [];
+  h.ctx.fetch = async (url, options) => {
+    assert.ok(url.endsWith('/pending-progress'));
+    sent.push(JSON.parse(options.body));
+    if (sent.length === 1) throw Error('lost post');
+    return {ok: true, json: async () => ({ok: true})};
+  };
+  await h.run('pollActiveRelayJob()');
+  assert.equal(h.storage.activeRelayJob.sentText, undefined);
+  await h.run('pollActiveRelayJob()');
+  await h.run('pollActiveRelayJob()');
+  assert.deepEqual(sent.map(x => x.response), ['Inspecting layout', 'Inspecting layout']);
+  assert.equal(h.storage.activeRelayJob.sentText, 'Inspecting layout');
+}
+
 (async()=>{
-  for (const test of [acquisitionIsSingleFlight, completionWaitsForAcknowledgement, failedDeliverySurvivesRestart,
+  for (const test of [unavailableImageTransferFailsForEveryRuntime, unchangedProgressRetriesAfterLostPost, acquisitionIsSingleFlight, completionWaitsForAcknowledgement, failedDeliverySurvivesRestart,
     rejectedAndInvalidAcknowledgements, failedErrorDeliverySurvivesRestart, backgroundProvidersAndRestart,
     submissionOwnsJobBeforeAwait, restartDuringPreparationReportsFailure, longRunningJobIsNotSilentlyDropped,
     staleHeartbeatCannotEraseCompletion, alarmRecoversWithoutTabKeepalive, visibilitySwitchWakesWorker,

@@ -7934,9 +7934,9 @@ async function run() {
     vm.runInNewContext("(" + bg._installWsaDomUtilsFn.toString() + ")()", sb);
     vm.runInNewContext("(" + bg._chatgptInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaDomUtils.version, 3);
-    assert.strictEqual(sb.__wsaDomUtils.rev, 5);
+    assert.strictEqual(sb.__wsaDomUtils.rev, 6);
     assert.strictEqual(sb.__wsaChatgptRuntime.version, 3);
-    assert.strictEqual(sb.__wsaChatgptRuntime.rev, 5);
+    assert.strictEqual(sb.__wsaChatgptRuntime.rev, 6);
     assert.strictEqual(sb.__wsaChatgptRuntime.findSendButton(ed), realSend);
 
     sb.__wsaDomUtils.setEditablePromptText(ed, promptMulti);
@@ -8013,7 +8013,7 @@ async function run() {
     vm.runInNewContext("(" + bg._installWsaDomUtilsFn.toString() + ")()", sb);
     vm.runInNewContext("(" + bg._claudeInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaClaudeRuntime.version, 4);
-    assert.strictEqual(sb.__wsaClaudeRuntime.rev, 4);
+    assert.strictEqual(sb.__wsaClaudeRuntime.rev, 5);
     assert.strictEqual(sb.__wsaClaudeRuntime.findSendButton(ed), sendBtn);
 
     sb.__wsaClaudeRuntime.setPromptText(ed, promptMulti);
@@ -8066,7 +8066,7 @@ async function run() {
     vm.runInNewContext("(" + bg._installWsaDomUtilsFn.toString() + ")()", sb);
     vm.runInNewContext("(" + bg._deepseekInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaDeepseekRuntime.version, 3);
-    assert.strictEqual(sb.__wsaDeepseekRuntime.rev, 4);
+    assert.strictEqual(sb.__wsaDeepseekRuntime.rev, 5);
     assert.strictEqual(sb.__wsaDeepseekRuntime.findSendButton(ta), sendDiv);
 
     await vm.runInNewContext("(" + bg._deepseekStartTurnFn.toString() + ")('ds-h', 'DeepSeek prompt', [])", sb);
@@ -8119,7 +8119,7 @@ async function run() {
     });
     vm.runInNewContext("(" + bg._domInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaRuntime.version, 2);
-    assert.strictEqual(sb.__wsaRuntime.rev, 4);
+    assert.strictEqual(sb.__wsaRuntime.rev, 5);
     assert.strictEqual(sb.__wsaRuntime.findEnabledSendButton(ed), sendBtn);
 
     sb.__wsaRuntime.setPromptTextInEditor(ed, promptMulti);
@@ -8255,8 +8255,8 @@ async function run() {
     await sw.ensurePageRuntime(1, "chatgpt");
     assert.strictEqual(execCheckCalls, 1);
     assert.deepStrictEqual(installedFns, ["_installWsaDomUtilsFn", "_chatgptInstallPageRuntimeFn"]);
-    assert.strictEqual(pageCtx.__wsaDomUtils.rev, 5);
-    assert.strictEqual(pageCtx.__wsaChatgptRuntime.rev, 5);
+    assert.strictEqual(pageCtx.__wsaDomUtils.rev, 6);
+    assert.strictEqual(pageCtx.__wsaChatgptRuntime.rev, 6);
 
     installedFns.length = 0;
     await sw.ensurePageRuntime(1, "chatgpt");
