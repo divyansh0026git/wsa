@@ -111,16 +111,19 @@ wsa [options] [query ...]
 
 ## Built-in task skills and orchestrator output
 
-WSA selects local skill excerpts from the original request. A website build uses
-Anthropic's [frontend-design](https://github.com/anthropics/skills/tree/main/skills/frontend-design).
+WSA selects local skill excerpts from the original request. UI, interface, dashboard,
+website, and frontend work uses Anthropic's
+[frontend-design](https://github.com/anthropics/skills/tree/main/skills/frontend-design)
+together with Damir Sokolovsky's [unslop](https://github.com/heydamir/unslop) by default.
 Feature implementation uses [test-driven-development](https://github.com/obra/superpowers/tree/main/skills/test-driven-development).
 Crashes, failing tests, and repair passes use [systematic-debugging](https://github.com/obra/superpowers/tree/main/skills/systematic-debugging).
 Relevant skills can run together. WSA prints the selection once and passes it to each scoped
 role. Naming a skill explicitly also selects it. Free mode omits the skills.
 
 The upstream Markdown and license files ship under `wsa_agent/skills/`. Anthropic's
-skill uses Apache-2.0, and the two Superpowers skills use MIT. Updates are distributed
-with WSA. Selecting a skill works offline and adds no model round-trip.
+skill uses Apache-2.0, `unslop` uses CC-BY-4.0 (credit: Damir Sokolovsky / `@heydamir`),
+and the two Superpowers skills use MIT. Updates are distributed with WSA. Selecting a skill
+works offline and adds no model round-trip.
 
 Orchestrator mode streams the web provider's available response text, keeps stage output
 in terminal history, and shows tool calls, returned line ranges, and short file previews.

@@ -9,19 +9,31 @@ from wsa_agent.task_skills import select_task_skills, skill_guidance
 
 
 @pytest.mark.parametrize(("prompt", "names"), [
-    ("Make a premium 3D ecommerce website", ("frontend-design",)),
+    ("Make a premium 3D ecommerce website", ("frontend-design", "unslop")),
+    ("Build a clean analytics interface", ("frontend-design", "unslop")),
+    ("Redesign the frontend dashboard", ("frontend-design", "unslop")),
+    ("Clean up the admin panel", ("frontend-design", "unslop")),
+    ("Unslop this page", ("unslop",)),
     ("Add OAuth2 to the API", ("test-driven-development",)),
+    ("Add a TypeScript interface for the API", ("test-driven-development",)),
     ("Debug a timeout in checkout", ("systematic-debugging",)),
-    ("Fix the broken dashboard layout", ("frontend-design", "systematic-debugging")),
-    ("Build a responsive web app", ("frontend-design", "test-driven-development")),
+    ("Fix the broken dashboard layout", ("frontend-design", "unslop", "systematic-debugging")),
+    ("Build a responsive web app", ("frontend-design", "unslop", "test-driven-development")),
     ("Explain what an API is", ()),
     ("What is systematic debugging?", ()),
     ("Thank you", ()),
 ])
 def test_skill_selection(prompt, names):
     assert select_task_skills(prompt) == names
+    guidance = skill_guidance(names)
     for name in names:
-        assert "[" + name + "]" in skill_guidance(names)
+        assert "[" + name + "]" in guidance
+    if "unslop" in names:
+        assert "@heydamir" in guidance
+        assert "One bright element" in guidance
+        assert "No emoji left in the interface" in guidance
+        assert "references/visuals.md" not in guidance
+        assert "references/rtl.md" not in guidance
 
 
 def test_skill_reaches_each_role_and_single_mode_without_polluting_history(tmp_path):
@@ -34,6 +46,7 @@ def test_skill_reaches_each_role_and_single_mode_without_polluting_history(tmp_p
     def worker(**kwargs):
         seen.append(kwargs["role"])
         assert "[frontend-design]" in kwargs["prompt"]
+        assert "[unslop]" in kwargs["prompt"]
         if kwargs["role"] == "architect":
             return {"ok": True, "final_text": json.dumps(plan)}
         if kwargs["role"] == "verifier":
@@ -52,7 +65,7 @@ def test_skill_reaches_each_role_and_single_mode_without_polluting_history(tmp_p
         result = agent.execute_agent_loop(prompt, state, client, quiet_ui=True)
     assert result["ok"]
     sent = client.stream.call_args.kwargs["messages"]
-    assert any("[frontend-design]" in str(m["content"]) for m in sent if m["role"] == "user")
+    assert any("[frontend-design]" in str(m["content"]) and "[unslop]" in str(m["content"]) for m in sent if m["role"] == "user")
     assert state.messages[0]["content"] == prompt
 
 
