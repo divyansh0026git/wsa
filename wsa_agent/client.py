@@ -75,6 +75,8 @@ def _accumulate_tool_deltas(acc: dict, deltas) -> None:
 def _sanitize_payload(value):
     """Make pasted Windows UTF-16 surrogate text safe for JSON/HTTP encoding."""
     if isinstance(value, str):
+        if value.isascii():
+            return value  # Includes base64 screenshots, which need no Unicode repair.
         try:
             return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
         except Exception:

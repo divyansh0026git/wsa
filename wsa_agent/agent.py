@@ -1905,6 +1905,9 @@ def _run_visual_critic_bridge(
     state: SessionState,
     client: Any,
     vision_model: str,
+    *,
+    relay_id: Optional[str] = None,
+    worker_session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Delegate a 1-turn multimodal visual critique to a synced vision-capable web bridge."""
     if not pending_imgs or not vision_model or not callable(getattr(client, "stream", None)):
@@ -1921,7 +1924,7 @@ def _run_visual_critic_bridge(
             '"severity": "high|medium|low", "issue": "...", "suggested_fix": "..."}], "summary": "..."}'
         ),
     }]
-    for im in pending_imgs[:2]:
+    for im in pending_imgs:
         if im.get("url"):
             critic_parts.append({"type": "image_url", "image_url": {"url": im["url"]}})
     try:
@@ -1935,8 +1938,9 @@ def _run_visual_critic_bridge(
             ],
             model=vision_model,
             use_tools=False,
-            session_id=f"{getattr(state, 'session_id', 'wsa')}:role:visual_critic",
+            session_id=f"{worker_session_id or state.session_id}:role:visual_critic",
             new_chat=True,
+            relay_id=relay_id,
         )
         txt = str((resp or {}).get("content") or "").strip() if isinstance(resp, dict) else ""
         # Accept a fenced reply from a web tab, but only consume an explicit verdict.
@@ -2806,6 +2810,7 @@ def execute_agent_loop(
             if not quiet_ui:
                 R.console.print()
             tool_result_messages: List[Dict] = []
+            capture_keys: List[str] = []
             interrupted_in_tools = False
             has_file_mutations = any(
                 (tc.get("function") or {}).get("name") in (
@@ -3078,19 +3083,19 @@ def execute_agent_loop(
                         browser_verified_after_ui_edit = True
                         if not tests_exist:
                             verified_after_last_edit = True
-                elif name == "visual_inspect" and not is_err:
-                    visual_clean = result.rstrip().endswith("\nVisual checks: pass")
+                elif name == "visual_inspect":
+                    visual_clean = not is_err and result.rstrip().endswith("\nVisual checks: pass")
                     browser_verified_after_ui_edit = visual_clean
                     verification_evidence.pop(approval_key, None)
                     verification_evidence[approval_key] = {
                         "tool": name,
                         "ok": bool(visual_clean),
-                        "result_class": "ok" if visual_clean else "visual_defects",
+                        "result_class": "capture_failed" if is_err else ("ok" if visual_clean else "visual_defects"),
                     }
-                    if visual_clean:
-                        browser_verified_after_ui_edit = True
-                        if not tests_exist:
-                            verified_after_last_edit = True
+                    if not is_err:
+                        capture_keys.append(approval_key)
+                    if visual_clean and not tests_exist:
+                        verified_after_last_edit = True
 
                 _record_tool_history(state, {
                     "turn": state.turn_count,
@@ -3205,31 +3210,37 @@ def execute_agent_loop(
                 break
             pending_imgs = consume_pending_images()
             if pending_imgs:
-                from .session import pick_vision_critic_provider, provider_supports_vision
+                from .session import vision_critic_providers, provider_supports_vision
                 critic_text = None
                 critic_model = None
                 sheets = [img for img in pending_imgs if img.get("source_tool") == "visual_inspect"]
-                if sheets and not provider_supports_vision(effective_model):
-                    critic_model = pick_vision_critic_provider(state, exclude=effective_model)
-                    if critic_model:
-                        telemetry_blob = "\n".join(
-                            str(m.get("content") or "")
-                            for m in tool_result_messages
-                            if m.get("name") == "visual_inspect"
-                        )
+                needs_critic = bool(sheets) and not provider_supports_vision(effective_model)
+                if needs_critic and len(sheets) <= 4:
+                    telemetry_blob = "\n".join(
+                        str(m.get("content") or "")
+                        for m in tool_result_messages
+                        if m.get("name") == "visual_inspect"
+                    )
+                    for critic_model in vision_critic_providers(state, exclude=effective_model):
                         if not quiet_ui:
                             R.print_info(f"Routing visual critique to {R.friendly_model_name(critic_model)}…")
                         critic_text = _run_visual_critic_bridge(
-                            sheets, telemetry_blob, state, client, critic_model
+                            sheets, telemetry_blob, state, client, critic_model,
+                            relay_id=relay_id_override, worker_session_id=effective_session_id,
                         )
+                        if critic_text is not None:
+                            break
+                if needs_critic:
+                    for key in capture_keys:
+                        evidence = verification_evidence.get(key)
+                        if evidence is None:
+                            continue  # A later edit in this batch invalidated the capture.
+                        if critic_text is not None:
+                            evidence["reviewer"] = critic_model
+                        if critic_text is None or not critic_text["pass"]:
+                            evidence.update(ok=False, result_class="review_unavailable" if critic_text is None else "visual_defects")
+                            browser_verified_after_ui_edit = verified_after_last_edit = False
                 if critic_text and critic_model:
-                    verification_evidence.pop("visual_critic", None)
-                    if not critic_text["pass"]:
-                        browser_verified_after_ui_edit = False
-                        verified_after_last_edit = False
-                        verification_evidence["visual_critic"] = {
-                            "tool": "visual_critic", "ok": False, "result_class": "visual_defects",
-                        }
                     vis_msg = {
                         "role": "user",
                         "content": (
@@ -3241,10 +3252,11 @@ def execute_agent_loop(
                     }
                     messages.append(vis_msg)
                     new_messages.append(vis_msg)
-                elif sheets and not provider_supports_vision(effective_model):
+                elif needs_critic:
                     vis_msg = {"role": "user", "content": (
                         "[Visual inspection] No visual critique was available. Use the reported telemetry "
                         "and identify any visual judgments that still require inspection."
+                        + (" Request at most four captures per review." if len(sheets) > 4 else "")
                     )}
                     messages.append(vis_msg)
                     new_messages.append(vis_msg)
@@ -3297,6 +3309,9 @@ def execute_agent_loop(
         # coder completion with a historical failed attempt followed by success.
         checks = list(verification_evidence.values())
         unresolved = any(not e["ok"] for e in checks) if role == "verifier" else not checks[-1]["ok"]
+        if any(e["tool"] == "visual_inspect" and not e["ok"] for e in checks):
+            browser_verified_after_ui_edit = False
+            unresolved = True
         if unresolved:
             aborted_reason = "verification_failed"
     if not quiet_ui and aborted_reason in ("verification_incomplete", "verification_failed", "permission_denied"):

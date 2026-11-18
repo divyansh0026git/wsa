@@ -544,7 +544,8 @@ def get_role_system_prompt(role: str, model_id: str = "gemini") -> str:
             '\nEnd with a JSON block using this exact structure: '
             '{"verdict":"pass","checks":["check name: observed result"],"failures":[],"summary":"result"}. '
             'checks must contain non-empty strings, not objects; failures must contain objects with an issue string. '
-            'Use verdict "fail" for unresolved failures. Never invent successful checks.'
+            'Use verdict "fail" for unresolved failures. When screenshot review was requested, '
+            'cite the observed pixels or the visual reviewer\'s findings. Report an unavailable review as incomplete.'
         )
     return base + (
         "\nFor substantial natural-language requests, infer the required steps from the user's goal, "

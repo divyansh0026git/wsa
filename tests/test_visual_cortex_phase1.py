@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import io
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,36 @@ def test_serialize_relay_images_optimizes_and_encodes():
     assert item["mime_type"] in ("image/webp", "image/jpeg", "image/png")
     decoded = base64.b64decode(item["data"])
     assert len(decoded) < len(big_png) // 2
+
+
+def test_relay_rejects_missing_attachment_before_queueing(monkeypatch):
+    monkeypatch.setattr(relay._relay_req_ctx, "relay_meta", None, raising=False)
+    monkeypatch.setitem(relay._dom_relay, "pending", {})
+    with pytest.raises(RuntimeError, match="IMAGE_ATTACH_FAILED"):
+        next(relay.dom_relay_iter("read both images", images=[(_make_png(8, 8), "image/png"), (b"", "image/png")]))
+    assert not relay._dom_relay["pending"]
+
+
+def test_completed_image_request_reuses_result_without_encoding(monkeypatch):
+    monkeypatch.setattr(relay._relay_req_ctx, "relay_meta", None, raising=False)
+    monkeypatch.setitem(relay._dom_relay, "recent_requests", {
+        "test:gemini:request": {"ts": time.time(), "result": {"text": "seen"}},
+    })
+    monkeypatch.setattr(relay, "_serialize_relay_images", lambda _: pytest.fail("encoded completed request again"))
+    events = list(relay.dom_relay_iter("read image", session_id="test", client_request_id="request",
+                                      images=[(b"already uploaded", "image/png")]))
+    assert events == [("result", {"text": "seen"})]
+
+
+def test_disconnected_bound_browser_cannot_send_to_another_relay(monkeypatch):
+    monkeypatch.setattr(relay._relay_req_ctx, "relay_meta", {"target_relay_id": "offline"}, raising=False)
+    monkeypatch.setitem(relay._dom_relay, "active_relay_id", "other")
+    monkeypatch.setitem(relay._dom_relay, "relays", {"other": {"last_seen": time.time()}})
+    monkeypatch.setitem(relay._dom_relay, "pending", {})
+    monkeypatch.setattr(relay.time, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="offline.*not connected"):
+        next(relay.dom_relay_iter("inspect screenshot"))
+    assert not relay._dom_relay["pending"]
 
 
 def test_background_js_contains_verified_upload_handshake_for_all_providers():

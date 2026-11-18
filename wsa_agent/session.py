@@ -112,8 +112,8 @@ def provider_supports_vision(model_id: str) -> bool:
     return any(low == pid or low.startswith(pid) for pid in VISION_CAPABLE_PROVIDERS)
 
 
-def pick_vision_critic_provider(state: "SessionState", exclude: str = "") -> Optional[str]:
-    """Select the highest-priority synced vision-capable provider tab available for Visual Critic delegation."""
+def vision_critic_providers(state: "SessionState", exclude: str = "") -> List[str]:
+    """Synced screenshot reviewers in preference order."""
     excl = str(exclude or "").strip().lower()
     pmap = getattr(state, "providers_info", None) or {}
     candidates = []
@@ -123,10 +123,11 @@ def pick_vision_critic_provider(state: "SessionState", exclude: str = "") -> Opt
         info = pmap.get(pid)
         if isinstance(info, dict) and info.get("has_tab"):
             candidates.append((prio, pid))
-    if not candidates:
-        return None
-    candidates.sort()
-    return candidates[0][1]
+    return [pid for _, pid in sorted(candidates)]
+
+
+def pick_vision_critic_provider(state: "SessionState", exclude: str = "") -> Optional[str]:
+    return next(iter(vision_critic_providers(state, exclude)), None)
 
 ALL_MODELS = [
     (entry["id"], f"{entry['name']} ({entry['site']}) — {entry['features']}")

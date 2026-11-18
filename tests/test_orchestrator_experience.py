@@ -135,6 +135,67 @@ def test_visual_critic_verdict_controls_worker_evidence(tmp_path, verdict, passe
     assert result["browser_verified"] is passed
 
 
+@pytest.mark.parametrize("worker", ["deepseek", "venice"])
+@pytest.mark.parametrize("available", [(), ("claude",), ("claude", "gemini")])
+def test_worker_records_review_only_after_a_reviewer_answers(tmp_path, worker, available):
+    state = SessionState(project_root=tmp_path, selected_model=worker)
+    state.providers_info = {name: {"has_tab": True} for name in available}
+    reviews = []
+    client = Mock()
+
+    def stream(**request):
+        model = request["model"]
+        if model != worker:
+            reviews.append(model)
+            assert request["relay_id"] == "worker-browser"
+            assert request["session_id"] == "worker-session:role:visual_critic"
+            assert request["use_tools"] is False
+            return {"content": "invalid" if model == "claude" else '{"pass":true,"defects":[]}'}
+        if request["messages"][-1]["role"] == "user" and request["messages"][-1]["content"] == "Inspect layout":
+            return {"tool_calls": [{"id": "v", "function": {"name": "visual_inspect", "arguments": "{}"}}]}
+        return {"content": "Inspection finished", "tool_calls": []}
+
+    client.stream.side_effect = stream
+    photo = {"url": "data:image/png;base64,YQ==", "source_tool": "visual_inspect"}
+    with patch.object(agent, "consume_pending_images", side_effect=[[], [photo]]), \
+         patch("wsa_agent.tools._visual_inspect", return_value="[OK] Captured\nVisual checks: pass"):
+        result = agent.execute_agent_loop("Inspect layout", state, client, role="verifier",
+                                          session_id_override="worker-session", relay_id_override="worker-browser",
+                                          persist_to_state=False, quiet_ui=True)
+    assert reviews == list(available)
+    passed = "gemini" in available
+    assert result["ok"] is passed
+    assert result["browser_verified"] is passed
+    evidence, = result["verification_evidence"]
+    assert evidence["result_class"] == ("ok" if passed else "review_unavailable")
+    assert evidence.get("reviewer") == ("gemini" if passed else None)
+
+
+def test_visual_baselines_and_interactions_use_actual_viewport(tmp_path, monkeypatch):
+    monkeypatch.setattr(visual, "_PREVIOUS_CAPTURES", {})
+    with patch.object(visual, "_HeadlessCDPClient") as constructor, \
+         patch.object(visual, "analyze_screenshot_pixels", return_value={"ok": True}), \
+         patch.object(visual, "compose_contact_sheet", return_value=(b"sheet", "image/png", 1, 1)), \
+         patch.object(visual, "build_pixel_diff_tile", return_value=(b"diff", 0.0)) as diff:
+        cdp = constructor.return_value.__enter__.return_value
+        cdp.screenshot_png.return_value = b"capture"
+        def capture(width, theme):
+            result = visual.capture_visual_inspection(
+                "http://localhost/", project_root=tmp_path, browser_bin="test-browser",
+                viewports=[{"width": width, "height": 400}], color_scheme=theme,
+                actions=[{"type": "wait", "ms": 1}], annotate=False,
+            )
+            assert result["ok"], result
+            return result["diff_pct"]
+        assert capture(200, "light") is None
+        assert cdp.set_viewport.call_args.args == (240, 400)
+        assert cdp.set_viewport.call_args.kwargs == {"mobile": True}
+        assert capture(700, "light") is None
+        assert capture(240, "dark") is None
+        assert capture(240, "light") == 0.0
+        diff.assert_called_once()
+
+
 @pytest.mark.parametrize("kind", ["click", "hover", "drag", "scroll", "type"])
 def test_missing_action_target_fails_inspection(kind):
     client = visual._HeadlessCDPClient("test-browser")

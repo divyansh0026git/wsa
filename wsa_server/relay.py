@@ -1397,12 +1397,12 @@ def _optimize_image_for_vlm(
             needs_compress = len(data) > max_bytes
             if not needs_resize and not needs_compress:
                 return data, mime
-            work = im.copy()
-        if needs_resize:
-            scale = max_edge / float(max(work.size))
-            new_size = (max(1, int(round(work.size[0] * scale))), max(1, int(round(work.size[1] * scale))))
-            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
-            work = work.resize(new_size, resample=resample)
+            if needs_resize:
+                scale = max_edge / max(w, h)
+                new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
+                work = im.resize(new_size, resample=Image.Resampling.LANCZOS)
+            else:
+                work = im.copy()
         candidates: list[tuple[bytes, str]] = []
         # Try WebP first (best text/UI edge sharpness per byte and preserves alpha).
         try:
@@ -1536,7 +1536,6 @@ def dom_relay_iter(
     site_name = spec["site"]
     site_url = spec["url"]
     prov_label = spec["label"]
-    relay_images_payload = _serialize_relay_images(images)
     if new_chat is None:
         with _CONFIG_LOCK:
             new_chat = bool(CONFIG.get("dom_relay_new_chat", True))
@@ -1612,11 +1611,13 @@ def dom_relay_iter(
         with _dom_relay_lock:
             relays = _dom_relay.get("relays") or {}
             active_id = _dom_relay.get("active_relay_id") or ""
-            target_relay_id = requested_relay_id if (requested_relay_id and requested_relay_id in relays) else active_id
+            target_relay_id = requested_relay_id or active_id
             explicit_lock = bool(requested_relay_id or _dom_relay.get("explicit_relay_lock"))
             target_entry = relays.get(target_relay_id) or {}
             target_label = target_entry.get("label") or target_entry.get("browser") or target_relay_id or "browser"
-            if explicit_lock and target_relay_id and target_entry:
+            if requested_relay_id and not target_entry:
+                offline_err = f"Bound {prov_label} relay '{requested_relay_id}' is not connected."
+            elif explicit_lock and target_relay_id and target_entry:
                 age = now - float(target_entry.get("last_seen") or 0.0)
                 if age > 60.0:
                     offline_err = (
@@ -1631,12 +1632,18 @@ def dom_relay_iter(
         else:
             raise RuntimeError(offline_err)
 
+    relay_images_payload = _serialize_relay_images(images)
+    if images and len(relay_images_payload) != min(len(images), 4):
+        raise RuntimeError("[IMAGE_ATTACH_FAILED] Could not prepare all requested attachments for the browser.")
+
     dedup_entry = None
     with _dom_relay_lock:
         now_route = time.time()
         relays = _dom_relay.get("relays") or {}
         active_id = _dom_relay.get("active_relay_id") or ""
-        target_relay_id = requested_relay_id if (requested_relay_id and requested_relay_id in relays) else active_id
+        target_relay_id = requested_relay_id or active_id
+        if requested_relay_id and requested_relay_id not in relays:
+            raise RuntimeError(f"Bound {prov_label} relay '{requested_relay_id}' is not connected.")
         routed_to_provider_relay = False
         if not requested_relay_id and not _dom_relay.get("explicit_relay_lock"):
             fb_relay_id = _find_provider_fallback_relay_locked(relays, target_relay_id, prov, now_route)

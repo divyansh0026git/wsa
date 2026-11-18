@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# Previous primary viewport screenshot bytes keyed by canonical target string (for pixel diff tile)
+# Keep baselines separate for each workspace, target and capture configuration.
 _PREVIOUS_CAPTURES_LOCK = threading.Lock()
-_PREVIOUS_CAPTURES: Dict[str, bytes] = {}
+_PREVIOUS_CAPTURES: Dict[tuple, bytes] = {}
 _MAX_PREVIOUS_CACHE = 16
 
 DEFAULT_VIEWPORTS: List[Dict[str, Any]] = [
@@ -811,6 +811,7 @@ def capture_visual_inspection(
                 is_mobile = bool(vp.get("mobile", vw <= 520))
                 cdp.set_viewport(vw, vh, mobile=is_mobile)
                 if idx == 0:
+                    primary_viewport = (vw, vh, is_mobile)
                     cdp.navigate(target_url, wait_ms=wait_ms)
                 else:
                     cdp.drain_events(250)
@@ -837,12 +838,8 @@ def capture_visual_inspection(
                 })
 
             if actions:
-                first_vp = vp_list[0]
-                cdp.set_viewport(
-                    int(first_vp.get("width") or 1440),
-                    int(first_vp.get("height") or 900),
-                    mobile=bool(first_vp.get("mobile", False)),
-                )
+                width, height, mobile = primary_viewport
+                cdp.set_viewport(width, height, mobile=mobile)
                 action_log = cdp.run_actions(actions)
                 after_png = cdp.screenshot_png(full_page=False)
                 tiles.append(("AFTER INTERACTION", after_png))
@@ -852,13 +849,13 @@ def capture_visual_inspection(
             failed_requests = list(cdp.failed_requests)
 
         if include_diff and primary_png is not None:
+            baseline = (Path(project_root).resolve(), cache_key, primary_viewport,
+                        color_scheme, bool(full_page), bool(disable_webgl))
             with _PREVIOUS_CAPTURES_LOCK:
-                prev_png = _PREVIOUS_CAPTURES.get(cache_key)
-                _PREVIOUS_CAPTURES[cache_key] = primary_png
+                prev_png = _PREVIOUS_CAPTURES.pop(baseline, None)
+                _PREVIOUS_CAPTURES[baseline] = primary_png
                 if len(_PREVIOUS_CAPTURES) > _MAX_PREVIOUS_CACHE:
-                    oldest = next(iter(_PREVIOUS_CAPTURES))
-                    if oldest != cache_key:
-                        _PREVIOUS_CAPTURES.pop(oldest, None)
+                    _PREVIOUS_CAPTURES.pop(next(iter(_PREVIOUS_CAPTURES)))
             if prev_png is not None and len(tiles) < 4:
                 diff_bytes, pct = build_pixel_diff_tile(prev_png, primary_png)
                 if diff_bytes:
