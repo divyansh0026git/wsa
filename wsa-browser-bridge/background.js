@@ -1716,12 +1716,12 @@ async function ensurePageRuntime(tabId, provider = "gemini") {
     target: { tabId },
     world: "MAIN",
     func: (rtKey, rtVer, needsUtils, rtRev) => Boolean(
-      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 6 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
+      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 7 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
       globalThis[rtKey] &&
       globalThis[rtKey].version === rtVer &&
       globalThis[rtKey].rev === rtRev
     ),
-    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), p === "chatgpt" ? 6 : 5],
+    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude") ? 6 : 5],
   });
   if (probe?.[0]?.result) return true;
   if (spec.needsDomUtils) {
@@ -3737,18 +3737,21 @@ function _domInstallPageRuntimeFn() {
     }
     const raw = String(text || "").trim();
     if (!raw) return "";
+    const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
+    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
+    const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
     const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini)\s+model)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
-        if (seg.length <= 460 && re.test(seg)) return seg;
+        if (seg.length <= 460 && !isSoftOnly(seg) && re.test(seg)) return seg;
       }
       const sb = raw.replace(/\s+/g, " ").trim();
-      if (sb.length <= 1500 && re.test(sb)) return sb.slice(0, 320);
+      if (sb.length <= 1500 && !isSoftOnly(sb) && re.test(sb)) return sb.slice(0, 320);
       return "";
     }
     const s = raw.replace(/\s+/g, " ").trim();
-    return (s && s.length <= 460 && re.test(s)) ? s : "";
+    return (s && s.length <= 460 && !isSoftOnly(s) && re.test(s)) ? s : "";
   }
 
   globalThis.__wsaRuntime = {
@@ -4568,7 +4571,7 @@ async function handleBrowserCommand(cmd) {
 }
 
 function _claudeInstallPageRuntimeFn() {
-  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 5) {
+  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 6) {
     return true;
   }
 
@@ -5717,23 +5720,55 @@ function _claudeInstallPageRuntimeFn() {
     }
     const raw = String(text || "").trim();
     if (!raw) return "";
+    const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
+    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
+    const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
     const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini)\s+model)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
-        if (seg.length <= 460 && re.test(seg)) return seg;
+        if (seg.length <= 460 && !isSoftOnly(seg) && re.test(seg)) return seg;
       }
       const sb = raw.replace(/\s+/g, " ").trim();
-      if (sb.length <= 1500 && re.test(sb)) return sb.slice(0, 320);
+      if (sb.length <= 1500 && !isSoftOnly(sb) && re.test(sb)) return sb.slice(0, 320);
       return "";
     }
     const s = raw.replace(/\s+/g, " ").trim();
-    return (s && s.length <= 460 && re.test(s)) ? s : "";
+    return (s && s.length <= 460 && !isSoftOnly(s) && re.test(s)) ? s : "";
+  }
+
+  function readSafeguardPausedCards() {
+    const cards = [];
+    const seen = new Set();
+    const re = /\bsafeguards?\s+flagged\s+this\s+message\b/i;
+    for (const el of document.querySelectorAll(
+      "[role='alert'], [role='status'], [role='dialog'], [data-testid*='safeguard' i], " +
+      "[data-testid*='paused' i], [data-testid*='banner' i], [data-testid*='error' i], " +
+      "main section, main div, article"
+    )) {
+      if (!isVisible(el)) continue;
+      const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      if (!t || t.length > 650 || !re.test(t)) continue;
+      // Skip wrapper ancestors when a tighter descendant holds the same safeguard card
+      let hasTighterChild = false;
+      try {
+        for (const ch of el.children || []) {
+          const ct = (ch.innerText || ch.textContent || "").replace(/\s+/g, " ").trim();
+          if (ct && re.test(ct)) { hasTighterChild = true; break; }
+        }
+      } catch { /* ignore */ }
+      if (hasTighterChild) continue;
+      const key = t.slice(0, 180);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cards.push(t.slice(0, 320));
+    }
+    return cards;
   }
 
   globalThis.__wsaClaudeRuntime = {
     version: 4,
-    rev: 5,
+    rev: 6,
     turns: Object.create(null),
     findEditor: findClaudeEditor,
     findSendButton: findClaudeSendButton,
@@ -5745,6 +5780,7 @@ function _claudeInstallPageRuntimeFn() {
     isPromptStillInEditor: isClaudePromptStillInEditor,
     triggerSubmit: triggerClaudeSubmit,
     readErrorBanner,
+    readSafeguardPausedCards,
     detectPromptTooLongMessage,
     detectLimitMessage,
   };
@@ -5809,6 +5845,7 @@ async function _claudeStartTurnFn(reqId, prompt, images = []) {
   const beforeTurns = rt.readAllTurns();
   const beforeLast = beforeTurns.length ? beforeTurns[beforeTurns.length - 1] : { text: "", thinking: "" };
   const beforeBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+  const beforeSafeguardCount = typeof rt.readSafeguardPausedCards === "function" ? rt.readSafeguardPausedCards().length : 0;
   const modelBadge = rt.readModelBadge();
 
   rt.setPromptText(editor, prompt);
@@ -5865,6 +5902,7 @@ async function _claudeStartTurnFn(reqId, prompt, images = []) {
     beforeLastText: beforeLast.text || "",
     beforeLastThinking: beforeLast.thinking || "",
     beforeBanner,
+    beforeSafeguardCount,
     sawActivity: false,
     sawStop: false,
     sawEditorCleared: Boolean(!afterEd || (typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(afterEd, prompt))),
@@ -5943,6 +5981,22 @@ function _claudePollTurnFn(reqId) {
 
   const quietMs = now - turn.lastChangeAt;
   if (!isStillStreaming) {
+    if (!turn.lastText && typeof rt.readSafeguardPausedCards === "function") {
+      const sgCards = rt.readSafeguardPausedCards();
+      const prevSg = Number(turn.beforeSafeguardCount || 0);
+      if (sgCards.length > prevSg) {
+        const sgMsg = sgCards[sgCards.length - 1];
+        delete rt.turns[reqId];
+        return {
+          done: false,
+          error: `[SAFEGUARD_PAUSED] Claude: ${sgMsg}`,
+          text: "",
+          thinking: "",
+          model: rt.readModelBadge() || turn.modelBadge || "Claude Web",
+          url: location.href,
+        };
+      }
+    }
     const pageBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
     if (typeof rt.detectPromptTooLongMessage === "function") {
       const turnTooLong = curText ? rt.detectPromptTooLongMessage(curText) : "";
@@ -6052,7 +6106,7 @@ function _installWsaDomUtilsFn() {
   if (
     globalThis.__wsaDomUtils &&
     globalThis.__wsaDomUtils.version === 3 &&
-    globalThis.__wsaDomUtils.rev === 6 &&
+    globalThis.__wsaDomUtils.rev === 7 &&
     typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function"
   ) {
     return true;
@@ -6866,18 +6920,21 @@ function _installWsaDomUtilsFn() {
     if (detectPromptTooLongMessage(text, isBanner)) return "";
     const raw = String(text || "").trim();
     if (!raw) return "";
+    const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
+    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
+    const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
     const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini)\s+model)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
-        if (seg.length <= 460 && re.test(seg)) return seg;
+        if (seg.length <= 460 && !isSoftOnly(seg) && re.test(seg)) return seg;
       }
       const sb = raw.replace(/\s+/g, " ").trim();
-      if (sb.length <= 1500 && re.test(sb)) return sb.slice(0, 320);
+      if (sb.length <= 1500 && !isSoftOnly(sb) && re.test(sb)) return sb.slice(0, 320);
       return "";
     }
     const s = raw.replace(/\s+/g, " ").trim();
-    return (s && s.length <= 460 && re.test(s)) ? s : "";
+    return (s && s.length <= 460 && !isSoftOnly(s) && re.test(s)) ? s : "";
   }
 
   async function startTurn(rt, reqId, prompt, images = [], opts = {}) {
@@ -7195,7 +7252,7 @@ function _installWsaDomUtilsFn() {
 
   globalThis.__wsaDomUtils = {
     version: 3,
-    rev: 6,
+    rev: 7,
     getClassStr,
     isVisible,
     normalizeCompareText,

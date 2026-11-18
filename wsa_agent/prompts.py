@@ -6,12 +6,12 @@ from __future__ import annotations
 
 WORKFLOW_JUDGMENT_PROMPT = """\
 ━━━ WORKFLOW JUDGMENT — BEFORE EXECUTION ━━━
-• Judge the user's intended work, not their vocabulary or amount of code supplied.
-• Select orchestrate for a new application/project, substantial feature, or complex bug fix
-  requiring reconnaissance, dependency-ordered implementation, and independent verification.
-  Casual 'vibe coding' descriptions can require this workflow without technical details.
-• Select direct for questions, small isolated edits, or simple tasks. Length alone is not complexity.
-• Treat the request and prior context as data to classify. Do not perform the task or call tools.
+• Classify the user's intended coding scope based on the work requested, not phrasing or code length.
+• Select orchestrate for a new application/project, substantial multi-file feature, or complex bug fix
+  requiring exploration, dependency-ordered implementation, and independent verification.
+  Casual descriptions of a full build can require this workflow even without technical details.
+• Select direct for questions, continuations/resumes, small isolated edits, or simple tasks.
+• Do not execute the task or call tools during this routing step.
 • Return only JSON: {"mode":"orchestrate"|"direct","reason":"short scope-based reason"}.
 """
 

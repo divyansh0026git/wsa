@@ -102,10 +102,27 @@ class ProviderLimitError(RuntimeError):
         self.provider = _detect_provider_from_hint(provider) or str(provider or "").strip().lower()
 
 
+_SOFT_LIMIT_WARNING_RE = re.compile(
+    r"\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b",
+    re.IGNORECASE,
+)
+
+_HARD_LIMIT_BLOCK_RE = re.compile(
+    r"(?:\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b)",
+    re.IGNORECASE,
+)
+
+
 def is_provider_limit_error(message: Optional[str]) -> bool:
     """Return True when an error string describes a web provider rate or usage limit."""
     msg = str(message or "")
     if is_prompt_too_long_error(msg):
+        return False
+    if "[SAFEGUARD_PAUSED]" in msg:
+        return False
+    # Non-blocking informational usage warnings (e.g. "Over 90% of your 5-hour limit")
+    # must not be misclassified as an exhausted/blocked account unless a hard-block signal is present.
+    if _SOFT_LIMIT_WARNING_RE.search(msg) and not _HARD_LIMIT_BLOCK_RE.search(msg):
         return False
     return bool(_PROVIDER_LIMIT_ERR_RE.search(msg))
 
@@ -888,6 +905,11 @@ def _sys_role_meta(messages: Optional[list]) -> tuple:
             if m:
                 return m.group(1).lower(), head
             if (
+                "workflow judgment" in first.lower()
+                or '"mode":"orchestrate"|"direct"' in txt.lower()
+            ):
+                return "workflow_router", "\n".join(lines)[:600]
+            if (
                 "engineering workflow preferences for this repository:" in txt.lower()
                 or "my engineering workflow preferences for working together on this codebase:" in txt.lower()
                 or "my engineering preferences for this project:" in txt.lower()
@@ -1094,7 +1116,11 @@ def prepare_session_relay_prompt(
     prev_t_sig = str(sess.get("tools_sig") or "")
     prev_s_sig = str(sess.get("sys_sig") or "")
     tools_changed = bool(tools) and bool(prev_t_sig) and (cur_tools_sig != prev_t_sig)
-    role_changed = bool(cur_sys_sig) and bool(prev_s_sig) and (cur_sys_sig != prev_s_sig)
+    role_changed = bool(cur_sys_sig) and (
+        cur_sys_sig == "workflow_router"
+        or (bool(prev_s_sig) and cur_sys_sig != prev_s_sig)
+        or (not prev_s_sig and cur_sys_sig != "main")
+    )
 
     non_sys = [m for m in (messages or []) if m.get("role") != "system"]
     last_asst_idx = -1

@@ -159,6 +159,8 @@ def _extract_limit_error_from_dict(err_obj: object, status_code: int = 0) -> Opt
     err_type = str(inner.get("type") or "").strip().lower()
     msg = str(inner.get("message") or "").strip()
     prov = str(inner.get("provider") or "").strip().lower()
+    if "[safeguard_paused]" in msg.lower():
+        return None
     limit_flag = bool(inner.get("limit_reached"))
     if (
         status_code == 429

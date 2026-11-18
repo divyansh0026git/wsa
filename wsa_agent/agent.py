@@ -3627,15 +3627,26 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
     team_mode = str(getattr(state, "team_mode", "auto") or "auto").lower()
     if not free_mode and team_mode != "off":
         complexity = classify_task_complexity(user_input, state)
-        # Cheap conversational turns need no extra model round. All substantive
-        # auto-mode requests get a tool-free judgment, including nontechnical builds.
-        simple = str(user_input or "").strip().lower() in {
+        # Cheap conversational turns and natural resume/continuation replies need no extra
+        # model round. Substantive auto-mode requests get a tool-free judgment.
+        _u_norm = " ".join(str(user_input or "").strip().lower().split())
+        simple = _u_norm in {
             "hi", "hello", "thanks", "thank you", "continue", "continue your task",
+            "please continue", "go on", "keep going", "proceed", "resume",
         }
         simple = simple or bool(re.fullmatch(
             r"\s*(?:try again(?: last call)?|retry(?: the)?(?: last)?(?: call| step| request)?|resume(?: the)?(?: workflow| task)?)\s*[.!]?\s*",
             str(user_input or ""), re.I,
         ))
+        if not simple and len(_u_norm.split()) <= 28 and not re.search(
+            r"\b(?:build|create|make|develop|implement|redesign|refactor|migrate|add\s+(?:a|an|new)|write\s+(?:a|an|new))\b",
+            _u_norm,
+        ):
+            if re.search(
+                r"\b(?:please\s+continue|continue\s+(?:from\s+)?where|pick\s+up\s+where|resume\s+(?:from\s+)?where|sorry\s+i\s+interrupted|keep\s+going|carry\s+on)\b",
+                _u_norm,
+            ):
+                simple = True
         if team_mode == "auto" and not simple and complexity.get("mode") != "orchestrate":
             decision = _judge_workflow(user_input, state, client, complexity)
             if decision.get("stopped"):
@@ -3684,12 +3695,18 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
                 sr = None
             if sr is not None:
                 sr.start_thinking()
+            req_txt = user_input.encode("utf-8", "replace")[:10000].decode("utf-8", "ignore").strip()
+            prior_ctx = str(getattr(state, "context_summary", "") or "").encode("utf-8", "replace")[:1500].decode("utf-8", "ignore").strip()
+            router_user_msg = (
+                "Workflow routing check for the next user request (do not execute the task or call tools; "
+                'reply only with JSON: {"mode":"orchestrate"|"direct","reason":"short scope-based reason"}):\n\n'
+                f"User request:\n{req_txt}"
+            )
+            if prior_ctx:
+                router_user_msg += f"\n\nPrior session summary:\n{prior_ctx}"
             stream_kwargs: Dict[str, Any] = dict(
                 messages=[{"role": "system", "content": WORKFLOW_JUDGMENT_PROMPT},
-                          {"role": "user", "content": json.dumps({
-                              "request": user_input.encode("utf-8", "replace")[:10000].decode("utf-8", "ignore"),
-                              "prior_context": str(getattr(state, "context_summary", "")).encode("utf-8", "replace")[:1500].decode("utf-8", "ignore"),
-                          }, ensure_ascii=False)}],
+                          {"role": "user", "content": router_user_msg}],
                 model=state.model,
                 use_tools=False,
                 session_id=f"{state.session_id}:role:workflow_router",

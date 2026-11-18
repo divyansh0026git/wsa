@@ -218,3 +218,194 @@ def test_orchestrator_prompts_encourage_deep_agentic_work_without_fast_mode_rush
     assert by_role["architect"]["max_rounds"] >= 14
     assert by_role["coder"]["max_rounds"] >= 40
     assert by_role["verifier"]["max_rounds"] >= 20
+
+
+def test_continuation_after_interruption_skips_workflow_router(tmp_path):
+    """Natural continuation/resume replies after an interruption must not waste a router turn."""
+    from wsa_agent import agent
+
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    state.active_chat_url = "https://claude.ai/chat/existing-thread"
+    state.chat_urls["claude"] = "https://claude.ai/chat/existing-thread"
+
+    prompts = [
+        "please continue, sorry i interrupted, continue from where you left, recall all the thinking steps again",
+        "please continue from where you left off",
+        "sorry i interrupted, keep going",
+    ]
+    for prompt in prompts:
+        with patch.object(agent, "_judge_workflow") as judge, \
+             patch.object(agent, "execute_agent_loop", return_value={"ok": True}) as execute:
+            res = agent.run_turn(prompt, state, Mock())
+        assert res["ok"] is True
+        judge.assert_not_called()
+        execute.assert_called_once()
+
+
+def test_workflow_router_frames_prompt_cleanly_and_preserves_system_directive_on_pinned_chat(tmp_path):
+    """Workflow judgment must never send a naked JSON blob or lose its system directive on a reused chat_url."""
+    from wsa_agent import agent
+    from wsa_server import multimodal as mm
+
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    state.active_chat_url = "https://claude.ai/chat/live-coding-thread"
+    state.chat_urls["claude"] = "https://claude.ai/chat/live-coding-thread"
+
+    captured = {}
+
+    class CaptureClient:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return {"content": '{"mode": "direct", "reason": "small follow-up"}'}
+
+    dec = agent._judge_workflow("update the footer copy", state, CaptureClient(), {"mode": "direct"})
+    assert dec["mode"] == "direct"
+    user_msg = captured["messages"][1]["content"]
+    assert not user_msg.lstrip().startswith('{"request":')
+    assert '"prior_context": ""' not in user_msg
+    assert "Workflow routing check" in user_msg
+    assert "update the footer copy" in user_msg
+
+    # Verify relay preserves WORKFLOW_JUDGMENT_PROMPT even on a freshly seeded pinned chat_url
+    sid = f"{state.session_id}:role:workflow_router"
+    with patch.dict(relay._dom_relay, {"sessions": {}, "relays": {}, "active_relay_id": ""}):
+        assert relay.seed_session_hint_url(sid, state.active_chat_url, provider="claude") is True
+        full_p, _ = mm.messages_to_prompt(captured["messages"], None, provider="claude")
+        prompt_to_send, _, _, is_new, hint_url = relay.prepare_session_relay_prompt(
+            sid, captured["messages"], None, full_p, [], provider="claude"
+        )
+    assert is_new is False
+    assert hint_url == state.active_chat_url
+    assert "WORKFLOW JUDGMENT" in prompt_to_send
+    assert "update the footer copy" in prompt_to_send
+
+
+def test_soft_percentage_usage_warning_is_not_treated_as_limit_reached():
+    """Soft percentage badges like 'Over 90% of your 5-hour limit' must not trigger ProviderLimitError."""
+    import subprocess
+    from pathlib import Path
+
+    assert relay.is_provider_limit_error("✦ Over 90% of your 5-hour limit") is False
+    assert relay.is_provider_limit_error("[LIMIT_REACHED] Claude: ✦ Over 90% of your 5-hour limi") is False
+    assert relay.is_provider_limit_error("[SAFEGUARD_PAUSED] Claude: safeguards flagged this message") is False
+    assert relay.is_provider_limit_error("5-hour limit reached · Your limit will reset at 8:00 PM.") is True
+    assert relay.is_provider_limit_error("[LIMIT_REACHED] Claude: 5-hour limit") is True
+
+    bg_path = (Path(__file__).resolve().parent.parent / "wsa-browser-bridge" / "background.js").as_posix()
+    js = f"""
+const assert = require("assert");
+const bg = require({json.dumps(bg_path)});
+globalThis.document = {{ querySelectorAll: () => [], querySelector: () => null }};
+assert.strictEqual(bg._installWsaDomUtilsFn(), true);
+const u = globalThis.__wsaDomUtils;
+assert.strictEqual(u.detectLimitMessage("✦ Over 90% of your 5-hour limit", true), "");
+assert.strictEqual(u.detectLimitMessage("80% of your weekly limit", true), "");
+assert.ok(u.detectLimitMessage("5-hour limit reached · Your limit will reset at 8:00 PM.", true));
+assert.ok(u.detectLimitMessage("You've reached your 5-hour limit until 9:00 PM.", true));
+"""
+    proc = subprocess.run(["node", "-e", js], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+
+
+def test_claude_safeguard_paused_card_detected_without_false_limit():
+    """Claude's Paused/safeguards card must return [SAFEGUARD_PAUSED] immediately, not [LIMIT_REACHED]."""
+    import subprocess
+    from pathlib import Path
+
+    bg_path = (Path(__file__).resolve().parent.parent / "wsa-browser-bridge" / "background.js").as_posix()
+    js = f"""
+const assert = require("assert");
+const bg = require({json.dumps(bg_path)});
+
+class MockElement {{
+  constructor(tag, attrs, text) {{
+    this.tagName = tag.toUpperCase();
+    this.children = [];
+    this.innerText = text;
+    this.textContent = text;
+    this.className = attrs.className || "";
+    this._attrs = attrs;
+  }}
+  getAttribute(k) {{ return this._attrs[k] || null; }}
+  hasAttribute(k) {{ return Object.prototype.hasOwnProperty.call(this._attrs, k); }}
+  getBoundingClientRect() {{ return {{ width: 320, height: 60 }}; }}
+  focus() {{}}
+  click() {{}}
+  dispatchEvent() {{ return true; }}
+  querySelectorAll() {{ return []; }}
+  querySelector() {{ return null; }}
+  closest() {{ return null; }}
+}}
+globalThis.Element = MockElement;
+const makeEl = (tag, attrs, text) => new MockElement(tag, attrs, text);
+
+const editor = makeEl("div", {{ contenteditable: "true", className: "ProseMirror" }}, "");
+const sendBtn = makeEl("button", {{ "aria-label": "Send message" }}, "Send");
+const softBadge = makeEl("div", {{ role: "status" }}, "✦ Over 90% of your 5-hour limit");
+const elements = [editor, sendBtn, softBadge];
+
+globalThis.window = {{
+  getComputedStyle: () => ({{ display: "block", visibility: "visible", opacity: "1" }}),
+  getSelection: () => ({{ removeAllRanges() {{}}, addRange() {{}} }}),
+}};
+globalThis.location = {{ href: "https://claude.ai/chat/test-sg" }};
+globalThis.document = {{
+  querySelectorAll(sel) {{
+    const s = String(sel || "");
+    if (s.includes("safeguard") || s.includes("main section")) {{
+      return elements.filter(e => e.getAttribute("role") === "status" || e.getAttribute("role") === "alert" || e.getAttribute("data-testid") === "safeguard-card");
+    }}
+    if (s.includes("role='alert'") || s.includes("role='status'")) {{
+      return elements.filter(e => e.getAttribute("role") === "status" || e.getAttribute("role") === "alert");
+    }}
+    if (s.includes("Stop") || s.includes("stop")) return [];
+    if (s.includes("Send") || s.includes("send")) return [sendBtn];
+    if (s.includes("ProseMirror") || s.includes("contenteditable")) return [editor];
+    return [];
+  }},
+  querySelector(sel) {{
+    const list = this.querySelectorAll(sel);
+    return list.length ? list[0] : null;
+  }},
+  execCommand() {{ return true; }},
+  createRange() {{ return {{ selectNodeContents() {{}}, collapse() {{}} }}; }},
+}};
+
+assert.strictEqual(bg._installWsaDomUtilsFn(), true);
+assert.strictEqual(bg._claudeInstallPageRuntimeFn(), true);
+
+(async () => {{
+  const startRes = await bg._claudeStartTurnFn("req-sg-1", "hello");
+  assert.strictEqual(startRes.ok, true, JSON.stringify(startRes));
+  // Add Claude safeguard card after submit
+  elements.push(makeEl("div", {{ "data-testid": "safeguard-card" }}, "Paused Sonnet 5.5's safeguards flagged this message. Details: [reasoning_extraction]"));
+  const pollRes = bg._claudePollTurnFn("req-sg-1");
+  assert.ok(String(pollRes.error || "").startsWith("[SAFEGUARD_PAUSED] Claude:"), "Unexpected error: " + pollRes.error);
+  assert.ok(String(pollRes.error || "").includes("reasoning_extraction"), pollRes.error);
+
+  // Starting a fresh turn when an old safeguard card is still visible must NOT immediately false-trigger
+  const startRes2 = await bg._claudeStartTurnFn("req-sg-2", "fresh prompt");
+  assert.strictEqual(startRes2.ok, true);
+  const pollRes2 = bg._claudePollTurnFn("req-sg-2");
+  assert.ok(!pollRes2.error, "Old safeguard card falsely triggered new turn: " + pollRes2.error);
+}})().catch(err => {{ console.error(err); process.exit(1); }});
+"""
+    proc = subprocess.run(["node", "-e", js], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+
+
+def test_judge_workflow_falls_back_cleanly_on_safeguard_pause(tmp_path):
+    """A [SAFEGUARD_PAUSED] error during workflow judgment must fall back locally without limit recovery."""
+    from wsa_agent import agent, client as client_mod
+
+    # Client dict extractor must never classify [SAFEGUARD_PAUSED] as a provider limit
+    assert client_mod._extract_limit_error_from_dict({
+        "error": {"message": "[SAFEGUARD_PAUSED] Claude: safeguards flagged this message", "provider": "claude"}
+    }) is None
+
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    fallback = {"mode": "direct", "reasons": ["local"]}
+    failing_client = Mock()
+    failing_client.stream.side_effect = ConnectionError("API error: [SAFEGUARD_PAUSED] Claude: safeguards flagged this message")
+    dec = agent._judge_workflow("some ambiguous request", state, failing_client, fallback)
+    assert dec is fallback
