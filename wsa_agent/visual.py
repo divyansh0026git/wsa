@@ -250,16 +250,18 @@ class _EphemeralStaticServer:
 
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = Path(root_dir).resolve()
-        self._httpd: Optional[http.server.ThreadingHTTPServer] = None
+        self._httpd: Optional[http.server.HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self.base_url: str = ""
 
     def __enter__(self) -> "_EphemeralStaticServer":
+        from wsa_server.server import ThreadedServer
+
         handler = functools.partial(_QuietStaticHandler, directory=str(self.root_dir))
-        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self._httpd = ThreadedServer(("127.0.0.1", 0), handler)
         port = self._httpd.server_address[1]
         self.base_url = f"http://127.0.0.1:{port}"
-        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
         self._thread.start()
         return self
 

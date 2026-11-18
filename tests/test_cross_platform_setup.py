@@ -18,6 +18,17 @@ def test_server_bind_does_not_resolve_hostname():
             server.server_close()
 
 
+def test_local_visual_preview_serves_without_reverse_dns(tmp_path):
+    from urllib.request import urlopen
+    from wsa_agent.visual import _EphemeralStaticServer
+
+    (tmp_path / "card.txt").write_bytes(b"preview")
+    with patch("socket.getfqdn", side_effect=AssertionError("unexpected DNS lookup")):
+        with _EphemeralStaticServer(tmp_path) as preview:
+            with urlopen(preview.base_url + "/card.txt", timeout=3) as response:
+                assert response.read() == b"preview"
+
+
 def test_posix_shell_command_uses_native_shell():
     with patch.object(tools.sys, "platform", "darwin"), \
          patch.object(tools, "_run_subprocess_tree_safe", return_value=(37, "", "", False)) as run:
