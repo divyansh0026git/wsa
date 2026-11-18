@@ -229,6 +229,18 @@ class _QuietStaticHandler(http.server.SimpleHTTPRequestHandler):
                 return
         super().do_GET()
 
+    def send_head(self):
+        # The entry page and its subresources must resolve within the served project.
+        root = Path(self.directory).resolve()
+        path = Path(self.translate_path(self.path)).resolve()
+        candidates = [path]
+        if path.is_dir():
+            candidates.extend((path / index).resolve() for index in ("index.html", "index.htm"))
+        if any(not candidate.is_relative_to(root) for candidate in candidates):
+            self.send_error(403)
+            return None
+        return super().send_head()
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
 
@@ -529,7 +541,7 @@ class _HeadlessCDPClient:
         log_lines: List[str] = []
         for act in actions or []:
             if not isinstance(act, dict):
-                continue
+                raise ValueError("Each visual action must be an object")
             kind = str(act.get("type") or act.get("action") or "").strip().lower()
             selector = str(act.get("selector") or "").strip()
             if kind == "wait":
@@ -539,9 +551,11 @@ class _HeadlessCDPClient:
                 continue
             if kind == "scroll":
                 if selector:
-                    self.evaluate(
+                    found = self.evaluate(
                         f"(function(){{ var e=document.querySelector({json.dumps(selector)}); if(e) e.scrollIntoView({{block:'center'}}); return !!e; }})()"
                     )
+                    if not found:
+                        raise ValueError(f"Scroll target was not found: {selector}")
                     log_lines.append(f"scroll({selector})")
                 else:
                     y = int(act.get("y") or 500)
@@ -586,11 +600,15 @@ class _HeadlessCDPClient:
             elif kind == "type":
                 text = str(act.get("text") or "")
                 if selector:
-                    self.evaluate(f"(function(){{ var e=document.querySelector({json.dumps(selector)}); if(e) e.focus(); return !!e; }})()")
+                    focused = self.evaluate(f"(function(){{ var e=document.querySelector({json.dumps(selector)}); if(e) e.focus(); return !!e && document.activeElement === e; }})()")
+                    if not focused:
+                        raise ValueError(f"Typing target could not be focused: {selector}")
                 if text:
                     self.call("Input.insertText", {"text": text})
                     self.drain_events(150)
                     log_lines.append(f"type({selector or 'focused'})")
+            else:
+                raise ValueError(f"Cannot perform visual action {kind!r} on {selector or (cx, cy)}")
         return log_lines
 
 
@@ -744,17 +762,15 @@ def _resolve_target_url(target: str, project_root: Path) -> Tuple[str, Optional[
         return raw, None, raw
     root = Path(project_root).resolve()
     cand = (root / raw).resolve() if raw else root
+    if not cand.is_relative_to(root):
+        raise ValueError("Visual target must be within the project")
     if cand.is_dir():
         index_html = cand / "index.html"
         if not index_html.is_file():
             raise FileNotFoundError(f"No index.html found in directory: {cand}")
-        rel = index_html.relative_to(root).as_posix() if root in index_html.parents else "index.html"
-        srv_root = root if root in index_html.parents else cand
-        return rel, srv_root, f"local:{index_html}"
+        return index_html.relative_to(root).as_posix(), root, f"local:{index_html}"
     if cand.is_file():
-        srv_root = root if (root == cand.parent or root in cand.parents) else cand.parent
-        rel = cand.relative_to(srv_root).as_posix()
-        return rel, srv_root, f"local:{cand}"
+        return cand.relative_to(root).as_posix(), root, f"local:{cand}"
     raise FileNotFoundError(f"Visual target not found: {target}")
 
 

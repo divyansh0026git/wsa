@@ -133,3 +133,15 @@ def test_visual_critic_verdict_controls_worker_evidence(tmp_path, verdict, passe
     assert calls == ["deepseek", "gemini", "deepseek"]
     assert result["ok"] is passed
     assert result["browser_verified"] is passed
+
+
+@pytest.mark.parametrize("kind", ["click", "hover", "drag", "scroll", "type"])
+def test_missing_action_target_fails_inspection(kind):
+    client = visual._HeadlessCDPClient("test-browser")
+    with patch.object(client, "evaluate", return_value=None), pytest.raises(ValueError):
+        client.run_actions([{"type": kind, "selector": "#missing", "text": "hello"}])
+
+
+def test_local_capture_stays_within_project(tmp_path):
+    with pytest.raises(ValueError, match="within the project"):
+        visual._resolve_target_url(str(tmp_path.parent), tmp_path)
