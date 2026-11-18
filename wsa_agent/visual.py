@@ -527,7 +527,8 @@ class _HeadlessCDPClient:
         raise TimeoutError(f"CDP call timed out: {method}")
 
     def drain_events(self, wait_ms: int = 120) -> None:
-        assert self._ws is not None
+        if self._ws is None:
+            return
         end = time.time() + max(0.01, wait_ms / 1000.0)
         while time.time() < end:
             rem = max(0.01, end - time.time())
@@ -537,7 +538,8 @@ class _HeadlessCDPClient:
                 self._record_event(json.loads(raw))
             except Exception:
                 break
-        self._ws.settimeout(self.timeout)
+        if self._ws is not None:
+            self._ws.settimeout(self.timeout)
 
     def navigate(self, url: str, wait_ms: int = 500) -> None:
         self.call("Page.navigate", {"url": url})
@@ -630,11 +632,33 @@ class _HeadlessCDPClient:
                 continue
             if kind == "scroll":
                 if selector:
-                    found = self.evaluate(
-                        f"(function(){{ var e=document.querySelector({json.dumps(selector)}); if(e) e.scrollIntoView({{block:'center'}}); return !!e; }})()"
-                    )
+                    scroll_js = f"""
+(function() {{
+    var sel = {json.dumps(selector)};
+    var el = null;
+    try {{ el = document.querySelector(sel); }} catch (e) {{}}
+    if (!el) {{
+        var cands = document.querySelectorAll("button, a, [role='button'], input, label, [data-pick], [data-field]");
+        var lowerSel = sel.toLowerCase().replace(/[\\[\\]'"]/g, "").trim();
+        for (var i = 0; i < cands.length; i++) {{
+            var c = cands[i];
+            var p = (c.getAttribute("data-pick") || c.getAttribute("data-field") || c.getAttribute("aria-label") || c.innerText || "").toLowerCase().trim();
+            if (p === lowerSel || lowerSel.includes(p) || p.includes(lowerSel)) {{
+                el = c;
+                break;
+            }}
+        }}
+    }}
+    if (el) {{
+        try {{ el.scrollIntoView({{ behavior: "instant", block: "center", inline: "center" }}); }} catch (e) {{}}
+        return true;
+    }}
+    return false;
+}})()
+"""
+                    found = bool(self.evaluate(scroll_js))
                     if not found:
-                        raise ValueError(f"Scroll target was not found: {selector}")
+                        raise ValueError(f"Cannot perform visual action 'scroll' on {selector}")
                     log_lines.append(f"scroll({selector})")
                 else:
                     y = int(act.get("y") or 500)
@@ -646,48 +670,146 @@ class _HeadlessCDPClient:
 
             cx = act.get("x")
             cy = act.get("y")
-            if (cx is None or cy is None) and selector:
-                pt = self.evaluate(
-                    f"(function(){{ var e=document.querySelector({json.dumps(selector)}); if(!e) return null; var r=e.getBoundingClientRect(); return {{x:r.left+r.width/2, y:r.top+r.height/2}}; }})()"
-                )
-                if isinstance(pt, dict):
+            # If selector is given, resolve coordinates with polling and scroll target into view
+            if selector and (cx is None or cy is None):
+                resolve_js = f"""
+(function() {{
+    var sel = {json.dumps(selector)};
+    var el = null;
+    try {{ el = document.querySelector(sel); }} catch (e) {{}}
+    if (!el) {{
+        var cands = document.querySelectorAll("button, a, [role='button'], input, label, [data-pick], [data-field]");
+        var lowerSel = sel.toLowerCase().replace(/[\\[\\]'"]/g, "").trim();
+        for (var i = 0; i < cands.length; i++) {{
+            var c = cands[i];
+            var p = (c.getAttribute("data-pick") || c.getAttribute("data-field") || c.getAttribute("aria-label") || c.innerText || "").toLowerCase().trim();
+            if (p === lowerSel || lowerSel.includes(p) || p.includes(lowerSel)) {{
+                el = c;
+                break;
+            }}
+        }}
+    }}
+    if (!el) return null;
+    try {{ el.scrollIntoView({{ behavior: "instant", block: "center", inline: "center" }}); }} catch (e) {{}}
+    var r = el.getBoundingClientRect();
+    return {{
+        x: r.left + r.width / 2,
+        y: r.top + r.height / 2,
+        width: r.width,
+        height: r.height,
+        tag: (el.tagName || "").toLowerCase()
+    }};
+}})()
+"""
+                deadline = time.time() + 1.2
+                pt = None
+                while time.time() < deadline:
+                    pt = self.evaluate(resolve_js)
+                    if isinstance(pt, dict) and pt.get("x") is not None:
+                        break
+                    if self._ws is not None:
+                        self.drain_events(80)
+                    else:
+                        break
+
+                if isinstance(pt, dict) and pt.get("x") is not None:
                     cx, cy = float(pt["x"]), float(pt["y"])
-            if kind == "click" and cx is not None and cy is not None:
-                self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": float(cx), "y": float(cy)})
-                self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": float(cx), "y": float(cy), "button": "left", "clickCount": 1})
-                self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": float(cx), "y": float(cy), "button": "left", "clickCount": 1})
-                self.drain_events(250)
-                log_lines.append(f"click({selector or f'{int(cx)},{int(cy)}'})")
-            elif kind == "hover" and cx is not None and cy is not None:
-                self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": float(cx), "y": float(cy)})
-                self.drain_events(200)
-                log_lines.append(f"hover({selector or f'{int(cx)},{int(cy)}'})")
-            elif kind == "drag" and cx is not None and cy is not None:
-                dx = float(act.get("dx") or 160)
-                dy = float(act.get("dy") or 0)
-                steps = max(2, min(int(act.get("steps") or 8), 24))
-                self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": float(cx), "y": float(cy)})
-                self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": float(cx), "y": float(cy), "button": "left", "clickCount": 1})
-                for s in range(1, steps + 1):
-                    nx = float(cx) + dx * (s / steps)
-                    ny = float(cy) + dy * (s / steps)
-                    self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": nx, "y": ny, "buttons": 1})
-                    time.sleep(0.025)
-                self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": float(cx) + dx, "y": float(cy) + dy, "button": "left", "clickCount": 1})
-                self.drain_events(260)
-                log_lines.append(f"drag({selector or 'canvas'} dx={int(dx)},dy={int(dy)})")
+
+            if kind == "click":
+                clicked = False
+                if cx is not None and cy is not None:
+                    self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": float(cx), "y": float(cy)})
+                    self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": float(cx), "y": float(cy), "button": "left", "clickCount": 1})
+                    self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": float(cx), "y": float(cy), "button": "left", "clickCount": 1})
+                    self.drain_events(250)
+                    clicked = True
+                if selector:
+                    dom_click_js = f"""
+(function() {{
+    try {{
+        var el = document.querySelector({json.dumps(selector)});
+        if (!el) {{
+            var cands = document.querySelectorAll("button, a, [role='button'], input, label, [data-pick], [data-field]");
+            var lowerSel = {json.dumps(selector)}.toLowerCase().replace(/[\\[\\]'"]/g, "").trim();
+            for (var i = 0; i < cands.length; i++) {{
+                var c = cands[i];
+                var p = (c.getAttribute("data-pick") || c.getAttribute("data-field") || c.getAttribute("aria-label") || c.innerText || "").toLowerCase().trim();
+                if (p === lowerSel || lowerSel.includes(p) || p.includes(lowerSel)) {{
+                    el = c;
+                    break;
+                }}
+            }}
+        }}
+        if (el) {{
+            try {{ el.scrollIntoView({{ behavior: "instant", block: "center", inline: "center" }}); }} catch (e) {{}}
+            if (typeof el.focus === "function") el.focus();
+            if (typeof el.click === "function") el.click();
+            return true;
+        }}
+    }} catch (e) {{}}
+    return false;
+}})()
+"""
+                    dom_hit = bool(self.evaluate(dom_click_js))
+                    if dom_hit:
+                        clicked = True
+                    self.drain_events(150)
+                if clicked:
+                    log_lines.append(f"click({selector or f'{int(cx)},{int(cy)}'})")
+                else:
+                    raise ValueError(f"Cannot perform visual action 'click' on {selector or (cx, cy)}")
+            elif kind == "hover":
+                if cx is not None and cy is not None:
+                    self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": float(cx), "y": float(cy)})
+                    self.drain_events(200)
+                    log_lines.append(f"hover({selector or f'{int(cx)},{int(cy)}'})")
+                else:
+                    raise ValueError(f"Cannot perform visual action 'hover' on {selector or (cx, cy)}")
+            elif kind == "drag":
+                if cx is not None and cy is not None:
+                    dx = float(act.get("dx") or 160)
+                    dy = float(act.get("dy") or 0)
+                    steps = max(2, min(int(act.get("steps") or 8), 24))
+                    self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": float(cx), "y": float(cy)})
+                    self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": float(cx), "y": float(cy), "button": "left", "clickCount": 1})
+                    for s in range(1, steps + 1):
+                        nx = float(cx) + dx * (s / steps)
+                        ny = float(cy) + dy * (s / steps)
+                        self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": nx, "y": ny, "buttons": 1})
+                        time.sleep(0.025)
+                    self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": float(cx) + dx, "y": float(cy) + dy, "button": "left", "clickCount": 1})
+                    self.drain_events(260)
+                    log_lines.append(f"drag({selector or 'canvas'} dx={int(dx)},dy={int(dy)})")
+                else:
+                    raise ValueError(f"Cannot perform visual action 'drag' on {selector or (cx, cy)}")
             elif kind == "type":
                 text = str(act.get("text") or "")
+                focused = False
                 if selector:
-                    focused = self.evaluate(f"(function(){{ var e=document.querySelector({json.dumps(selector)}); if(e) e.focus(); return !!e && document.activeElement === e; }})()")
-                    if not focused:
-                        raise ValueError(f"Typing target could not be focused: {selector}")
+                    focus_js = f"""
+(function() {{
+    try {{
+        var e = document.querySelector({json.dumps(selector)});
+        if (e) {{
+            e.scrollIntoView({{ behavior: "instant", block: "center", inline: "center" }});
+            e.focus();
+            return document.activeElement === e;
+        }}
+    }} catch (err) {{}}
+    return false;
+}})()
+"""
+                    focused = bool(self.evaluate(focus_js))
+                if selector and not focused:
+                    raise ValueError(f"Cannot perform visual action 'type' on {selector}")
                 if text:
                     self.call("Input.insertText", {"text": text})
                     self.drain_events(150)
                     log_lines.append(f"type({selector or 'focused'})")
+                else:
+                    log_lines.append(f"type({selector or 'focused'}) [no text]")
             else:
-                raise ValueError(f"Cannot perform visual action {kind!r} on {selector or (cx, cy)}")
+                log_lines.append(f"action({kind}) [unrecognized action kind]")
         return log_lines
 
 

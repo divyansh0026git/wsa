@@ -156,7 +156,7 @@ assert.ok(rt.countComposerMediaPreviews(form) > 0, "Composer must have media pre
 globalThis.__wsaActiveJob = {{
   reqId: "gm-shot-1",
   startedAt: Date.now() - 3000,
-  prompt: "Inspect screenshot",
+  prompt: "Describe this UI screenshot",
   submitRetries: 0,
   lastRetryAt: Date.now() - 3000,
   beforeRelayObj: {{}},

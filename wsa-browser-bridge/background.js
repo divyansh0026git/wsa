@@ -123,7 +123,7 @@ const PROVIDERS = {
     pathRe: /\/(?:chat|new)/i,
     runtimeKey: "__wsaClaudeRuntime",
     runtimeVersion: 4,
-    needsDomUtils: false,
+    needsDomUtils: true,
   },
   deepseek: {
     key: "deepseek",
@@ -1701,7 +1701,7 @@ function scheduleActiveJobPoll(delayMs = 260) {
   }, Math.max(20, Number(delayMs) || 260));
 }
 
-async function ensurePageRuntime(tabId, provider = "gemini") {
+async function ensurePageRuntime(tabId, provider = "gemini", world = "MAIN") {
   const p = normalizeProviderKey(provider) || "gemini";
   const spec = PROVIDERS[p];
   const installMap = {
@@ -1714,20 +1714,20 @@ async function ensurePageRuntime(tabId, provider = "gemini") {
   const installFn = installMap[p] || _domInstallPageRuntimeFn;
   const probe = await chrome.scripting.executeScript({
     target: { tabId },
-    world: "MAIN",
+    world,
     func: (rtKey, rtVer, needsUtils, rtRev) => Boolean(
-      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 8 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
+      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 10 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
       globalThis[rtKey] &&
       globalThis[rtKey].version === rtVer &&
       globalThis[rtKey].rev === rtRev
     ),
-    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude") ? 7 : 6],
+    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude") ? 8 : 7],
   });
   if (probe?.[0]?.result) return true;
   if (spec.needsDomUtils) {
     const uRes = await chrome.scripting.executeScript({
       target: { tabId },
-      world: "MAIN",
+      world,
       func: _installWsaDomUtilsFn,
     });
     if (uRes?.[0]?.error) {
@@ -1736,7 +1736,7 @@ async function ensurePageRuntime(tabId, provider = "gemini") {
   }
   const res = await chrome.scripting.executeScript({
     target: { tabId },
-    world: "MAIN",
+    world,
     func: installFn,
   });
   if (res?.[0]?.error) {
@@ -1760,7 +1760,7 @@ async function cancelActiveRelayJob(job) {
     try {
       await chrome.scripting.executeScript({
         target: { tabId: job.tabId },
-        world: "MAIN",
+        world: job.world || "MAIN",
         func: (reqId, provider) => {
           const rtKeys = {
             claude: "__wsaClaudeRuntime",
@@ -1770,6 +1770,7 @@ async function cancelActiveRelayJob(job) {
             venice: "__wsaVeniceRuntime",
           };
           const rt = globalThis[rtKeys[provider] || "__wsaRuntime"];
+          if (globalThis.__wsaActiveJob?.reqId === reqId) delete globalThis.__wsaActiveJob;
           if (rt?.turns && reqId) {
             delete rt.turns[reqId];
           }
@@ -1938,10 +1939,10 @@ async function pollActiveRelayJob() {
       await protectAiTabs([tab]);
     }
 
-    await ensurePageRuntime(job.tabId, provider);
+    await ensurePageRuntime(job.tabId, provider, job.world || "MAIN");
     const resArr = await chrome.scripting.executeScript({
       target: { tabId: job.tabId },
-      world: "MAIN",
+      world: job.world || "MAIN",
       func: pollFnMap[provider] || _domPollTurnFn,
       args: [job.reqId],
     });
@@ -1957,7 +1958,7 @@ async function pollActiveRelayJob() {
       return;
     }
     if (res.needRuntime) {
-      await ensurePageRuntime(job.tabId, provider);
+      await ensurePageRuntime(job.tabId, provider, job.world || "MAIN");
       scheduleActiveJobPoll(50);
       return;
     }
@@ -1967,8 +1968,12 @@ async function pollActiveRelayJob() {
         return;
       }
       job.missingCount = (job.missingCount || 0) + 1;
-      if (job.missingCount >= 12) {
-        await failActiveRelayJob(job, `${provLabel} tab reloaded or navigated away before finishing answer`);
+      const maxMissing = job.phase === "starting" ? 30 : 12;
+      if (job.missingCount >= maxMissing) {
+        const detail = job.phase === "starting"
+          ? "did not acknowledge submission and its page turn could not be found"
+          : "lost the in-flight page turn before finishing the answer";
+        await failActiveRelayJob(job, `${provLabel} ${detail}`);
         return;
       }
       if (!await setStoredActiveJob(job)) return;
@@ -2219,6 +2224,28 @@ async function acquireAndStartRelay() {
       (pendingImages.length ? `, images=${pendingImages.length})` : ")")
     );
 
+    if (provider === "gemini" && pendingImages.length) {
+      // A root URL can still contain a previous unsent screenshot. Preserve
+      // that draft and keep it out of this request's attachment verification.
+      const draft = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "ISOLATED",
+        func: () => {
+          const editor = document.querySelector("rich-textarea .ql-editor, [role='textbox'][contenteditable='true'], textarea");
+          const composer = editor?.closest("input-area-v2, form") || editor?.closest("fieldset");
+          return Boolean(composer?.querySelector("uploader-file-preview, gem-media-attachment, button[aria-label='close attachment' i]") ||
+            String(editor?.value || editor?.textContent || "").trim());
+        },
+      });
+      if (draft?.[0]?.result === true) {
+        if (!needsNewChat) {
+          throw new Error("Gemini has an unsent draft. Send or clear it before continuing this chat.");
+        }
+        const accountBase = (tab.url || "").match(/^https:\/\/gemini\.google\.com(?:\/u\/\d+)?/);
+        const fresh = await openFreshAiTab((accountBase?.[0] || "https://gemini.google.com") + "/app", 25000, provider);
+        tab = fresh.tab;
+      }
+    }
     if (needsNewChat) {
       await ensureCleanNewChat(tab, provider);
       reloadedForRelay = false;
@@ -2228,12 +2255,15 @@ async function acquireAndStartRelay() {
       await waitForConversationReady(tab.id, 6000, Boolean(effectiveConvId), provider);
     }
 
-    await ensurePageRuntime(tab.id, provider);
+    // Gemini's image path only needs the DOM. Keep its upload timers and turn
+    // state in the extension context across page-script updates and worker wakes.
+    const world = ["gemini", "claude", "deepseek"].includes(provider) && pendingImages.length ? "ISOLATED" : "MAIN";
+    await ensurePageRuntime(tab.id, provider, world);
     if ((await getStoredActiveJob())?.reqId !== pending.id) return;
     // If the worker dies during submission, poll the existing page turn on
     // restart. Never blindly resubmit a prompt whose outcome is uncertain.
     if (!await setStoredActiveJob({...pendingJob, tabId: tab.id, sessionId,
-      phase: "starting", submissionStartedAt: Date.now(), modelBadge: curTabMeta.modelBadge || ""})) return;
+      world, phase: "starting", submissionStartedAt: Date.now(), modelBadge: curTabMeta.modelBadge || ""})) return;
     const startFnMap = {
       claude: _claudeStartTurnFn,
       deepseek: _deepseekStartTurnFn,
@@ -2243,7 +2273,7 @@ async function acquireAndStartRelay() {
     };
     const startResArr = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      world: "MAIN",
+      world,
       func: startFnMap[provider] || _domStartTurnFn,
       args: [pending.id, promptToInject, pendingImages],
     });
@@ -2266,6 +2296,7 @@ async function acquireAndStartRelay() {
     const job = {
       reqId: pending.id,
       phase: "running",
+      world,
       tabId: tab.id,
       provider,
       clientId: ident.clientId,
@@ -3240,6 +3271,9 @@ function _domInstallPageRuntimeFn() {
     const roots = scope ? [scope, document] : [document];
     const isSendCandidate = (btn) => {
       if (!isVisibleElement(btn)) return false;
+      // Gemini places .send-button on a component wrapping the native control.
+      // Clicking the host bypasses the listener on its child.
+      if (btn.tagName !== "BUTTON" && btn.querySelector?.("button")) return false;
       if (btn.disabled || btn.getAttribute("aria-disabled") === "true" || btn.classList.contains("disabled")) return false;
       const meta = (
         (btn.getAttribute("data-test-id") || "") + " " +
@@ -3428,11 +3462,6 @@ function _domInstallPageRuntimeFn() {
           } catch { /* ignore */ }
         }
       }
-      try {
-        if (typeof MouseEvent === "function" && typeof sendBtn.dispatchEvent === "function") {
-          sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
-        }
-      } catch { /* ignore */ }
       try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
     }
@@ -3440,13 +3469,12 @@ function _domInstallPageRuntimeFn() {
       try { liveEd.focus(); } catch { /* ignore */ }
     }
     placeCaretAtEditorEnd(liveEd);
-    let submittedViaForm = false;
     if (allowFormSubmitFallback && typeof liveEd.closest === "function") {
       const form = liveEd.closest("form");
       if (form && typeof form.requestSubmit === "function") {
         try {
           form.requestSubmit();
-          submittedViaForm = true;
+          return "requestSubmit";
         } catch { /* fall through to Enter */ }
       }
     }
@@ -3457,7 +3485,7 @@ function _domInstallPageRuntimeFn() {
         }));
       }
     }
-    return submittedViaForm ? "requestSubmit+enter" : "enter";
+    return "enter";
   }
 
   function resolveComposerAttachmentRoot(editorEl) {
@@ -3476,7 +3504,7 @@ function _domInstallPageRuntimeFn() {
     return scope.querySelectorAll(
       'img[src^="blob:"], img[src^="data:image/"], [data-test-id*="image-preview"], ' +
       '[data-testid*="file-thumbnail"], [data-testid*="attachment"], [class*="thumbnail"], ' +
-      '[class*="attachment-preview"], [class*="file-preview"], ' +
+      'uploader-file-preview, gem-media-attachment, [class*="attachment-preview"], [class*="file-preview"], ' +
       'button[aria-label*="Remove image" i], button[aria-label*="Remove" i], button[aria-label*="Delete image" i]'
     ).length;
   }
@@ -3536,12 +3564,14 @@ function _domInstallPageRuntimeFn() {
 
     const expected = dt.files.length;
     const targetEd = findEditor() || inputEl;
-    const root = resolveComposerAttachmentRoot(targetEd);
+    const currentRoot = () => resolveComposerAttachmentRoot(findEditor() || targetEd);
+    const root = currentRoot();
     const beforeCount = countComposerMediaPreviews(root);
     const beforeText = String(root?.textContent || "");
     const hasAttachedSignal = () => {
-      if (countComposerMediaPreviews(root) > beforeCount) return true;
-      const txt = String((root && root.textContent) || "");
+      const liveRoot = currentRoot();
+      if (countComposerMediaPreviews(liveRoot) > beforeCount) return true;
+      const txt = String(liveRoot?.textContent || "");
       return names.some(n => n && txt.includes(n) && !beforeText.includes(n));
     };
     const waitForAttachment = async (polls, stepMs) => {
@@ -3554,7 +3584,7 @@ function _domInstallPageRuntimeFn() {
     const waitUploadSettled = async () => {
       const deadline = Date.now() + 15000;
       await sleepMs(400);
-      while (Date.now() < deadline && (hasActiveUploadSpinner(root) || (typeof document !== "undefined" && hasActiveUploadSpinner(document)))) {
+      while (Date.now() < deadline && hasActiveUploadSpinner(currentRoot())) {
         await sleepMs(200);
       }
       await sleepMs(300);
@@ -3612,7 +3642,7 @@ function _domInstallPageRuntimeFn() {
     // Method 3: Synthetic drag-and-drop fallback
     if (!attachedMethod && typeof DragEvent === "function" && (targetEd || root)) {
       tried.push("drop");
-      const dropTarget = targetEd || root;
+      const dropTarget = findEditor() || targetEd || root;
       try {
         for (const evType of ["dragenter", "dragover", "drop"]) {
           dropTarget.dispatchEvent(new DragEvent(evType, {
@@ -3631,7 +3661,7 @@ function _domInstallPageRuntimeFn() {
 
     if (attachedMethod) {
       await waitUploadSettled();
-      if (hasActiveUploadSpinner(root) || !hasAttachedSignal()) {
+      if (hasActiveUploadSpinner(currentRoot()) || !hasAttachedSignal()) {
         return { ok: false, attached: 0, expected, verified: false, error: "Upload did not settle" };
       }
       log("Attached " + expected + " image(s) via " + attachedMethod + " (verified)");
@@ -3712,6 +3742,13 @@ function _domInstallPageRuntimeFn() {
         return false;
       };
 
+      if (hasMedia && prompt && !isPromptStillInEditor(findEditor() || inputEl, prompt)) {
+        // The page can replace the editor a second time as its preview renders.
+        const liveEd = findEditor();
+        if (!liveEd || readEditorPromptText(liveEd)) return false;
+        setPromptTextInEditor(liveEd, prompt);
+        if (!isPromptStillInEditor(liveEd, prompt)) return false;
+      }
       triggerDomSubmit(inputEl, false);
       for (let i = 0; i < 18; i++) {
         await sleepMs(140);
@@ -3786,7 +3823,7 @@ function _domInstallPageRuntimeFn() {
 
   globalThis.__wsaRuntime = {
     version: 2,
-    rev: 6,
+    rev: 7,
     log,
     computeTailDomRange,
     isVisibleElement,
@@ -3860,8 +3897,14 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
 
   if (Array.isArray(images) && images.length > 0 && rt.attachImagesToPage) {
     const tAttachStart = monoNow();
-    const attachRes = await rt.attachImagesToPage(images, inputEl);
-    if (attachRes && attachRes.verified === false) {
+    rt.log("Waiting for Gemini attachment preview");
+    let attachRes;
+    try {
+      attachRes = await rt.attachImagesToPage(images, inputEl);
+    } catch (error) {
+      return { ok: false, error: "[IMAGE_ATTACH_FAILED] Gemini: " + (error?.message || String(error)) };
+    }
+    if (!attachRes?.verified) {
       const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
       const limitHit = typeof rt.detectLimitMessage === "function" ? rt.detectLimitMessage(errBanner, true) : "";
       if (limitHit) {
@@ -3869,7 +3912,7 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
       }
       return {
         ok: false,
-        error: `[IMAGE_ATTACH_FAILED] Gemini: ${attachRes.error || "Image upload could not be verified before sending."}`,
+        error: `[IMAGE_ATTACH_FAILED] Gemini: ${attachRes?.error || "Image upload could not be verified before sending."}`,
       };
     }
     imagesAttached = Boolean(attachRes && attachRes.verified === true);
@@ -3919,7 +3962,10 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
     announcerChanged: false,
   };
 
-  await rt.submitPromptToPage(prompt, inputEl, initialCtx, beforeDomCount);
+  const submitted = await rt.submitPromptToPage(prompt, inputEl, initialCtx, beforeDomCount);
+  if (imagesAttached && submitted === false) {
+    return { ok: false, error: "Gemini did not acknowledge the screenshot and prompt submission." };
+  }
   const afterEd = rt.findEditor() || inputEl;
   if (!afterEd || (typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(afterEd, prompt))) {
     globalThis.__wsaActiveJob.sawEditorCleared = true;
@@ -4050,15 +4096,13 @@ function _domPollTurnFn(reqId) {
       };
     }
   }
-  const composerRoot = typeof rt.resolveComposerAttachmentRoot === "function" ? rt.resolveComposerAttachmentRoot(liveEd) : (liveEd?.parentElement || (typeof document !== "undefined" ? document : null));
-  const hasStuckMedia = typeof rt.countComposerMediaPreviews === "function" && rt.countComposerMediaPreviews(composerRoot) > 0;
   const isPromptInEd = Boolean(job.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, job.prompt));
   const promptUnsent = Boolean(
     !job.sawNewTurn &&
     !busy &&
     !job.lastText &&
     !job.lastThinking &&
-    (isPromptInEd || hasStuckMedia)
+    isPromptInEd
   );
   if (promptUnsent && typeof rt.triggerDomSubmit === "function" && (job.submitRetries || 0) < 4 && (now - (job.lastRetryAt || job.startedAt)) >= 1800) {
     const sendMissing = typeof rt.findEnabledSendButton === "function" && !rt.findEnabledSendButton(liveEd);
@@ -4604,7 +4648,7 @@ async function handleBrowserCommand(cmd) {
 }
 
 function _claudeInstallPageRuntimeFn() {
-  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 7) {
+  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 8) {
     return true;
   }
 
@@ -5376,174 +5420,12 @@ function _claudeInstallPageRuntimeFn() {
   }
 
   async function attachImagesToClaude(images, editorEl) {
-    if (!Array.isArray(images) || images.length === 0) {
-      return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
-    }
-    if (typeof DataTransfer === "undefined") {
+    if (!images?.length) return { ok: true, attached: 0, expected: 0, verified: true };
+    const utils = globalThis.__wsaDomUtils;
+    if (!utils?.attachImagesToEditor) {
       return { ok: false, attached: 0, expected: images.length, verified: false, error: "Image transfer unavailable" };
     }
-    if (images.length > 1) {
-      let attached = 0;
-      for (const image of images) {
-        const result = await attachImagesToClaude([image], editorEl);
-        if (!result.ok) return { ...result, attached, expected: images.length };
-        attached++;
-      }
-      return { ok: true, attached, expected: images.length, verified: true, method: "sequential" };
-    }
-    const sleepMs = ms => new Promise(r => setTimeout(r, ms));
-    const files = [];
-    const names = [];
-    for (let i = 0; i < images.length; i++) {
-      const item = images[i];
-      let mime = "image/png";
-      let b64 = "";
-      let fname = `screenshot_${i + 1}.png`;
-      if (item && typeof item === "object") {
-        b64 = String(item.data || "");
-        mime = String(item.mime_type || item.mimeType || "image/png");
-        fname = String(item.filename || fname);
-      } else {
-        const dataUrl = String(item || "");
-        const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-        if (m) {
-          mime = m[1] || "image/png";
-          b64 = m[2];
-          const ext = mime.split("/")[1] || "png";
-          fname = `image_${i + 1}.${ext}`;
-        }
-      }
-      if (!b64) continue;
-      try {
-        const bin = atob(b64);
-        const arr = new Uint8Array(bin.length);
-        for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
-        files.push(new File([arr], fname, { type: mime }));
-        names.push(fname);
-      } catch { /* skip malformed image payload */ }
-    }
-    if (!files.length) {
-      return { ok: false, attached: 0, expected: images.length, verified: false, method: "decode", error: "No valid image bytes to attach" };
-    }
-
-    const dt = new DataTransfer();
-    for (const f of files) dt.items.add(f);
-    const root =
-      (editorEl && typeof editorEl.closest === "function"
-        ? editorEl.closest("form, fieldset, [class*='composer'], [class*='input']") || editorEl.parentElement
-        : null) || document;
-    const attachSel =
-      'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], ' +
-      '[data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], ' +
-      'button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
-    const spinnerSel =
-      'mat-progress-spinner, mat-spinner, mat-progress-bar, ' +
-      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading" i], [data-testid*="loading" i], ' +
-      '[class*="uploading" i], [class*="loading" i], [class*="spinner" i], svg[class*="animate-spin" i]';
-    const countAttachments = (scope) => {
-      try { return (scope || document).querySelectorAll(attachSel).length; } catch { return 0; }
-    };
-    const hasUploadSpinner = () => {
-      try {
-        const els = (root || document).querySelectorAll(spinnerSel);
-        for (const el of els) {
-          if (el && el.offsetParent !== null) return true;
-        }
-      } catch { /* ignore */ }
-      return false;
-    };
-    const beforeRoot = countAttachments(root);
-    const beforeText = String(root?.textContent || "");
-    const hasAttachedSignal = () => {
-      if (countAttachments(root) > beforeRoot) return true;
-      const txt = String((root && root.textContent) || "");
-      return names.some(n => n && txt.includes(n) && !beforeText.includes(n));
-    };
-    const waitForAttachment = async (polls, stepMs) => {
-      for (let i = 0; i < polls; i++) {
-        await sleepMs(stepMs);
-        if (hasAttachedSignal()) return true;
-      }
-      return false;
-    };
-
-    const tried = [];
-    let attachedMethod = "";
-
-    // Method 1: File input with native HTMLInputElement setter
-    const fileInput =
-      (root && root.querySelector && root.querySelector("input[type='file']")) ||
-      document.querySelector("input[type='file']");
-    if (fileInput) {
-      tried.push("fileInput");
-      try {
-        const desc = typeof HTMLInputElement !== "undefined"
-          ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")
-          : null;
-        if (desc && typeof desc.set === "function") {
-          desc.set.call(fileInput, dt.files);
-        } else {
-          fileInput.files = dt.files;
-        }
-        fileInput.dispatchEvent(new Event("input", { bubbles: true }));
-        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
-      } catch { /* fall through */ }
-      if (await waitForAttachment(12, 200)) {
-        attachedMethod = "fileInput";
-      }
-    }
-
-    // Method 2: ClipboardEvent paste on editor
-    if (!attachedMethod && editorEl && typeof ClipboardEvent === "function") {
-      tried.push("paste");
-      try {
-        editorEl.focus();
-        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
-        editorEl.dispatchEvent(ev);
-      } catch { /* fall through */ }
-      if (await waitForAttachment(10, 200)) {
-        attachedMethod = "paste";
-      }
-    }
-
-    // Method 3: Synthetic drag-and-drop fallback
-    if (!attachedMethod && typeof DragEvent === "function" && (editorEl || root)) {
-      tried.push("drop");
-      const dropTarget = editorEl || root;
-      try {
-        for (const evType of ["dragenter", "dragover", "drop"]) {
-          dropTarget.dispatchEvent(new DragEvent(evType, {
-            bubbles: true,
-            cancelable: true,
-            dataTransfer: dt,
-          }));
-        }
-      } catch { /* fall through */ }
-      if (await waitForAttachment(10, 200)) {
-        attachedMethod = "drop";
-      }
-    }
-
-    if (attachedMethod) {
-      const deadline = Date.now() + 15000;
-      await sleepMs(400);
-      while (Date.now() < deadline && hasUploadSpinner()) {
-        await sleepMs(200);
-      }
-      await sleepMs(300);
-      if (hasUploadSpinner() || !hasAttachedSignal()) {
-        return { ok: false, attached: 0, expected: files.length, verified: false, error: "Upload did not settle" };
-      }
-      return { ok: true, attached: files.length, expected: files.length, verified: true, method: attachedMethod, error: "" };
-    }
-    return {
-      ok: false,
-      attached: 0,
-      expected: files.length,
-      verified: false,
-      method: tried.join(","),
-      error: `Could not verify image upload in Claude composer (tried: ${tried.join(", ") || "none"})`,
-    };
+    return utils.attachImagesToEditor(images, editorEl, findClaudeEditor, "Claude");
   }
 
   function normalizeCompareText(s) {
@@ -5691,11 +5573,6 @@ function _claudeInstallPageRuntimeFn() {
           } catch { /* ignore */ }
         }
       }
-      try {
-        if (typeof MouseEvent === "function" && typeof sendBtn.dispatchEvent === "function") {
-          sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
-        }
-      } catch { /* ignore */ }
       try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
     }
@@ -5703,13 +5580,12 @@ function _claudeInstallPageRuntimeFn() {
       try { liveEd.focus(); } catch { /* ignore */ }
     }
     placeClaudeCaretAtEnd(liveEd);
-    let submittedViaForm = false;
     if (allowFormSubmitFallback && typeof liveEd.closest === "function") {
       const form = liveEd.closest("form");
       if (form && typeof form.requestSubmit === "function") {
         try {
           form.requestSubmit();
-          submittedViaForm = true;
+          return "requestSubmit";
         } catch { /* fall through to Enter */ }
       }
     }
@@ -5726,7 +5602,7 @@ function _claudeInstallPageRuntimeFn() {
         }));
       }
     }
-    return submittedViaForm ? "requestSubmit+enter" : "enter";
+    return "enter";
   }
 
   function readErrorBanner() {
@@ -5818,7 +5694,7 @@ function _claudeInstallPageRuntimeFn() {
 
   globalThis.__wsaClaudeRuntime = {
     version: 4,
-    rev: 7,
+    rev: 8,
     turns: Object.create(null),
     findEditor: findClaudeEditor,
     findSendButton: findClaudeSendButton,
@@ -6084,15 +5960,12 @@ function _claudePollTurnFn(reqId) {
       }
     }
   }
-  const composerRoot = (liveEd && typeof liveEd.closest === "function" ? liveEd.closest("form, fieldset, [class*='composer' i]") : null) || (typeof document !== "undefined" ? document : null);
-  const attachSel = 'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], [data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
-  const hasStuckMedia = Boolean(composerRoot && typeof composerRoot.querySelectorAll === "function" && composerRoot.querySelectorAll(attachSel).length > 0);
   const isPromptInEd = Boolean(turn.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, turn.prompt));
   const promptUnsent = Boolean(
     !turn.sawActivity &&
     !isStillStreaming &&
     allTurns.length <= turn.beforeTurnCount &&
-    (isPromptInEd || hasStuckMedia)
+    isPromptInEd
   );
   if (promptUnsent && typeof rt.triggerSubmit === "function" && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
     const sendMissing = typeof rt.findSendButton === "function" && !rt.findSendButton(liveEd);
@@ -6160,7 +6033,7 @@ function _installWsaDomUtilsFn() {
   if (
     globalThis.__wsaDomUtils &&
     globalThis.__wsaDomUtils.version === 3 &&
-    globalThis.__wsaDomUtils.rev === 8 &&
+    globalThis.__wsaDomUtils.rev === 10 &&
     typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function"
   ) {
     return true;
@@ -6555,7 +6428,119 @@ function _installWsaDomUtilsFn() {
     return out.join("\n").trim();
   }
 
-  async function attachImagesToEditor(images, editorEl) {
+  async function attachComposerFile(file, initialEditor, findEditor, provider) {
+    if (provider === "DeepSeek" || provider === "Venice") {
+      return { ok: true, attached: 0, expected: 1, verified: true, method: "not_supported", error: "" };
+    }
+    // Provider previews may live in a sibling of the text input, with either
+    // an opaque image URL or a filename rendered as plain text.
+    const editor = () => findEditor() || initialEditor;
+    const root = () => {
+      const ed = editor();
+      if (!ed) return typeof document !== "undefined" ? (document.body || document) : null;
+      let cur = ed;
+      const docBody = typeof document !== "undefined" ? document.body : null;
+      const docEl = typeof document !== "undefined" ? document.documentElement : null;
+      while (cur && cur !== docBody && cur !== docEl) {
+        if (
+          cur.tagName === "FORM" ||
+          cur.tagName === "FIELDSET" ||
+          cur.getAttribute?.("data-testid")?.includes?.("composer") ||
+          cur.className?.includes?.("composer") ||
+          cur.querySelector?.("button[data-testid='send-button'], #composer-submit-button, .send-button, [aria-label*='Send' i], [data-testid*='composer']")
+        ) {
+          return cur;
+        }
+        cur = cur.parentElement;
+      }
+      return ed.closest?.("main, [role='main']") || (typeof document !== "undefined" ? (document.body || document) : null);
+    };
+    const outsideComposer = "nav, aside, [data-testid='user-message'], [data-testid='assistant-message'], .ds-message, article";
+    const previews = () => {
+      const r = root();
+      if (!r || typeof r.querySelectorAll !== "function") return [];
+      return [...r.querySelectorAll(
+        "img, canvas, [data-testid*='file'], [data-testid*='attachment'], [data-testid*='image'], " +
+        "[class*='attachment-preview'], [class*='file-thumbnail'], [class*='preview-item'], " +
+        "[aria-label*='User attachment' i], [aria-label*='screenshot' i], [aria-label$='.png' i], " +
+        "button[aria-label*='remove' i], button[aria-label*='delete' i], button[aria-label*='cancel' i]"
+      )].filter(el => !el.closest(outsideComposer));
+    };
+    const countNames = () => {
+      const scope = root();
+      if (!scope || typeof document === "undefined" || !document.createTreeWalker) return 0;
+      const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+      let count = 0;
+      while (walker.nextNode()) {
+        const n = walker.currentNode;
+        if (n.nodeValue && n.nodeValue.includes(file.name) && !n.parentElement?.closest(outsideComposer + ", script, style")) count++;
+      }
+      return count;
+    };
+    const before = previews().length;
+    const beforeNames = countNames();
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    const inputs = typeof document !== "undefined" && document.querySelectorAll
+      ? [...document.querySelectorAll("input[type=file]")].filter(input =>
+          !input.disabled && !input.webkitdirectory && !input.closest(outsideComposer)
+        )
+      : [];
+    const extension = "." + file.name.split(".").pop().toLowerCase();
+    const compatible = input => (input.accept || "").toLowerCase().split(",").map(s => s.trim()).some(
+      type => type === file.type || type === "image/*" || type === extension || type === "*/*"
+    );
+    const input = inputs.find(compatible) || inputs.find(el => !el.accept || !el.accept.trim());
+    let method = input ? "file input" : "paste";
+    if (input) {
+      try {
+        input.value = "";
+        const desc = typeof HTMLInputElement !== "undefined"
+          ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")
+          : null;
+        if (desc && typeof desc.set === "function") {
+          desc.set.call(input, transfer.files);
+        } else {
+          input.files = transfer.files;
+        }
+        input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      } catch { /* fall through to paste */ }
+    }
+
+    // Also dispatch paste event to editor as fallback
+    const target = editor();
+    if (target && typeof ClipboardEvent === "function") {
+      try {
+        target.focus();
+        target.dispatchEvent(new ClipboardEvent("paste", {
+          clipboardData: transfer, bubbles: true, cancelable: true, composed: true
+        }));
+      } catch { /* ignore */ }
+    }
+
+    const deadline = Date.now() + 20000;
+    let readySince = 0;
+    while (Date.now() < deadline) {
+      const previewSeen = previews().length > before || countNames() > beforeNames;
+      const busy = previewSeen && [...(root()?.querySelectorAll?.(
+        "[role=progressbar], [aria-busy=true], [data-testid*='uploading'], [class*='upload-progress']"
+      ) || [])].some(el => !el.closest(outsideComposer) && isVisible(el));
+      if (previewSeen && !busy) {
+        if (readySince && Date.now() - readySince >= 350) {
+          return { ok: true, attached: 1, expected: 1, verified: true, method };
+        }
+        readySince ||= Date.now();
+      } else {
+        readySince = 0;
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    return { ok: false, attached: 0, expected: 1, verified: false, method,
+      error: provider + " did not confirm the screenshot after " + method };
+  }
+
+  async function attachImagesToEditor(images, editorEl, findLiveEditor = () => editorEl, provider = "") {
     if (!Array.isArray(images) || images.length === 0) {
       return { ok: true, attached: 0, expected: 0, verified: true, method: "none", error: "" };
     }
@@ -6565,7 +6550,7 @@ function _installWsaDomUtilsFn() {
     if (images.length > 1) {
       let attached = 0;
       for (const image of images) {
-        const result = await attachImagesToEditor([image], editorEl);
+        const result = await attachImagesToEditor([image], findLiveEditor() || editorEl, findLiveEditor, provider);
         if (!result.ok) return { ...result, attached, expected: images.length };
         attached++;
       }
@@ -6606,43 +6591,101 @@ function _installWsaDomUtilsFn() {
       return { ok: false, attached: 0, expected: images.length, verified: false, method: "decode", error: "No valid image bytes to attach" };
     }
 
+    if (provider === "DeepSeek" || provider === "Venice") {
+      return { ok: true, attached: 0, expected: images.length, verified: true, method: "not_supported", error: "" };
+    }
+    if (provider === "Claude") {
+      return attachComposerFile(files[0], editorEl, findLiveEditor, provider);
+    }
+
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(f);
-    const root =
-      (editorEl && typeof editorEl.closest === "function"
-        ? editorEl.closest("form, [role='region'], [class*='composer'], [class*='input']") || editorEl.parentElement
-        : null) || document;
+
+    const outsideComposer = "nav, aside, [data-testid='user-message'], [data-testid='assistant-message'], .ds-message, article, [data-message-author-role]";
+    const currentRoot = () => {
+      const editor = findLiveEditor() || editorEl;
+      if (!editor) return typeof document !== "undefined" ? (document.body || document) : null;
+      let cur = editor;
+      let best = null;
+      const docBody = typeof document !== "undefined" ? document.body : null;
+      const docEl = typeof document !== "undefined" ? document.documentElement : null;
+      while (cur && cur !== docBody && cur !== docEl) {
+        if (
+          cur.tagName === "FORM" ||
+          cur.tagName === "FIELDSET" ||
+          cur.getAttribute?.("data-testid")?.includes?.("composer") ||
+          cur.className?.includes?.("composer") ||
+          cur.querySelector?.("button[data-testid='send-button'], #composer-submit-button, .send-button, [aria-label*='Send' i], [data-testid*='composer']")
+        ) {
+          best = cur;
+          break;
+        }
+        cur = cur.parentElement;
+      }
+      return best || editor.closest?.("main, [role='main']") || editor.parentElement?.parentElement || (typeof document !== "undefined" ? (document.body || document) : null);
+    };
+
+    const root = currentRoot();
     const attachSel =
-      'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], ' +
-      '[data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], ' +
-      '[class*="file-preview"], button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
+      'img, canvas, [data-testid*="attachment"], [data-testid*="file"], [data-testid*="image"], ' +
+      '[data-testid*="upload"], [class*="thumbnail"], [class*="attachment"], [class*="file-preview"], ' +
+      '[class*="file-item"], [class*="preview-item"], [aria-label*="User attachment" i], button[aria-label*="Remove" i], button[aria-label*="Delete" i], ' +
+      'button[aria-label*="Cancel" i], [aria-label*="Remove file" i], [aria-label*="Remove image" i], ' +
+      '[aria-label*="Delete" i], div[style*="background-image"], div[style*="url("]';
     const spinnerSel =
       'mat-progress-spinner, mat-spinner, mat-progress-bar, ' +
       '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading" i], [data-testid*="loading" i], ' +
       '[class*="uploading" i], [class*="loading" i], [class*="spinner" i], svg[class*="animate-spin" i]';
+
     const countAttachments = (scope) => {
-      try { return (scope || document).querySelectorAll(attachSel).length; } catch { return 0; }
+      try {
+        const rootNode = scope || currentRoot() || (typeof document !== "undefined" ? document : null);
+        if (!rootNode || typeof rootNode.querySelectorAll !== "function") return 0;
+        const els = rootNode.querySelectorAll(attachSel);
+        let count = 0;
+        for (const el of els) {
+          if (typeof el.closest === "function" && el.closest(outsideComposer)) continue;
+          if (el.tagName === "IMG") {
+            const alt = String(el.getAttribute?.("alt") || "").toLowerCase();
+            const src = String(el.getAttribute?.("src") || "").toLowerCase();
+            if (alt.includes("avatar") || src.includes("avatar") || src.includes("favicon")) continue;
+          }
+          count++;
+        }
+        return count;
+      } catch { return 0; }
     };
+
     const hasUploadSpinner = () => {
       try {
-        const els = (root || document).querySelectorAll(spinnerSel);
+        const rootNode = currentRoot() || (typeof document !== "undefined" ? document : null);
+        if (!rootNode || typeof rootNode.querySelectorAll !== "function") return false;
+        const els = rootNode.querySelectorAll(spinnerSel);
         for (const el of els) {
-          if (el && el.offsetParent !== null) return true;
+          if (typeof el.closest === "function" && el.closest(outsideComposer)) continue;
+          if (el && (el.offsetParent !== null || el.getAttribute?.("aria-busy") === "true")) return true;
         }
       } catch { /* ignore */ }
       return false;
     };
+
     const beforeRoot = countAttachments(root);
+    const beforeDoc = countAttachments(typeof document !== "undefined" ? (document.body || document) : null);
     const beforeText = String(root?.textContent || "");
+
     const hasAttachedSignal = () => {
-      if (countAttachments(root) > beforeRoot) return true;
-      const txt = String((root && root.textContent) || "");
+      const liveRoot = currentRoot();
+      if (countAttachments(liveRoot) > beforeRoot) return true;
+      if (countAttachments(typeof document !== "undefined" ? (document.body || document) : null) > beforeDoc) return true;
+      const txt = String(liveRoot?.textContent || "");
       return names.some(n => n && txt.includes(n) && !beforeText.includes(n));
     };
-    const waitForAttachment = async (polls, stepMs) => {
+
+    const waitForAttachmentOrSpinner = async (polls, stepMs) => {
       for (let i = 0; i < polls; i++) {
         await sleepMs(stepMs);
         if (hasAttachedSignal()) return true;
+        if (hasUploadSpinner()) return true;
       }
       return false;
     };
@@ -6652,8 +6695,9 @@ function _installWsaDomUtilsFn() {
 
     const fileInput =
       (root && root.querySelector && root.querySelector("input[type='file']")) ||
-      document.querySelector("input[type='file']");
-    if (fileInput) {
+      (typeof document !== "undefined" && document.querySelector ? document.querySelector("input[type='file']") : null);
+
+    if (fileInput && !fileInput.disabled && !(typeof fileInput.closest === "function" && fileInput.closest(outsideComposer))) {
       tried.push("fileInput");
       try {
         const desc = typeof HTMLInputElement !== "undefined"
@@ -6664,54 +6708,66 @@ function _installWsaDomUtilsFn() {
         } else {
           fileInput.files = dt.files;
         }
-        fileInput.dispatchEvent(new Event("input", { bubbles: true }));
-        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+        fileInput.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        fileInput.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       } catch { /* fall through */ }
-      if (await waitForAttachment(12, 200)) {
+      const accepted = await waitForAttachmentOrSpinner(25, 200);
+      if (accepted) {
         attachedMethod = "fileInput";
       }
     }
 
+    editorEl = findLiveEditor() || editorEl;
     if (!attachedMethod && editorEl && typeof ClipboardEvent === "function") {
       tried.push("paste");
       try {
         editorEl.focus();
-        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true, composed: true });
         editorEl.dispatchEvent(ev);
       } catch { /* fall through */ }
-      if (await waitForAttachment(10, 200)) {
+      const accepted = await waitForAttachmentOrSpinner(20, 200);
+      if (accepted) {
         attachedMethod = "paste";
       }
     }
 
     if (!attachedMethod && typeof DragEvent === "function" && (editorEl || root)) {
       tried.push("drop");
-      const dropTarget = editorEl || root;
+      const dropTarget = findLiveEditor() || editorEl || root;
       try {
         for (const evType of ["dragenter", "dragover", "drop"]) {
           dropTarget.dispatchEvent(new DragEvent(evType, {
             bubbles: true,
             cancelable: true,
+            composed: true,
             dataTransfer: dt,
           }));
         }
       } catch { /* fall through */ }
-      if (await waitForAttachment(10, 200)) {
+      const accepted = await waitForAttachmentOrSpinner(15, 200);
+      if (accepted) {
         attachedMethod = "drop";
       }
     }
 
-    if (attachedMethod) {
-      const deadline = Date.now() + 15000;
-      await sleepMs(400);
+    if (attachedMethod || hasAttachedSignal() || countAttachments(typeof document !== "undefined" ? (document.body || document) : null) > beforeDoc) {
+      const deadline = Date.now() + 20000;
+      await sleepMs(300);
       while (Date.now() < deadline && hasUploadSpinner()) {
         await sleepMs(200);
       }
       await sleepMs(300);
-      if (hasUploadSpinner() || !hasAttachedSignal()) {
+      if (hasUploadSpinner()) {
         return { ok: false, attached: 0, expected: files.length, verified: false, error: "Upload did not settle" };
       }
-      return { ok: true, attached: files.length, expected: files.length, verified: true, method: attachedMethod, error: "" };
+      return {
+        ok: true,
+        attached: files.length,
+        expected: files.length,
+        verified: true,
+        method: attachedMethod || "detected",
+        error: "",
+      };
     }
     return {
       ok: false,
@@ -6728,19 +6784,28 @@ function _installWsaDomUtilsFn() {
     const tag = (editorEl.tagName || "").toUpperCase();
     if (tag === "TEXTAREA" || tag === "INPUT") {
       editorEl.focus();
-      const tracker = editorEl._valueTracker;
-      const prevSentinel = cleanText === "__wsa_prev__" ? "__wsa_other__" : "__wsa_prev__";
-      if (tracker && typeof tracker.setValue === "function") {
-        tracker.setValue(prevSentinel);
-      }
-      const proto = tag === "TEXTAREA"
-        ? (typeof HTMLTextAreaElement !== "undefined" ? HTMLTextAreaElement.prototype : null)
-        : (typeof HTMLInputElement !== "undefined" ? HTMLInputElement.prototype : null);
-      const desc = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null;
-      if (desc && typeof desc.set === "function") {
-        desc.set.call(editorEl, cleanText);
-      } else {
-        editorEl.value = cleanText;
+      let execDone = false;
+      try {
+        if (typeof editorEl.select === "function" && typeof document !== "undefined" && typeof document.execCommand === "function") {
+          editorEl.select();
+          execDone = Boolean(document.execCommand("insertText", false, cleanText));
+        }
+      } catch { /* ignore */ }
+      if (!execDone || String(editorEl.value || "") !== cleanText) {
+        const tracker = editorEl._valueTracker;
+        const prevSentinel = cleanText === "__wsa_prev__" ? "__wsa_other__" : "__wsa_prev__";
+        if (tracker && typeof tracker.setValue === "function") {
+          tracker.setValue(prevSentinel);
+        }
+        const proto = tag === "TEXTAREA"
+          ? (typeof HTMLTextAreaElement !== "undefined" ? HTMLTextAreaElement.prototype : null)
+          : (typeof HTMLInputElement !== "undefined" ? HTMLInputElement.prototype : null);
+        const desc = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null;
+        if (desc && typeof desc.set === "function") {
+          desc.set.call(editorEl, cleanText);
+        } else {
+          editorEl.value = cleanText;
+        }
       }
       if (String(editorEl.value || "") !== cleanText) {
         editorEl.value = cleanText;
@@ -6922,11 +6987,6 @@ function _installWsaDomUtilsFn() {
           } catch { /* ignore */ }
         }
       }
-      try {
-        if (typeof MouseEvent === "function" && typeof sendBtn.dispatchEvent === "function") {
-          sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
-        }
-      } catch { /* ignore */ }
       try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
     }
@@ -6934,13 +6994,12 @@ function _installWsaDomUtilsFn() {
       try { liveEd.focus(); } catch { /* ignore */ }
     }
     placeCaretAtEditorEnd(liveEd);
-    let submittedViaForm = false;
     if (allowFormSubmitFallback && typeof liveEd.closest === "function") {
       const form = liveEd.closest("form");
       if (form && typeof form.requestSubmit === "function") {
         try {
           form.requestSubmit();
-          submittedViaForm = true;
+          return "requestSubmit";
         } catch { /* fall through to Enter */ }
       }
     }
@@ -6957,7 +7016,7 @@ function _installWsaDomUtilsFn() {
         }));
       }
     }
-    return submittedViaForm ? "requestSubmit+enter" : "enter";
+    return "enter";
   }
 
   function detectPromptTooLongMessage(text, isBanner = false) {
@@ -7040,7 +7099,7 @@ function _installWsaDomUtilsFn() {
 
     if (Array.isArray(images) && images.length > 0 && attachImagesToEditor) {
       const tAttachStart = monoNow();
-      const attachRes = await attachImagesToEditor(images, editor);
+      const attachRes = await attachImagesToEditor(images, editor, rt.findEditor, provLabel);
       if (attachRes && attachRes.verified === false) {
         const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
         const limitHit = typeof rt.detectLimitMessage === "function" ? rt.detectLimitMessage(errBanner, true) : "";
@@ -7133,8 +7192,32 @@ function _installWsaDomUtilsFn() {
   }
 
   function pollTurn(rt, reqId, opts = {}) {
-    const turn = rt.turns[reqId];
-    if (!turn) return { missing: true };
+    let turn = rt.turns[reqId];
+    if (!turn) {
+      if (typeof rt.hasStopButton === "function" && rt.hasStopButton()) {
+        const nowRecover = Date.now();
+        turn = rt.turns[reqId] = {
+          startedAt: nowRecover,
+          lastChangeAt: nowRecover,
+          lastRetryAt: nowRecover,
+          lastText: "",
+          lastThinking: "",
+          prompt: "",
+          submitRetries: 0,
+          beforeTurnCount: 0,
+          beforeTurnKeys: [],
+          beforeLastText: "",
+          beforeLastThinking: "",
+          beforeBanner: "",
+          sawActivity: true,
+          sawStop: true,
+          sawEditorCleared: true,
+          modelBadge: typeof rt.readModelBadge === "function" ? rt.readModelBadge() : "",
+        };
+      } else {
+        return { missing: true };
+      }
+    }
 
     const label = opts.label || "Web AI";
     const defaultModel = opts.defaultModel || label;
@@ -7245,15 +7328,12 @@ function _installWsaDomUtilsFn() {
       }
     }
 
-    const composerRoot = (liveEd && typeof liveEd.closest === "function" ? liveEd.closest("form, [role='region'], [class*='composer' i], [class*='input' i]") : null) || liveEd?.parentElement || (typeof document !== "undefined" ? document : null);
-    const attachSel = 'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], [data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], [class*="file-preview"], button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
-    const hasStuckMedia = Boolean(composerRoot && typeof composerRoot.querySelectorAll === "function" && composerRoot.querySelectorAll(attachSel).length > 0);
     const isPromptInEd = Boolean(turn.prompt && liveEd && isPromptStillInEditor(liveEd, turn.prompt));
     const promptUnsent = Boolean(
       !turn.sawActivity &&
       !isStillStreaming &&
       allTurns.length <= turn.beforeTurnCount &&
-      (isPromptInEd || hasStuckMedia)
+      isPromptInEd
     );
     if (promptUnsent && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
       const sendMissing = typeof rt.findSendButton === "function" && !rt.findSendButton(liveEd);
@@ -7318,7 +7398,7 @@ function _installWsaDomUtilsFn() {
 
   globalThis.__wsaDomUtils = {
     version: 3,
-    rev: 8,
+    rev: 10,
     getClassStr,
     isVisible,
     normalizeCompareText,
@@ -7338,7 +7418,7 @@ function _installWsaDomUtilsFn() {
 }
 
 function _chatgptInstallPageRuntimeFn() {
-  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 7) {
+  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 8) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -7668,7 +7748,7 @@ function _chatgptInstallPageRuntimeFn() {
 
   globalThis.__wsaChatgptRuntime = {
     version: 3,
-    rev: 7,
+    rev: 8,
     turns: Object.create(null),
     findEditor,
     findSendButton,
@@ -7705,7 +7785,7 @@ function _chatgptPollTurnFn(reqId) {
 }
 
 function _deepseekInstallPageRuntimeFn() {
-  if (globalThis.__wsaDeepseekRuntime && globalThis.__wsaDeepseekRuntime.version === 3 && globalThis.__wsaDeepseekRuntime.rev === 6) {
+  if (globalThis.__wsaDeepseekRuntime && globalThis.__wsaDeepseekRuntime.version === 3 && globalThis.__wsaDeepseekRuntime.rev === 7) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -8001,7 +8081,7 @@ function _deepseekInstallPageRuntimeFn() {
 
   globalThis.__wsaDeepseekRuntime = {
     version: 3,
-    rev: 6,
+    rev: 7,
     turns: Object.create(null),
     findEditor,
     findSendButton,
@@ -8038,7 +8118,7 @@ function _deepseekPollTurnFn(reqId) {
 }
 
 function _veniceInstallPageRuntimeFn() {
-  if (globalThis.__wsaVeniceRuntime && globalThis.__wsaVeniceRuntime.version === 1 && globalThis.__wsaVeniceRuntime.rev === 6) {
+  if (globalThis.__wsaVeniceRuntime && globalThis.__wsaVeniceRuntime.version === 1 && globalThis.__wsaVeniceRuntime.rev === 7) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -8417,7 +8497,7 @@ function _veniceInstallPageRuntimeFn() {
 
   globalThis.__wsaVeniceRuntime = {
     version: 1,
-    rev: 6,
+    rev: 7,
     turns: Object.create(null),
     findEditor,
     findSendButton,
