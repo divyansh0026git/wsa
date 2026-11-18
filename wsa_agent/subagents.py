@@ -13,7 +13,6 @@ import json
 import re
 import threading
 from contextvars import ContextVar
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .task_skills import select_task_skills, skill_guidance

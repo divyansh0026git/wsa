@@ -1269,24 +1269,6 @@ def _detect_dropped_tool_details(
     return []
 
 
-def _detect_dropped_tool_calls(
-    content: Optional[str],
-    remaining_text: str,
-    extracted_calls: List[dict],
-    allowed_names: Optional[Set[str]],
-) -> List[str]:
-    """Identify tool_call blocks present in response prose that failed to parse."""
-    details = _detect_dropped_tool_details(content, remaining_text, extracted_calls, allowed_names)
-    warnings: List[str] = []
-    for d in details:
-        nm = str(d.get("name") or "tool_call")
-        tp = str(d.get("target_path") or "").strip()
-        rs = str(d.get("reason") or "could not parse").strip()
-        target_part = f"({tp})" if tp else ""
-        warnings.append(f"{nm}{target_part}: {rs}")
-    return warnings
-
-
 def _norm_rel_path_token(raw_path: str) -> str:
     p = str(raw_path or "").strip().replace("\\", "/")
     if not p:
@@ -2026,50 +2008,6 @@ def _run_visual_critic_bridge(
         if isinstance(meta_out, dict):
             meta_out["error_kind"] = _classify_visual_error(exc)
         return None
-
-
-def _prompt_store_progress(state: SessionState) -> bool:
-    """Ask whether to persist the full session progress/context after all agents are exhausted.
-
-    This prompt is also bypass-exempt. Returns True if the user agreed to persist.
-    """
-    try:
-        from .renderer import console as _console
-        R._release_console_live(_console)
-        R.sync_theme()
-        _console.print("\n  Save the full session progress and context to disk?", markup=False)
-        _console.print(
-            f"  [bold {R.Theme.ACCENT}]\\[y][/] Yes — save session checkpoint so you can resume later with `wsa --continue`\n"
-            f"  [bold {R.Theme.ACCENT}]\\[n][/] No  — skip saving and return to the prompt"
-        )
-        while True:
-            raw = _console.input("  Choice [y/n]: ", markup=False).strip().lower().strip("[](). ")
-            if raw in ("y", "yes"):
-                resp = "y"
-                break
-            if raw in ("n", "no", ""):
-                resp = "n"
-                break
-            R.print_warn("Choose y (yes) or n (no).")
-    except (EOFError, KeyboardInterrupt):
-        return False
-    except Exception:
-        return False
-    if resp not in ("y", "yes"):
-        return False
-    try:
-        path = state.save()
-        try:
-            R.print_success(f"Session progress stored: {path}")
-        except Exception:
-            pass
-        return True
-    except Exception as exc:
-        try:
-            R.print_error(f"Failed to store session progress: {exc}")
-        except Exception:
-            pass
-        return False
 
 
 @serialized_turn

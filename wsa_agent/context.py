@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import os
 import re
 import threading
 from pathlib import Path

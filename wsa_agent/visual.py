@@ -6,7 +6,6 @@ import functools
 import http.server
 import io
 import json
-import mimetypes
 import os
 import re
 import shutil

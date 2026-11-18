@@ -45,7 +45,7 @@ class TestWorkstream1ServerAndBridgeHardening(unittest.TestCase):
     def test_agent_partial_dropped_tool_call_triggers_warning(self):
         from wsa_agent import tools
         from wsa_agent.agent import (
-            _detect_dropped_tool_calls,
+            _detect_dropped_tool_details,
             _extract_tool_calls_detailed,
             execute_agent_loop,
         )
@@ -63,10 +63,11 @@ class TestWorkstream1ServerAndBridgeHardening(unittest.TestCase):
             allowed_names={"glob_files", "write_file"},
         )
         self.assertEqual(len(calls), 1)
-        warnings = _detect_dropped_tool_calls(
+        dropped = _detect_dropped_tool_details(
             mixed_content, rem, calls, allowed_names={"glob_files", "write_file"}
         )
-        self.assertTrue(warnings, "Expected warning for truncated 2nd tool_call block")
+        self.assertTrue(dropped, "Expected diagnostic for truncated 2nd tool_call block")
+        self.assertEqual(dropped[0]["name"], "write_file")
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

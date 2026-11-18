@@ -169,12 +169,44 @@ def test_yes_no_prompts_define_explicit_options(tmp_path):
     assert "[n] No" in out and "stop now" in out
     assert "Choose y (yes) or n (no)." in out
 
+    # Multiagent exhaustion also defines explicit [y]/[n] options and honors "n" under auto-approve.
+    state_multi = SessionState(
+        project_root=tmp_path,
+        selected_model="claude",
+        permission_mode="auto",
+        auto_approve=True,
+    )
+    state_multi.configure_multiagent(["claude", "gemini"])
     plain2 = Console(file=StringIO(), force_terminal=False, width=120)
     with patch.object(renderer, "console", plain2), patch.object(plain2, "input", return_value="n"):
-        assert agent._prompt_store_progress(state) is False
+        assert agent._prompt_all_agents_exhausted(state_multi, is_multiagent=True) is False
     out2 = plain2.file.getvalue()
-    assert "[y] Yes" in out2 and "save session checkpoint" in out2
-    assert "[n] No" in out2 and "skip saving" in out2
+    assert "All queued agents reached their account limits" in out2
+    assert "[y] Yes" in out2 and "[n] No" in out2
+    assert "already preserved" in out2
+
+    # End-to-end stop path under permission bypass: prompts are not bypassed and checkpoint is auto-saved for resume.
+    class LimitClient:
+        def stream(self, *args, **kwargs):
+            raise ProviderLimitError("limit", provider="claude")
+
+    stop_state = SessionState(
+        project_root=tmp_path,
+        selected_model="claude",
+        permission_mode="auto",
+        auto_approve=True,
+    )
+    stop_console = Console(file=StringIO(), force_terminal=False, width=120)
+    with patch.object(renderer, "console", stop_console), \
+         patch.object(stop_console, "input", side_effect=["c", "n"]) as ask, \
+         patch.object(stop_state, "save", return_value=str(tmp_path / "ckpt.json")) as save_ckpt:
+        res = agent.execute_agent_loop("Finish feature", stop_state, LimitClient(), quiet_ui=False)
+    assert res["ok"] is False
+    assert res["limit_exhausted"] is True
+    assert ask.call_count == 2  # Both limit menu ([c]) and account-switch prompt ([n]) shown despite auto_approve.
+    assert save_ckpt.call_count >= 1
+    assert getattr(stop_state, "_force_new_chat_next", False) is True
+    assert "Context preserved, stopping workflow" in stop_console.file.getvalue()
 
 
 def test_subagent_role_uses_live_renderer_and_prints_read_line_range(tmp_path):

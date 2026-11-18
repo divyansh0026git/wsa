@@ -18,7 +18,6 @@ import argparse
 import atexit
 import subprocess
 import sys
-import os
 import time
 from pathlib import Path
 
@@ -86,27 +85,6 @@ class _ServerManager:
             return bool(data.get("authenticated")), pid if type(pid) is int and pid > 0 else None
         except Exception:
             return False, None
-
-    def _find_port_owner_pid(self) -> int | None:
-        """Find the Windows process listening on the configured port."""
-        if sys.platform != "win32":
-            return None
-        try:
-            result = subprocess.run(
-                [
-                    "powershell", "-NoProfile", "-NonInteractive", "-Command",
-                    f"(Get-NetTCPConnection -LocalPort {self._port} -State Listen "
-                    "-ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-            )
-            value = result.stdout.strip()
-            return int(value) if value.isdigit() and int(value) > 0 else None
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None
 
     def ensure_running(self) -> bool:
         """

@@ -620,9 +620,6 @@ def _render_live_markdown_bounded(preview: str, reserve_rows: int = 4) -> tuple[
     return clipped, candidate
 
 
-_CompactHeading = _QuietHeading
-_CompactCodeBlock = _StyledCodeBlock
-_CompactMarkdown = _CleanMarkdown
 Markdown = _CleanMarkdown
 
 
@@ -638,11 +635,6 @@ def friendly_model_name(model: str) -> str:
     if m.startswith("chatgpt") or m.startswith("openai") or m.startswith("gpt"):
         return "ChatGPT Web"
     return "Gemini Web"
-
-
-def _strip_leading_emoji(text: str) -> str:
-    cleaned = re.sub(r"^[^\w/.\-]+", "", (text or "").strip())
-    return cleaned or (text or "").strip()
 
 
 def _short_path(path_obj: Path | str) -> str:
@@ -737,28 +729,6 @@ def _clean_thinking_lines(raw: str) -> list[str]:
             seen.add(key)
             lines.append(item)
     return lines
-
-
-def _extract_reasoning_caption(raw: str, max_width_pad: int = 38) -> str:
-    """Extract one concise non-noise reasoning line for muted summary display."""
-    lines = _clean_thinking_lines(raw)
-    if not lines:
-        return ""
-    caption = lines[-1]
-    width = getattr(console.size, "width", 80) or 80
-    max_len = max(24, min(84, width - max_width_pad))
-    if len(caption) > max_len:
-        caption = caption[:max_len - 1].rstrip() + "…"
-    return caption
-
-
-def _clip_live_preview(text: str) -> str:
-    """Keep Live streaming height within terminal viewport to prevent Windows scroll duplication."""
-    max_lines = max(12, (console.size.height or 30) - 8)
-    lines = text.splitlines()
-    if len(lines) <= max_lines:
-        return text
-    return _clip_live_preview_rows(text, max_rows=max_lines)
 
 
 def _get_windows_console_font() -> str:

@@ -14,7 +14,7 @@ from rich.markup import escape
 from rich.rule import Rule
 
 from . import renderer as R
-from .session import ALL_MODELS, MODEL_CATALOG
+from .session import MODEL_CATALOG
 from .theme import ThemePalette, get_theme, list_themes
 
 try:
