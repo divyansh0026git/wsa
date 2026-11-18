@@ -281,3 +281,6 @@ def test_live_headless_cdp_default_is_full_windows_desktop_laptop_view(tmp_path)
     )
     assert res_multi["ok"] is True
     assert [v["name"] for v in res_multi["viewports"]] == ["desktop", "mobile"]
+    # Explicit desktop + mobile must apply distinct mobile metrics (390px) without losing desktop emulation
+    assert res_multi["viewports"][0]["width"] == 1440
+    assert res_multi["viewports"][1]["width"] == 390

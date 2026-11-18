@@ -232,6 +232,9 @@ def test_continuation_after_interruption_skips_workflow_router(tmp_path):
         "please continue, sorry i interrupted, continue from where you left, recall all the thinking steps again",
         "please continue from where you left off",
         "sorry i interrupted, keep going",
+        "continue please",
+        "go ahead and continue",
+        "continue with the remaining tasks",
     ]
     for prompt in prompts:
         with patch.object(agent, "_judge_workflow") as judge, \
@@ -240,6 +243,55 @@ def test_continuation_after_interruption_skips_workflow_router(tmp_path):
         assert res["ok"] is True
         judge.assert_not_called()
         execute.assert_called_once()
+
+
+def test_dynamic_thinking_liveness_applies_to_all_five_web_providers():
+    """All 5 web providers (claude, gemini, chatgpt, deepseek, venice) must stay alive during silent generating heartbeats."""
+    for provider in ("claude", "gemini", "chatgpt", "deepseek", "venice"):
+        with patch.dict(relay._dom_relay, {
+            "pending": {},
+            "relays": {},
+            "active_relay_id": "",
+            "recent_requests": {},
+            "cancelled_req_ids": {},
+        }):
+            cid = f"chrome-{provider}-e2e"
+            cinfo = {
+                "client_id": cid,
+                "browser": "chrome",
+                "label": f"{provider}-tab",
+                "provider": provider,
+                "providers": {provider: {"logged_in": True, "tab_open": True}},
+            }
+            relay.dom_relay_poll_for_client(cinfo)
+
+            def _worker(cinfo=cinfo, cid=cid, provider=provider):
+                pend = None
+                for _ in range(80):
+                    pend, _ = relay.dom_relay_poll_for_client(cinfo)
+                    if pend:
+                        break
+                    time.sleep(0.01)
+                assert pend is not None
+                rid = pend["id"]
+                for _ in range(10):
+                    time.sleep(0.05)
+                    relay.dom_relay_poll_for_client(cinfo, busy=True, busy_req_id=rid, generating=True)
+                relay.dom_relay_post_response(rid, response=f"{provider.upper()}_DEEP_OK", model=provider)
+
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
+            events = list(relay.dom_relay_iter(
+                "deep think",
+                timeout=0.22,
+                pickup_timeout=2.0,
+                step=0.025,
+                provider=provider,
+                client_request_id=f"deep-{provider}",
+            ))
+            t.join(timeout=3)
+        res = next(p for k, p in events if k == "result")
+        assert res["response"] == f"{provider.upper()}_DEEP_OK"
 
 
 def test_workflow_router_frames_prompt_cleanly_and_preserves_system_directive_on_pinned_chat(tmp_path):

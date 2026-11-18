@@ -54,6 +54,31 @@ _DESKTOP_UA_METADATA: Dict[str, Any] = {
     "wow64": False,
 }
 
+_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+)
+
+_MOBILE_UA_METADATA: Dict[str, Any] = {
+    "brands": [
+        {"brand": "Google Chrome", "version": "131"},
+        {"brand": "Chromium", "version": "131"},
+        {"brand": "Not_A Brand", "version": "24"},
+    ],
+    "fullVersionList": [
+        {"brand": "Google Chrome", "version": "131.0.0.0"},
+        {"brand": "Chromium", "version": "131.0.0.0"},
+        {"brand": "Not_A Brand", "version": "24.0.0.0"},
+    ],
+    "platform": "Android",
+    "platformVersion": "14.0.0",
+    "architecture": "",
+    "model": "Pixel 8",
+    "mobile": True,
+    "bitness": "64",
+    "wow64": False,
+}
+
 _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
   try {
     var existing = document.getElementById('__wsa_som_overlay__');
@@ -555,15 +580,14 @@ class _HeadlessCDPClient:
             })
         except Exception:
             pass
-        if not is_mob:
-            try:
-                self.call("Emulation.setUserAgentOverride", {
-                    "userAgent": _DESKTOP_USER_AGENT,
-                    "platform": "Win32",
-                    "userAgentMetadata": _DESKTOP_UA_METADATA,
-                })
-            except Exception:
-                pass
+        try:
+            self.call("Emulation.setUserAgentOverride", {
+                "userAgent": _MOBILE_USER_AGENT if is_mob else _DESKTOP_USER_AGENT,
+                "platform": "Linux armv81" if is_mob else "Win32",
+                "userAgentMetadata": _MOBILE_UA_METADATA if is_mob else _DESKTOP_UA_METADATA,
+            })
+        except Exception:
+            pass
         self.drain_events(120)
 
     def set_color_scheme(self, scheme: str) -> None:

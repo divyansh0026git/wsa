@@ -3643,7 +3643,7 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
             _u_norm,
         ):
             if re.search(
-                r"\b(?:please\s+continue|continue\s+(?:from\s+)?where|pick\s+up\s+where|resume\s+(?:from\s+)?where|sorry\s+i\s+interrupted|keep\s+going|carry\s+on)\b",
+                r"\b(?:please\s+(?:continue|resume|proceed)|continue\s+please|continue\s+(?:from\s+)?where|continue\s+(?:with\s+)?(?:the\s+)?(?:remaining|next|rest|task|work|workflow)|pick\s+up\s+where|resume\s+(?:from\s+)?where|go\s+ahead(?:\s+and\s+(?:continue|proceed|resume))?|sorry\s+i\s+interrupted|keep\s+going|carry\s+on)\b",
                 _u_norm,
             ):
                 simple = True
