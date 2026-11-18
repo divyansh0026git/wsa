@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 from .context import FileContextLedger
 
@@ -351,6 +351,7 @@ class SessionState:
     agent_mode: str = "singleagent"   # "singleagent" (default) | "multiagent" (ordered failover queue)
     multiagent_queue: List[str] = field(default_factory=list)
     multiagent_index: int = 0
+    last_visual_review: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_root, Path):

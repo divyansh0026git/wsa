@@ -193,6 +193,7 @@ class WSAClient:
         self.api_base = api_base.rstrip("/")
         self.api_key = api_key
         self.last_upstream_model: Optional[Dict] = None
+        self.last_relay_timings: Optional[Dict] = None
         read_timeout = max(320.0, float(timeout or 300) + 20.0)
         self._client = httpx.Client(timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=30.0, pool=10.0))
 
@@ -213,12 +214,14 @@ class WSAClient:
         on_thinking: Callable[[str], None] = None,
         on_reset: Callable[..., None] = None,
         on_status: Callable[[str], None] = None,
+        on_relay_status: Optional[Callable[[Dict], None]] = None,
         use_tools: bool = True,
         session_id: Optional[str] = None,
         chat_url: Optional[str] = None,
         relay_id: Optional[str] = None,
         new_chat: Optional[bool] = None,
         tools_override: Optional[List[Dict]] = None,
+        client_request_id: Optional[str] = None,
     ) -> dict:
         """
         Stream a completion with live token delivery.
@@ -239,7 +242,11 @@ class WSAClient:
               "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
             }
         """
-        client_req_id = uuid.uuid4().hex[:12]
+        client_req_id = (
+            str(client_request_id).strip()[:64]
+            if client_request_id and str(client_request_id).strip()
+            else uuid.uuid4().hex[:12]
+        )
         log_debug(f"stream() called: model={model}, messages={len(messages)}, req_id={client_req_id}, timeout={self._client.timeout}")
         
         payload = _sanitize_payload({
@@ -267,6 +274,8 @@ class WSAClient:
         usage = {}
         last_err = None
         self.last_upstream_model = None
+        self.last_relay_timings = None
+        relay_timings: Optional[Dict] = None
         
         start_time = time.time()
 
@@ -280,6 +289,7 @@ class WSAClient:
             full_content = ""
             full_thinking = ""
             tool_calls_acc = {}
+            relay_timings = None
             chunk_count = 0
             thinking_chunks = 0
             content_chunks = 0
@@ -366,6 +376,19 @@ class WSAClient:
                             log_debug(f"Usage received: {usage}")
                         if isinstance(chunk.get("x_upstream_model"), dict):
                             self.last_upstream_model = chunk["x_upstream_model"]
+                        if isinstance(chunk.get("x_relay_timings"), dict):
+                            relay_timings = dict(chunk["x_relay_timings"])
+                            self.last_relay_timings = relay_timings
+                        if isinstance(chunk.get("x_relay_status"), dict) and callable(on_relay_status):
+                            ev = dict(chunk["x_relay_status"])
+                            ev_cid = str(ev.get("client_request_id") or "").strip()
+                            if not ev_cid or ev_cid == client_req_id:
+                                if not ev_cid:
+                                    ev["client_request_id"] = client_req_id
+                                try:
+                                    on_relay_status(ev)
+                                except Exception:
+                                    pass
 
                         choices = chunk.get("choices")
                         if not choices:
@@ -489,6 +512,7 @@ class WSAClient:
             "finish_reason": finish_reason,
             "usage": usage,
             "upstream_model": self.last_upstream_model,
+            "relay_timings": relay_timings,
         }
 
     def check_connection(self) -> bool:

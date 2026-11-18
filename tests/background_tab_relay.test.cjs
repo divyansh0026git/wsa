@@ -463,8 +463,68 @@ async function unchangedProgressRetriesAfterLostPost() {
   assert.equal(h.storage.activeRelayJob.sentText, 'Inspecting layout');
 }
 
+async function submittedStageReportsVerifiedUploadAndTimings() {
+  for (const [imagesAttached, uploadMs] of [[true, 380], [false, null]]) {
+    const h = harness();
+    const tab = {id: 11, active: false, autoDiscardable: false, url: 'https://gemini.google.com/app/test'};
+    h.ctx.scanOpenSiteStates = async () => ({
+      ident: {clientId: 'test'},
+      hasAnyAiTab: true,
+      tabsByProvider: {gemini: [tab]},
+      bestByProvider: {gemini: tab},
+    });
+    const progressPosts = [];
+    h.ctx.fetch = async (url, opts) => {
+      if (url.includes('/pending-prompt?')) {
+        return {
+          ok: true,
+          headers: {get: () => null},
+          json: async () => ({
+            id: 'req-vis-1',
+            prompt: 'Inspect screenshot',
+            provider: 'gemini',
+            images: [{filename: 'sheet.png', data: 'YQ=='}],
+          }),
+        };
+      }
+      if (url.endsWith('/pending-progress')) {
+        progressPosts.push(JSON.parse(opts.body));
+        return {ok: true, json: async () => ({ok: true})};
+      }
+      return {ok: true, json: async () => ({ok: true})};
+    };
+    h.ctx.ensureAliveAiTab = async () => ({tab, recovered: false});
+    h.ctx.protectAiTabs = async () => {};
+    h.ctx.readLiveTabIdentity = async () => ({});
+    h.ctx.ensurePageRuntime = async () => true;
+    h.ctx.chrome.scripting = {
+      executeScript: async () => [{
+        result: {
+          ok: true,
+          images_attached: imagesAttached,
+          upload_ms: uploadMs,
+          submit_ms: 420,
+        },
+      }],
+    };
+    await h.run('checkAndRelay()');
+    await new Promise(setImmediate);
+    const sub = progressPosts.find(p => p.stage === 'submitted');
+    assert.ok(sub, 'expected /pending-progress stage=submitted post');
+    assert.equal(sub.id, 'req-vis-1');
+    assert.equal(sub.seq, 0);
+    assert.equal(sub.images_attached, imagesAttached);
+    assert.equal(sub.submit_ms, 420);
+    if (uploadMs !== null) {
+      assert.equal(sub.upload_ms, uploadMs);
+    } else {
+      assert.equal(sub.upload_ms, undefined);
+    }
+  }
+}
+
 (async()=>{
-  for (const test of [unavailableImageTransferFailsForEveryRuntime, unchangedProgressRetriesAfterLostPost, acquisitionIsSingleFlight, completionWaitsForAcknowledgement, failedDeliverySurvivesRestart,
+  for (const test of [unavailableImageTransferFailsForEveryRuntime, unchangedProgressRetriesAfterLostPost, submittedStageReportsVerifiedUploadAndTimings, acquisitionIsSingleFlight, completionWaitsForAcknowledgement, failedDeliverySurvivesRestart,
     rejectedAndInvalidAcknowledgements, failedErrorDeliverySurvivesRestart, backgroundProvidersAndRestart,
     submissionOwnsJobBeforeAwait, restartDuringPreparationReportsFailure, longRunningJobIsNotSilentlyDropped,
     staleHeartbeatCannotEraseCompletion, alarmRecoversWithoutTabKeepalive, visibilitySwitchWakesWorker,

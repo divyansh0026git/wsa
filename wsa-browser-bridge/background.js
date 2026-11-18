@@ -2279,6 +2279,32 @@ async function acquireAndStartRelay() {
       pollErrCount: 0,
     };
     if (!await setStoredActiveJob(job)) return;
+    // Notify the local server once submission (and any verified image upload) is confirmed.
+    try {
+      const stagePayload = {
+        id: job.reqId,
+        client_id: job.clientId,
+        provider,
+        stage: "submitted",
+        model: job.modelBadge || "",
+        seq: 0,
+      };
+      if (typeof startRes.images_attached === "boolean") {
+        stagePayload.images_attached = startRes.images_attached;
+      }
+      if (typeof startRes.upload_ms === "number" && startRes.upload_ms >= 0) {
+        stagePayload.upload_ms = Math.round(startRes.upload_ms);
+      }
+      if (typeof startRes.submit_ms === "number" && startRes.submit_ms >= 0) {
+        stagePayload.submit_ms = Math.round(startRes.submit_ms);
+      }
+      fetch(`${LOCAL_API}/pending-progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(2500),
+        body: JSON.stringify(stagePayload),
+      }).catch(() => {});
+    } catch { /* best effort stage notification */ }
     scheduleActiveJobPoll(180);
   } catch (e) {
     if ((await getStoredActiveJob())?.reqId === pending.id) {
@@ -3785,7 +3811,13 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
 
   const selectedBadge = rt.readModePickerBadge();
 
+  const monoNow = () => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
+  const tTurnStart = monoNow();
+  let imagesAttached = null;
+  let uploadMs = null;
+
   if (Array.isArray(images) && images.length > 0 && rt.attachImagesToPage) {
+    const tAttachStart = monoNow();
     const attachRes = await rt.attachImagesToPage(images, inputEl);
     if (attachRes && attachRes.verified === false) {
       const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
@@ -3797,6 +3829,10 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
         ok: false,
         error: `[IMAGE_ATTACH_FAILED] Gemini: ${attachRes.error || "Image upload could not be verified before sending."}`,
       };
+    }
+    imagesAttached = Boolean(attachRes && attachRes.verified === true);
+    if (imagesAttached) {
+      uploadMs = Math.max(0, Math.round(monoNow() - tAttachStart));
     }
     inputEl = rt.findEditor() || inputEl;
   }
@@ -3855,6 +3891,9 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
     ok: true,
     model: selectedBadge,
     url: window.location.href,
+    images_attached: imagesAttached,
+    upload_ms: uploadMs,
+    submit_ms: Math.max(0, Math.round(monoNow() - tTurnStart)),
   };
 }
 
@@ -5734,7 +5773,13 @@ async function _claudeStartTurnFn(reqId, prompt, images = []) {
     };
   }
 
+  const monoNow = () => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
+  const tTurnStart = monoNow();
+  let imagesAttached = null;
+  let uploadMs = null;
+
   if (Array.isArray(images) && images.length > 0 && rt.attachImagesToClaude) {
+    const tAttachStart = monoNow();
     const attachRes = await rt.attachImagesToClaude(images, editor);
     if (attachRes && attachRes.verified === false) {
       const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
@@ -5746,6 +5791,10 @@ async function _claudeStartTurnFn(reqId, prompt, images = []) {
         ok: false,
         error: `[IMAGE_ATTACH_FAILED] Claude: ${attachRes.error || "Image upload could not be verified before sending."}`,
       };
+    }
+    imagesAttached = Boolean(attachRes && attachRes.verified === true);
+    if (imagesAttached) {
+      uploadMs = Math.max(0, Math.round(monoNow() - tAttachStart));
     }
     editor = rt.findEditor() || editor;
   }
@@ -5814,7 +5863,13 @@ async function _claudeStartTurnFn(reqId, prompt, images = []) {
     sawEditorCleared: Boolean(!afterEd || (typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(afterEd, prompt))),
     modelBadge,
   };
-  return { ok: true, model: modelBadge || "Claude Web" };
+  return {
+    ok: true,
+    model: modelBadge || "Claude Web",
+    images_attached: imagesAttached,
+    upload_ms: uploadMs,
+    submit_ms: Math.max(0, Math.round(monoNow() - tTurnStart)),
+  };
 }
 
 function _claudePollTurnFn(reqId) {
@@ -6852,7 +6907,13 @@ function _installWsaDomUtilsFn() {
       };
     }
 
+    const monoNow = () => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
+    const tTurnStart = monoNow();
+    let imagesAttached = null;
+    let uploadMs = null;
+
     if (Array.isArray(images) && images.length > 0 && attachImagesToEditor) {
+      const tAttachStart = monoNow();
       const attachRes = await attachImagesToEditor(images, editor);
       if (attachRes && attachRes.verified === false) {
         const errBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
@@ -6864,6 +6925,10 @@ function _installWsaDomUtilsFn() {
           ok: false,
           error: `[IMAGE_ATTACH_FAILED] ${provLabel}: ${attachRes.error || "Image upload could not be verified before sending."}`,
         };
+      }
+      imagesAttached = Boolean(attachRes && attachRes.verified === true);
+      if (imagesAttached) {
+        uploadMs = Math.max(0, Math.round(monoNow() - tAttachStart));
       }
       editor = rt.findEditor() || editor;
     }
@@ -6930,7 +6995,13 @@ function _installWsaDomUtilsFn() {
       sawEditorCleared: Boolean(!afterEd || !isPromptStillInEditor(afterEd, prompt)),
       modelBadge,
     };
-    return { ok: true, model: modelBadge || opts.defaultModel || "Web AI" };
+    return {
+      ok: true,
+      model: modelBadge || opts.defaultModel || "Web AI",
+      images_attached: imagesAttached,
+      upload_ms: uploadMs,
+      submit_ms: Math.max(0, Math.round(monoNow() - tTurnStart)),
+    };
   }
 
   function pollTurn(rt, reqId, opts = {}) {

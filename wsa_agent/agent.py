@@ -6,18 +6,21 @@ round counter, verification nudge, smart history compaction.
 from __future__ import annotations
 import base64
 import ast
+import inspect
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Tuple, Any, Callable
 
 from .task_skills import select_task_skills, skill_guidance
 from .session import SessionState, is_provider_thread_url
 from .client import WSAClient, ProviderLimitError, PromptTooLongError
+from .visual_status import VisualReviewTracker, describe_capture_viewports
 from .tools import (
     execute_tool,
     set_project_root,
@@ -1602,7 +1605,7 @@ class _QuietStreamSink:
     def reset_answer(self) -> None:
         pass
 
-    def set_status_hint(self, text: str) -> None:
+    def set_status_hint(self, text: str, **_kwargs) -> None:
         if self._cb and text:
             self._cb("status", {"role": self._role, "hint": text})
 
@@ -1622,6 +1625,55 @@ def _close_stream_ui(sr: Any) -> None:
     close_fn = getattr(sr, "close", None)
     if callable(close_fn):
         close_fn()
+
+
+def _set_renderer_visual_hint(
+    sr: Any,
+    text: str,
+    *,
+    with_elapsed: bool = True,
+    reset_stage_clock: bool = False,
+) -> None:
+    """Update a StreamRenderer or compatible mock with an optional live stage timer."""
+    if sr is None:
+        return
+    setter = getattr(sr, "set_status_hint", None)
+    if not callable(setter):
+        return
+    try:
+        setter(text, with_elapsed=with_elapsed, reset_stage_clock=reset_stage_clock)
+    except TypeError:
+        setter(text)
+
+
+def _call_client_stream(client: Any, stream_kwargs: Dict[str, Any]) -> Any:
+    """Call `client.stream(**kwargs)` while staying compatible with mock clients lacking optional kwargs."""
+    stream_fn = client.stream
+    call_kwargs = dict(stream_kwargs)
+    optional_keys = ("on_relay_status", "client_request_id")
+    if any(k in call_kwargs for k in optional_keys):
+        try:
+            sig = inspect.signature(stream_fn)
+            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if not has_var_kw:
+                for k in optional_keys:
+                    if k in call_kwargs and k not in sig.parameters:
+                        call_kwargs.pop(k, None)
+        except (TypeError, ValueError):
+            pass
+    return stream_fn(**call_kwargs)
+
+
+def _classify_visual_error(exc: BaseException) -> str:
+    """Return a concise sanitized error category for visual-review diagnostics."""
+    if isinstance(exc, ProviderLimitError):
+        return "rate limit"
+    if isinstance(exc, PromptTooLongError):
+        return "prompt too long"
+    low = f"{type(exc).__name__} {exc}".lower()
+    if "timeout" in low or isinstance(exc, TimeoutError):
+        return "timeout"
+    return "transport error"
 
 
 def _stop_stream_ui(sr: Any) -> None:
@@ -1908,9 +1960,14 @@ def _run_visual_critic_bridge(
     *,
     relay_id: Optional[str] = None,
     worker_session_id: Optional[str] = None,
+    on_relay_status: Optional[Callable[[Dict[str, Any]], None]] = None,
+    client_request_id: Optional[str] = None,
+    meta_out: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Delegate a 1-turn multimodal visual critique to a synced vision-capable web bridge."""
     if not pending_imgs or not vision_model or not callable(getattr(client, "stream", None)):
+        if isinstance(meta_out, dict):
+            meta_out["error_kind"] = "unavailable"
         return None
     critic_parts: List[Dict[str, Any]] = [{
         "type": "text",
@@ -1927,30 +1984,47 @@ def _run_visual_critic_bridge(
     for im in pending_imgs:
         if im.get("url"):
             critic_parts.append({"type": "image_url", "image_url": {"url": im["url"]}})
+    stream_kwargs: Dict[str, Any] = dict(
+        messages=[
+            {
+                "role": "system",
+                "content": "You are WSA Visual Critic. Inspect screenshots strictly from observed pixels and telemetry; never invent unseen defects.",
+            },
+            {"role": "user", "content": critic_parts},
+        ],
+        model=vision_model,
+        use_tools=False,
+        session_id=f"{worker_session_id or state.session_id}:role:visual_critic",
+        new_chat=True,
+        relay_id=relay_id,
+    )
+    if callable(on_relay_status):
+        stream_kwargs["on_relay_status"] = on_relay_status
+    if client_request_id:
+        stream_kwargs["client_request_id"] = client_request_id
     try:
-        resp = client.stream(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are WSA Visual Critic. Inspect screenshots strictly from observed pixels and telemetry; never invent unseen defects.",
-                },
-                {"role": "user", "content": critic_parts},
-            ],
-            model=vision_model,
-            use_tools=False,
-            session_id=f"{worker_session_id or state.session_id}:role:visual_critic",
-            new_chat=True,
-            relay_id=relay_id,
-        )
+        resp = _call_client_stream(client, stream_kwargs)
+        if isinstance(meta_out, dict) and isinstance(resp, dict) and isinstance(resp.get("relay_timings"), dict):
+            meta_out["relay_timings"] = dict(resp["relay_timings"])
         txt = str((resp or {}).get("content") or "").strip() if isinstance(resp, dict) else ""
         # Accept a fenced reply from a web tab, but only consume an explicit verdict.
         body = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", txt, flags=re.I)
         verdict = json.loads(body)
         if (not isinstance(verdict, dict) or type(verdict.get("pass")) is not bool
                 or not isinstance(verdict.get("defects"), list)):
+            if isinstance(meta_out, dict):
+                meta_out["error_kind"] = "unusable_reply"
             return None
+        if isinstance(meta_out, dict):
+            meta_out["error_kind"] = ""
         return verdict
-    except Exception:
+    except (json.JSONDecodeError, ValueError, TypeError):
+        if isinstance(meta_out, dict):
+            meta_out["error_kind"] = "unusable_reply"
+        return None
+    except Exception as exc:
+        if isinstance(meta_out, dict):
+            meta_out["error_kind"] = _classify_visual_error(exc)
         return None
 
 
@@ -2230,16 +2304,25 @@ def execute_agent_loop(
 
         use_live_ui = (not quiet_ui) if live_ui is None else bool(live_ui)
 
-        def _make_renderer(cur_model: str, hint: str, r_idx: int) -> Any:
+        def _make_renderer(
+            cur_model: str,
+            hint: str,
+            r_idx: int,
+            *,
+            stage_override: Optional[str] = None,
+            flush_override: Optional[bool] = None,
+        ) -> Any:
             if not use_live_ui:
                 return _QuietStreamSink(event_callback=event_callback, role=role)
+            eff_stage = stage_label if stage_override is None else stage_override
+            eff_flush = flush_final_stream if flush_override is None else flush_override
             try:
                 return R.StreamRenderer(
                     round_num=r_idx,
                     status_hint=hint,
                     model=cur_model,
-                    stage_label=stage_label,
-                    flush_final=flush_final_stream,
+                    stage_label=eff_stage,
+                    flush_final=eff_flush,
                 )
             except TypeError:
                 try:
@@ -2249,6 +2332,35 @@ def execute_agent_loop(
                         return R.StreamRenderer(round_num=r_idx, status_hint=hint)
                     except TypeError:
                         return R.StreamRenderer()
+
+        def _emit_visual_final(tracker: VisualReviewTracker, final_line: str, outcome: str) -> None:
+            diag = tracker.to_diagnostics_dict()
+            try:
+                state.last_visual_review = diag
+            except Exception:
+                pass
+            if not quiet_ui:
+                print_fn = getattr(R, "print_visual_status", None)
+                if callable(print_fn):
+                    print_fn(final_line, outcome=outcome)
+                else:
+                    R.print_info(final_line)
+            if event_callback:
+                try:
+                    event_callback(
+                        "visual_status",
+                        {
+                            "role": role,
+                            "outcome": outcome,
+                            "message": final_line,
+                            "diagnostics": diag,
+                        },
+                    )
+                except Exception:
+                    pass
+
+        pending_direct_visual_tracker: Optional[VisualReviewTracker] = None
+        pending_direct_visual_local_clean: Optional[bool] = None
 
         for round_num in range(max_rounds):
             rounds_used = round_num + 1
@@ -2267,12 +2379,33 @@ def execute_agent_loop(
 
             response: Optional[Dict[str, Any]] = None
             stream_aborted = False
+            active_visual_tracker = pending_direct_visual_tracker
+            active_visual_local_clean = pending_direct_visual_local_clean
+            pending_direct_visual_tracker = None
+            pending_direct_visual_local_clean = None
+            visual_fallback_from = ""
             cur_status_hint = last_tool_hint
             prompt_too_long_retries = 0
             sr = None
             try:
                 while True:
+                    visual_req_id = ""
+                    if active_visual_tracker is not None:
+                        visual_req_id = uuid.uuid4().hex[:12]
+                        cur_status_hint = active_visual_tracker.begin_review(
+                            visual_req_id,
+                            effective_model,
+                            fallback_from=visual_fallback_from,
+                        )
+                        visual_fallback_from = ""
                     sr = _make_renderer(effective_model, cur_status_hint, round_num)
+                    if active_visual_tracker is not None:
+                        _set_renderer_visual_hint(
+                            sr,
+                            cur_status_hint,
+                            with_elapsed=True,
+                            reset_stage_clock=True,
+                        )
                     sr.start_thinking()
                     try:
                         stream_kwargs: Dict[str, Any] = dict(
@@ -2287,6 +2420,29 @@ def execute_agent_loop(
                         )
                         if hasattr(sr, "set_status_hint"):
                             stream_kwargs["on_status"] = sr.set_status_hint
+                        if active_visual_tracker is not None and visual_req_id:
+                            stream_kwargs["client_request_id"] = visual_req_id
+
+                            def _on_direct_relay_status(
+                                ev: Dict[str, Any],
+                                _tr: VisualReviewTracker = active_visual_tracker,
+                                _rid: str = visual_req_id,
+                                _sr: Any = sr,
+                            ) -> None:
+                                if _tr.closed or _tr.active_request_id != _rid:
+                                    return
+                                upd = _tr.on_relay_event(ev)
+                                if upd is not None:
+                                    txt, with_el = upd
+                                    st = str(ev.get("stage") or "").strip().lower()
+                                    _set_renderer_visual_hint(
+                                        _sr,
+                                        txt,
+                                        with_elapsed=with_el,
+                                        reset_stage_clock=(st == "submitted"),
+                                    )
+
+                            stream_kwargs["on_relay_status"] = _on_direct_relay_status
                         if relay_id_override is not None:
                             stream_kwargs["relay_id"] = relay_id_override
                         if failover_new_chat is not None:
@@ -2297,7 +2453,7 @@ def execute_agent_loop(
                             stream_kwargs["new_chat"] = True
                         if tools_override is not None:
                             stream_kwargs["tools_override"] = tools_override
-                        response = client.stream(**stream_kwargs)
+                        response = _call_client_stream(client, stream_kwargs)
                         failover_new_chat = None
                         if getattr(state, "_force_new_chat_next", False):
                             state._force_new_chat_next = False
@@ -2325,6 +2481,10 @@ def execute_agent_loop(
                         break
                     except KeyboardInterrupt:
                         _stop_stream_ui(sr)
+                        if active_visual_tracker is not None and not active_visual_tracker.closed:
+                            _vis_line = active_visual_tracker.finish("cancelled")
+                            _emit_visual_final(active_visual_tracker, _vis_line, "cancelled")
+                            active_visual_tracker = None
                         _abort_interrupted()
                         stream_aborted = True
                         break
@@ -2342,6 +2502,10 @@ def execute_agent_loop(
                                     f"(retry {prompt_too_long_retries}/3) — compacting context to ~{max(1, retry_budget // 1000)}KB & retrying..."
                                 )
                             continue
+                        if active_visual_tracker is not None and not active_visual_tracker.closed:
+                            _vis_line = active_visual_tracker.finish("transport_error", error_kind="prompt too long")
+                            _emit_visual_final(active_visual_tracker, _vis_line, "transport_error")
+                            active_visual_tracker = None
                         aborted_reason = str(ptle)
                         if not quiet_ui:
                             R.print_error(aborted_reason)
@@ -2429,6 +2593,8 @@ def execute_agent_loop(
                                 f"(slot {slot_num}/{max(len(q_list), slot_num)})."
                             )
                             cur_status_hint = f"Failover -> {next_model}"
+                            if active_visual_tracker is not None:
+                                visual_fallback_from = prev_model
                             if event_callback:
                                 event_callback(
                                     "failover",
@@ -2593,12 +2759,20 @@ def execute_agent_loop(
                                 R.print_error(str(ple))
                             else:
                                 R.print_info("Context preserved, stopping workflow...")
+                        if active_visual_tracker is not None and not active_visual_tracker.closed:
+                            _vis_line = active_visual_tracker.finish("transport_error", error_kind="rate limit")
+                            _emit_visual_final(active_visual_tracker, _vis_line, "transport_error")
+                            active_visual_tracker = None
                         aborted_reason = str(ple)
                         limit_exhausted = True
                         stream_aborted = True
                         break
                     except ConnectionError as e:
                         _stop_stream_ui(sr)
+                        if active_visual_tracker is not None and not active_visual_tracker.closed:
+                            _vis_line = active_visual_tracker.finish("transport_error", error_kind=_classify_visual_error(e))
+                            _emit_visual_final(active_visual_tracker, _vis_line, "transport_error")
+                            active_visual_tracker = None
                         aborted_reason = str(e)
                         if not quiet_ui:
                             R.print_error(str(e))
@@ -2607,6 +2781,10 @@ def execute_agent_loop(
                         break
                     except Exception as e:
                         _stop_stream_ui(sr)
+                        if active_visual_tracker is not None and not active_visual_tracker.closed:
+                            _vis_line = active_visual_tracker.finish("transport_error", error_kind=_classify_visual_error(e))
+                            _emit_visual_final(active_visual_tracker, _vis_line, "transport_error")
+                            active_visual_tracker = None
                         aborted_reason = f"Unexpected error: {e}"
                         if not quiet_ui:
                             R.print_error(aborted_reason)
@@ -2618,8 +2796,21 @@ def execute_agent_loop(
                     break
 
                 sr.finish()
+                if active_visual_tracker is not None and not active_visual_tracker.closed:
+                    _r_timings = response.get("relay_timings") if isinstance(response, dict) else None
+                    _direct_outcome = (
+                        "reviewed_with_local_defects"
+                        if active_visual_local_clean is False
+                        else "reviewed"
+                    )
+                    _vis_line = active_visual_tracker.finish(_direct_outcome, timings=_r_timings)
+                    _emit_visual_final(active_visual_tracker, _vis_line, _direct_outcome)
+                    active_visual_tracker = None
             finally:
                 _close_stream_ui(sr)
+                if active_visual_tracker is not None and not active_visual_tracker.closed:
+                    active_visual_tracker.closed = True
+                    active_visual_tracker = None
 
             if sr.get_thinking_text() and persist_to_state:
                 state.last_thinking_chars = len(sr.get_thinking_text())
@@ -2811,6 +3002,7 @@ def execute_agent_loop(
                 R.console.print()
             tool_result_messages: List[Dict] = []
             capture_keys: List[str] = []
+            batch_visual_capture_ms: Optional[int] = None
             interrupted_in_tools = False
             has_file_mutations = any(
                 (tc.get("function") or {}).get("name") in (
@@ -2988,14 +3180,42 @@ def execute_agent_loop(
                                                  "name": name, "content": result})
                     continue
 
-                t_start = time.time()
+                t_start = time.monotonic()
+                cap_sr = None
+                if name == "visual_inspect" and use_live_ui:
+                    cap_label = describe_capture_viewports(args)
+                    cap_sr = _make_renderer(
+                        effective_model,
+                        cap_label,
+                        round_num,
+                        stage_override=stage_label or "visual-capture",
+                        flush_override=False,
+                    )
+                    _set_renderer_visual_hint(
+                        cap_sr,
+                        cap_label,
+                        with_elapsed=True,
+                        reset_stage_clock=True,
+                    )
+                    cap_sr.start_thinking()
                 try:
                     result = execute_tool(name, args)
                 except KeyboardInterrupt:
                     interrupted_in_tools = True
                     break
-                t_elapsed = time.time() - t_start
+                finally:
+                    _close_stream_ui(cap_sr)
+                t_elapsed = max(0.0, time.monotonic() - t_start)
                 is_err = _is_error_result_text(result)
+                if name == "visual_inspect":
+                    cap_ms = max(0, int(round(t_elapsed * 1000.0)))
+                    if not is_err:
+                        batch_visual_capture_ms = (batch_visual_capture_ms or 0) + cap_ms
+                    else:
+                        _fail_tr = VisualReviewTracker(effective_model, delegated=False)
+                        _fail_tr.set_capture_ms(cap_ms)
+                        _fail_line = _fail_tr.finish("capture_failed")
+                        _emit_visual_final(_fail_tr, _fail_line, "capture_failed")
                 exec_status, rclass = _parse_exec_status_from_result(result, is_err)
                 if name == "spawn_subagent" and not is_err:
                     try:
@@ -3215,21 +3435,131 @@ def execute_agent_loop(
                 critic_model = None
                 sheets = [img for img in pending_imgs if img.get("source_tool") == "visual_inspect"]
                 needs_critic = bool(sheets) and not provider_supports_vision(effective_model)
-                if needs_critic and len(sheets) <= 4:
+                critic_interrupted = False
+                if needs_critic:
+                    delegated_tracker = VisualReviewTracker(effective_model, delegated=True)
+                    if batch_visual_capture_ms is not None:
+                        delegated_tracker.set_capture_ms(batch_visual_capture_ms)
+                    reviewers = (
+                        vision_critic_providers(state, exclude=effective_model)
+                        if len(sheets) <= 4
+                        else []
+                    )
                     telemetry_blob = "\n".join(
                         str(m.get("content") or "")
                         for m in tool_result_messages
                         if m.get("name") == "visual_inspect"
                     )
-                    for critic_model in vision_critic_providers(state, exclude=effective_model):
-                        if not quiet_ui:
-                            R.print_info(f"Routing visual critique to {R.friendly_model_name(critic_model)}…")
-                        critic_text = _run_visual_critic_bridge(
-                            sheets, telemetry_blob, state, client, critic_model,
-                            relay_id=relay_id_override, worker_session_id=effective_session_id,
+                    critic_sr = None
+                    prev_reviewer = ""
+                    last_timings: Optional[Dict[str, Any]] = None
+                    last_error_kind = ""
+                    had_transport_error = False
+                    had_unusable = False
+                    try:
+                        if reviewers and use_live_ui:
+                            critic_sr = _make_renderer(
+                                reviewers[0],
+                                "",
+                                round_num,
+                                stage_override=stage_label or "visual-review",
+                                flush_override=False,
+                            )
+                        for idx_rev, cand_model in enumerate(reviewers):
+                            critic_model = cand_model
+                            critic_req_id = uuid.uuid4().hex[:12]
+                            hint_line = delegated_tracker.begin_review(
+                                critic_req_id,
+                                cand_model,
+                                fallback_from=prev_reviewer,
+                            )
+                            if critic_sr is not None:
+                                _set_renderer_visual_hint(
+                                    critic_sr,
+                                    hint_line,
+                                    with_elapsed=True,
+                                    reset_stage_clock=True,
+                                )
+                                if idx_rev == 0:
+                                    critic_sr.start_thinking()
+
+                            def _on_critic_relay(
+                                ev: Dict[str, Any],
+                                _tr: VisualReviewTracker = delegated_tracker,
+                                _rid: str = critic_req_id,
+                                _sr: Any = critic_sr,
+                            ) -> None:
+                                if _tr.closed or _tr.active_request_id != _rid:
+                                    return
+                                upd = _tr.on_relay_event(ev)
+                                if upd is not None and _sr is not None:
+                                    txt, with_el = upd
+                                    st = str(ev.get("stage") or "").strip().lower()
+                                    _set_renderer_visual_hint(
+                                        _sr,
+                                        txt,
+                                        with_elapsed=with_el,
+                                        reset_stage_clock=(st == "submitted"),
+                                    )
+
+                            attempt_meta: Dict[str, Any] = {}
+                            critic_text = _run_visual_critic_bridge(
+                                sheets,
+                                telemetry_blob,
+                                state,
+                                client,
+                                cand_model,
+                                relay_id=relay_id_override,
+                                worker_session_id=effective_session_id,
+                                on_relay_status=_on_critic_relay,
+                                client_request_id=critic_req_id,
+                                meta_out=attempt_meta,
+                            )
+                            if isinstance(attempt_meta.get("relay_timings"), dict):
+                                last_timings = attempt_meta["relay_timings"]
+                            if critic_text is not None:
+                                break
+                            prev_reviewer = cand_model
+                            ek = str(attempt_meta.get("error_kind") or "")
+                            if ek in ("transport error", "timeout", "rate limit", "prompt too long"):
+                                had_transport_error = True
+                                last_error_kind = ek
+                            else:
+                                had_unusable = True
+                    except KeyboardInterrupt:
+                        critic_interrupted = True
+                    finally:
+                        _close_stream_ui(critic_sr)
+
+                    if critic_interrupted:
+                        _cancel_line = delegated_tracker.finish("cancelled")
+                        _emit_visual_final(delegated_tracker, _cancel_line, "cancelled")
+                        _abort_interrupted()
+                        break
+
+                    if critic_text is not None:
+                        _defects_n = len(critic_text.get("defects") or [])
+                        if critic_text.get("pass") is True:
+                            _del_outcome = "passed"
+                            _del_line = delegated_tracker.finish(
+                                "passed", defects_count=0, timings=last_timings
+                            )
+                        else:
+                            _del_outcome = "defects"
+                            _del_line = delegated_tracker.finish(
+                                "defects", defects_count=_defects_n, timings=last_timings
+                            )
+                    elif reviewers and had_transport_error and not had_unusable:
+                        _del_outcome = "transport_error"
+                        _del_line = delegated_tracker.finish(
+                            "transport_error",
+                            error_kind=last_error_kind or "transport error",
+                            timings=last_timings,
                         )
-                        if critic_text is not None:
-                            break
+                    else:
+                        _del_outcome = "unavailable"
+                        _del_line = delegated_tracker.finish("unavailable", timings=last_timings)
+                    _emit_visual_final(delegated_tracker, _del_line, _del_outcome)
                 if needs_critic:
                     for key in capture_keys:
                         evidence = verification_evidence.get(key)
@@ -3261,6 +3591,17 @@ def execute_agent_loop(
                     messages.append(vis_msg)
                     new_messages.append(vis_msg)
                 else:
+                    direct_tracker = VisualReviewTracker(effective_model, delegated=False)
+                    if batch_visual_capture_ms is not None:
+                        direct_tracker.set_capture_ms(batch_visual_capture_ms)
+                    pending_direct_visual_tracker = direct_tracker
+                    if sheets and capture_keys:
+                        pending_direct_visual_local_clean = all(
+                            bool((verification_evidence.get(k) or {}).get("ok"))
+                            for k in capture_keys
+                        )
+                    else:
+                        pending_direct_visual_local_clean = None
                     visual_parts: List[Dict] = [{
                         "type": "text",
                         "text": (

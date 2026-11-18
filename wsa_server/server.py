@@ -346,6 +346,9 @@ class WSAHandler(BaseHTTPRequestHandler):
                 self._suppress_poll_log = True
                 req = json.loads(body or b"{}")
                 req_id = str(req.get("id") or "")
+                raw_attached = req.get("images_attached")
+                raw_up_ms = req.get("upload_ms")
+                raw_sub_ms = req.get("submit_ms")
                 ok = dom_relay_post_progress(
                     req_id,
                     response=req.get("response", ""),
@@ -354,6 +357,10 @@ class WSAHandler(BaseHTTPRequestHandler):
                     chat_url=req.get("chat_url", ""),
                     client_id=str(req.get("client_id") or ""),
                     seq=int(req.get("seq") or 0),
+                    stage=str(req.get("stage") or ""),
+                    images_attached=raw_attached if isinstance(raw_attached, bool) else None,
+                    upload_ms=int(raw_up_ms) if isinstance(raw_up_ms, (int, float)) else None,
+                    submit_ms=int(raw_sub_ms) if isinstance(raw_sub_ms, (int, float)) else None,
                 )
                 self.send_json({"ok": ok, "cancelled": is_dom_relay_cancelled(req_id)})
             elif req_path in ("/relay/cancel", "/v1/relays/cancel"):
@@ -667,6 +674,18 @@ class WSAHandler(BaseHTTPRequestHandler):
                         self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
                         continue
+                    if event_type == "relay_status":
+                        status_chunk = {
+                            "id": cid, "object": "chat.completion.chunk",
+                            "created": int(time.time()), "model": model_name,
+                            "choices": [],
+                            "x_relay_status": delta,
+                        }
+                        self.wfile.write(
+                            f"data: {json.dumps(status_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                        )
+                        self.wfile.flush()
+                        continue
                     if event_type == "reset_content":
                         pending_buf = ""
                         streamed_parts.clear()
@@ -779,6 +798,7 @@ class WSAHandler(BaseHTTPRequestHandler):
                     "choices": [{"index": 0, "delta": final_delta, "finish_reason": finish_reason}],
                     "usage": usage_obj,
                     "x_upstream_model": upstream_model if (upstream_model.get("badge") or upstream_model.get("mode") is not None or upstream_model.get("chat_url")) else None,
+                    "x_relay_timings": relay_meta.get("relay_timings") if isinstance(relay_meta.get("relay_timings"), dict) else None,
                 }
                 self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
                 self.wfile.write(b"data: [DONE]\n\n")

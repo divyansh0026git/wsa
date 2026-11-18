@@ -1674,6 +1674,16 @@ def dom_relay_iter(
             "cancelled": False,
             "dispatched": False,
             "dispatched_at": 0.0,
+            "queued_mono": time.monotonic(),
+            "dispatched_mono": None,
+            "submitted_mono": None,
+            "first_token_mono": None,
+            "status_seq": 0,
+            "status_stage": "queued",
+            "images_attached": None,
+            "browser_upload_ms": None,
+            "browser_submit_ms": None,
+            "has_images": bool(relay_images_payload),
             "idle_polls_since_dispatch": 0,
             "new_chat": bool(new_chat),
             "progress_seq": 0,
@@ -1712,9 +1722,21 @@ def dom_relay_iter(
     start = time.time()
     last_keepalive_ts = start
     sent_seq = 0
+    sent_status_seq = 0
+    emitted_generating = False
     streamed_thinking = ""
     streamed_response = ""
     completed_cleanly = False
+    emit_relay_status = bool(relay_images_payload or client_request_id)
+    if emit_relay_status:
+        yield ("relay_status", {
+            "req_id": req_id,
+            "client_request_id": client_request_id,
+            "provider": prov,
+            "stage": "queued",
+            "has_images": bool(relay_images_payload),
+            "images_attached": None,
+        })
     try:
         while not ev.is_set():
             wait_slice = min(float(step), 0.25)
@@ -1727,6 +1749,13 @@ def dom_relay_iter(
                 dispatched = bool(cur_item.get("dispatched"))
                 cancelled_flag = bool(cur_item.get("cancelled"))
                 cur_seq = int(cur_item.get("progress_seq") or 0)
+                cur_status_seq = int(cur_item.get("status_seq") or 0)
+                cur_status_stage = str(cur_item.get("status_stage") or "queued")
+                cur_images_attached = cur_item.get("images_attached")
+                cur_upload_ms = cur_item.get("browser_upload_ms")
+                cur_q_mono = cur_item.get("queued_mono")
+                cur_d_mono = cur_item.get("dispatched_mono")
+                cur_s_mono = cur_item.get("submitted_mono")
                 prog_resp = cur_item.get("progress_response") or ""
                 prog_think = cur_item.get("progress_thinking") or ""
                 prog_model = " ".join((cur_item.get("progress_model") or "").split())
@@ -1739,6 +1768,25 @@ def dom_relay_iter(
 
             if cancelled_flag:
                 raise _finish_dedup_err("DOM relay request cancelled by user")
+
+            if cur_status_seq > sent_status_seq:
+                sent_status_seq = cur_status_seq
+                if emit_relay_status:
+                    st_payload = {
+                        "req_id": req_id,
+                        "client_request_id": client_request_id,
+                        "provider": prov,
+                        "stage": cur_status_stage,
+                        "has_images": bool(relay_images_payload),
+                        "images_attached": cur_images_attached,
+                    }
+                    if cur_q_mono is not None and cur_d_mono is not None:
+                        st_payload["relay_pickup_ms"] = max(0, int(round((cur_d_mono - cur_q_mono) * 1000.0)))
+                    if cur_d_mono is not None and cur_s_mono is not None:
+                        st_payload["relay_attach_ms"] = max(0, int(round((cur_s_mono - cur_d_mono) * 1000.0)))
+                    if cur_upload_ms is not None:
+                        st_payload["upload_ms"] = int(cur_upload_ms)
+                    prog_events.append(("relay_status", st_payload))
 
             if cur_seq > sent_seq:
                 sent_seq = cur_seq
@@ -1769,6 +1817,22 @@ def dom_relay_iter(
                             prog_events.append(("reset_content", ""))
                             prog_events.append(("content_delta", prog_clean))
                             streamed_response = prog_clean
+                if not emitted_generating and any(ek in ("thinking_delta", "content_delta") for ek, _ in prog_events):
+                    emitted_generating = True
+                    with _dom_relay_lock:
+                        live_it = _dom_relay["pending"].get(req_id)
+                        if live_it is not None and live_it.get("first_token_mono") is None:
+                            live_it["first_token_mono"] = time.monotonic()
+                            live_it["status_stage"] = "generating"
+                    if emit_relay_status:
+                        prog_events.insert(0, ("relay_status", {
+                            "req_id": req_id,
+                            "client_request_id": client_request_id,
+                            "provider": prov,
+                            "stage": "generating",
+                            "has_images": bool(relay_images_payload),
+                            "images_attached": cur_images_attached,
+                        }))
             for ek, ep in prog_events:
                 yield (ek, ep)
 
@@ -1911,12 +1975,39 @@ def dom_relay_iter(
             "relay_id": dispatched_id or None,
             "relay_label": d_label,
         })
+    completed_mono = time.monotonic()
+    q_mono = item.get("queued_mono")
+    d_mono = item.get("dispatched_mono")
+    s_mono = item.get("submitted_mono")
+    ft_mono = item.get("first_token_mono")
+    timings: dict = {
+        "provider": prov,
+        "has_images": bool(item.get("has_images")),
+        "images_attached": item.get("images_attached"),
+        "submit_confirmed": s_mono is not None,
+    }
+    if q_mono is not None:
+        timings["round_trip_ms"] = max(0, int(round((completed_mono - q_mono) * 1000.0)))
+    if q_mono is not None and d_mono is not None:
+        timings["relay_pickup_ms"] = max(0, int(round((d_mono - q_mono) * 1000.0)))
+    if d_mono is not None and s_mono is not None:
+        timings["relay_attach_ms"] = max(0, int(round((s_mono - d_mono) * 1000.0)))
+    if s_mono is not None:
+        timings["response_ms"] = max(0, int(round((completed_mono - s_mono) * 1000.0)))
+        if ft_mono is not None and ft_mono >= s_mono:
+            timings["ttft_ms"] = max(0, int(round((ft_mono - s_mono) * 1000.0)))
+    if item.get("browser_upload_ms") is not None:
+        timings["upload_ms"] = int(item["browser_upload_ms"])
+    if item.get("browser_submit_ms") is not None:
+        timings["submit_ms"] = int(item["browser_submit_ms"])
+
     log(f"DOM relay [{req_id}] ({prov}, {mode_tag}, relay={d_label}): answered by '{model_badge}' in {time.time() - start:.1f}s ({len(resp_text)} chars)")
     if isinstance(ctx_meta, dict):
         if chat_url:
             ctx_meta["chat_url"] = chat_url
         if dispatched_id:
             ctx_meta["relay_id"] = dispatched_id
+        ctx_meta["relay_timings"] = timings
     res_obj = {
         "response": resp_text,
         "thinking": thinking_text,
@@ -1924,6 +2015,7 @@ def dom_relay_iter(
         "provider": prov,
         "chat_url": chat_url,
         "relay_id": dispatched_id,
+        "timings": timings,
     }
     if dedup_entry is not None:
         with _dom_relay_lock:
@@ -2097,7 +2189,15 @@ def dom_relay_get_pending(client_id: Optional[str] = None) -> Optional[dict]:
             item["dispatched"] = True
             item["dispatched_to"] = client_id or target or ""
             item["dispatched_at"] = now
+            if item.get("dispatched_mono") is None:
+                item["dispatched_mono"] = time.monotonic()
+            if item.get("status_stage") in (None, "", "queued"):
+                item["status_stage"] = "dispatched"
+                item["status_seq"] = int(item.get("status_seq") or 0) + 1
             item["idle_polls_since_dispatch"] = 0
+            wev = item.get("wake_event")
+            if wev is not None:
+                wev.set()
             sess_id = item.get("session_id") or ""
             prov = _normalize_provider(item.get("provider"))
             s_key = _session_relay_key(sess_id, prov)
@@ -2290,9 +2390,17 @@ def dom_relay_post_progress(
     chat_url: str = "",
     client_id: str = "",
     seq: int = 0,
+    stage: str = "",
+    images_attached: Optional[bool] = None,
+    upload_ms: Optional[int] = None,
+    submit_ms: Optional[int] = None,
 ) -> bool:
-    """Publish incremental response/thinking snapshots for an in-flight DOM relay request."""
+    """Publish incremental response/thinking snapshots and optional relay stage updates."""
     now = time.time()
+    mono_now = time.monotonic()
+    stage_norm = str(stage or "").strip().lower()
+    stage_ranks = {"queued": 0, "dispatched": 1, "submitted": 2, "generating": 3}
+    has_content_update = bool(response) or bool(thinking) or int(seq or 0) > 0
     with _dom_relay_lock:
         if req_id in _dom_relay.get("cancelled_req_ids", {}):
             return False
@@ -2303,25 +2411,39 @@ def dom_relay_post_progress(
         if client_id and owner and client_id != owner:
             return False
         cur_seq = int(item.get("progress_seq") or 0)
-        if seq and seq <= cur_seq:
+        if seq and seq <= cur_seq and not stage_norm:
             return True
         responder_id = client_id or owner
         if responder_id and responder_id in (_dom_relay.get("relays") or {}):
             _dom_relay["relays"][responder_id]["last_seen"] = now
         if not responder_id or responder_id == _dom_relay.get("active_relay_id"):
             _dom_relay["last_poll_ts"] = now
-        item["progress_seq"] = int(seq) if seq > 0 else (cur_seq + 1)
         item["last_progress_ts"] = now
         item["idle_polls_since_dispatch"] = 0
         item["idle_since_ts"] = None
-        if response is not None:
-            resp_s = str(response)
-            if resp_s or seq > 0:
-                item["progress_response"] = resp_s
-        if thinking is not None:
-            think_s = str(thinking)
-            if think_s or seq > 0:
-                item["progress_thinking"] = think_s
+        if stage_norm in stage_ranks:
+            cur_stage = str(item.get("status_stage") or "queued")
+            if stage_ranks[stage_norm] >= stage_ranks.get(cur_stage, 0):
+                item["status_stage"] = stage_norm
+                if stage_norm == "submitted" and item.get("submitted_mono") is None:
+                    item["submitted_mono"] = mono_now
+                if isinstance(images_attached, bool):
+                    item["images_attached"] = images_attached
+                if isinstance(upload_ms, (int, float)) and upload_ms >= 0:
+                    item["browser_upload_ms"] = int(round(upload_ms))
+                if isinstance(submit_ms, (int, float)) and submit_ms >= 0:
+                    item["browser_submit_ms"] = int(round(submit_ms))
+                item["status_seq"] = int(item.get("status_seq") or 0) + 1
+        if has_content_update and (not seq or seq > cur_seq):
+            item["progress_seq"] = int(seq) if seq > 0 else (cur_seq + 1)
+            if response is not None:
+                resp_s = str(response)
+                if resp_s or seq > 0:
+                    item["progress_response"] = resp_s
+            if thinking is not None:
+                think_s = str(thinking)
+                if think_s or seq > 0:
+                    item["progress_thinking"] = think_s
         if model:
             item["progress_model"] = str(model)
         if chat_url:

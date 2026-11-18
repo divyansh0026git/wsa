@@ -11,7 +11,7 @@ import threading
 import time
 import weakref
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from rich import box
 from rich.console import Console, Group
@@ -28,6 +28,7 @@ from rich.theme import Theme as RichTheme
 
 from .session import MODEL_CATALOG, get_model_info
 from .theme import ThemePalette, get_theme, set_theme as _set_active_theme
+from .visual_status import format_live_elapsed
 
 
 # Open-right copy-safe container box: prevents trailing `│` borders when selecting text in terminal
@@ -1239,6 +1240,7 @@ class StreamRenderer:
         model: str = "",
         stage_label: str = "",
         flush_final: bool = True,
+        clock: Optional[Callable[[], float]] = None,
     ):
         self._thinking_buf: str = ""
         self._answer_buf: str = ""
@@ -1258,13 +1260,29 @@ class StreamRenderer:
         self._last_live_refresh_ts: float = 0.0
         self._round_num: int = max(0, int(round_num or 0))
         self._status_hint: str = sanitize_surrogates(status_hint or "").strip()
+        self._stage_clock: Callable[[], float] = clock or time.monotonic
+        self._status_hint_with_elapsed: bool = False
+        self._status_hint_started_at: Optional[float] = None
         self._model: str = (model or "").strip().lower()
         self._stage_label: str = sanitize_surrogates(stage_label or "").strip()
         self._flush_final: bool = bool(flush_final)
 
-    def set_status_hint(self, hint: str) -> None:
+    def set_status_hint(
+        self,
+        hint: str,
+        *,
+        with_elapsed: bool = False,
+        reset_stage_clock: bool = False,
+    ) -> None:
         """Update contextual status hint shown beneath the live thinking spinner."""
-        self._status_hint = sanitize_surrogates(hint or "").strip()
+        clean_hint = sanitize_surrogates(hint or "").strip()
+        self._status_hint = clean_hint
+        self._status_hint_with_elapsed = bool(with_elapsed and clean_hint)
+        if self._status_hint_with_elapsed:
+            if reset_stage_clock or self._status_hint_started_at is None:
+                self._status_hint_started_at = self._stage_clock()
+        else:
+            self._status_hint_started_at = None
         self._throttled_live_refresh(force=True)
 
     def _thinking_renderable(self) -> Text:
@@ -1312,10 +1330,26 @@ class StreamRenderer:
             t.append(shown_a, style=Theme.SECONDARY)
         elif self._status_hint:
             hint = self._status_hint
-            shown_h = hint if len(hint) <= line_cap else hint[: line_cap - 1].rstrip() + "…"
+            suffix = ""
+            hint_style = Theme.DIM
+            if self._status_hint_with_elapsed:
+                hint_style = Theme.SECONDARY
+                now_stage = self._stage_clock()
+                stage_elapsed = max(
+                    0.0,
+                    now_stage - (self._status_hint_started_at if self._status_hint_started_at is not None else now_stage),
+                )
+                if stage_elapsed >= 0.2:
+                    suffix = f" · {format_live_elapsed(stage_elapsed)}"
+            if suffix:
+                prefix_cap = max(8, line_cap - len(suffix))
+                prefix = hint if len(hint) <= prefix_cap else hint[: prefix_cap - 1].rstrip() + "…"
+                shown_h = prefix + suffix
+            else:
+                shown_h = hint if len(hint) <= line_cap else hint[: line_cap - 1].rstrip() + "…"
             t.append("\n")
             t.append(f"    {branch}  ", style=Theme.DIM)
-            t.append(shown_h, style=Theme.DIM)
+            t.append(shown_h, style=hint_style)
         return t
 
     def _streaming_footer_renderable(self, crafting_tool: bool = False) -> Text:
@@ -2045,12 +2079,21 @@ def print_status(state) -> None:
         ("Permissions", str(getattr(state, "permission_mode", "auto"))),
         ("Connection", escape(str(getattr(state, "_ui_connection", "Not checked")))),
         ("Team", escape(team_label)),
+    ]
+    last_vr = getattr(state, "last_visual_review", None)
+    if isinstance(last_vr, dict) and (last_vr.get("summary") or last_vr.get("outcome")):
+        vr_summary = sanitize_surrogates(str(last_vr.get("summary") or last_vr.get("outcome") or "")).strip()
+        vr_timing = sanitize_surrogates(str(last_vr.get("timing_text") or "")).strip()
+        if vr_timing and vr_timing not in vr_summary:
+            vr_summary = f"{vr_summary} ({vr_timing})"
+        rows.append(("Visual Review", escape(vr_summary)))
+    rows.extend([
         ("Session", f"{getattr(state, 'session_id', '-')[:12]}  [{Theme.DIM}]· {getattr(state, 'turn_count', 0)} turns · {getattr(state, 'session_duration', '0s')}[/]"),
         ("History", f"{len(getattr(state, 'messages', []))} messages"),
         ("Workspace", f"{escape(_short_path(getattr(state, 'project_root', '.')))}  [{Theme.DIM}]· {escape(str(getattr(state, 'project_type', 'Workspace')))}[/]"),
         ("Endpoint", escape(str(getattr(state, "api_base", "http://127.0.0.1:8081/v1")))),
         ("Theme", f"{escape(palette.name)}  [{Theme.DIM}]{escape(palette.id)}[/]"),
-    ]
+    ])
     for k, v in rows:
         table.add_row(k, v)
 
@@ -2079,6 +2122,31 @@ def print_warn(msg: str) -> None:
 def print_error(msg: str) -> None:
     sync_theme()
     console.print(f"  [{Theme.ERROR}]{ui_glyph('err')}[/] [{Theme.ERROR}]{msg}[/]")
+
+
+def print_visual_status(msg: str, *, outcome: str = "reviewed") -> None:
+    """Print a concise, theme-consistent final visual-review outcome line."""
+    sync_theme()
+    clean = sanitize_surrogates(str(msg or "")).strip()
+    if not clean:
+        return
+    t = Text()
+    if outcome == "passed":
+        t.append(f"{ui_glyph('ok')} ", style=Theme.SUCCESS)
+        t.append(clean, style=Theme.PRIMARY)
+    elif outcome in ("defects", "reviewed_with_local_defects"):
+        t.append("! ", style=Theme.WARN)
+        t.append(clean, style=Theme.PRIMARY)
+    elif outcome in ("unavailable", "cancelled"):
+        t.append("! ", style=Theme.WARN)
+        t.append(clean, style=Theme.WARN)
+    elif outcome in ("transport_error", "capture_failed"):
+        t.append(f"{ui_glyph('err')} ", style=Theme.ERROR)
+        t.append(clean, style=Theme.ERROR)
+    else:
+        t.append(f"{ui_glyph('bullet')} ", style=Theme.DIM)
+        t.append(clean, style=Theme.SECONDARY)
+    console.print(Padding(t, (0, 2)))
 
 
 def print_markdown(text: str) -> None:
@@ -2127,6 +2195,12 @@ def print_subagent_event(stage_label: str, kind: str, payload: dict) -> None:
             f"    [{Theme.DIM}]├─[/] [{Theme.WARN}]{escape(stage_label)}[/] "
             f"[{Theme.WARN}]failover {frm} → {to}[/] [{Theme.DIM}]({reason})[/]"
         )
+    elif kind == "visual_status":
+        msg = str(payload.get("message") or "").strip()
+        outcome = str(payload.get("outcome") or "reviewed").strip()
+        if msg:
+            prefix = f"{sanitize_surrogates(str(stage_label))} · " if stage_label else ""
+            print_visual_status(f"{prefix}{msg}", outcome=outcome)
     elif kind == "tool_result":
         tname = str(payload.get("tool") or "tool")
         ok = bool(payload.get("ok", True))

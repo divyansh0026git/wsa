@@ -463,6 +463,8 @@ def gemini_stream_generate_events(
             for kind, payload in dom_relay_iter(prompt, timeout=max(req_timeout, 300.0), provider=bridge_provider):
                 if kind == "keepalive":
                     yield ("keepalive", "")
+                elif kind == "relay_status":
+                    yield ("relay_status", payload)
                 elif kind == "thinking_delta":
                     if payload:
                         emitted_thinking += payload
