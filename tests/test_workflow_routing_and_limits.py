@@ -67,7 +67,7 @@ def test_explicit_team_off_and_simple_request_remain_direct(tmp_path):
     assert context.classify_task_complexity("Build a website", SessionState(project_root=tmp_path, team_mode="off"))["mode"] == "direct"
 
 
-@pytest.mark.parametrize("answer, expected", [("c", "single"), ("d", "stop")])
+@pytest.mark.parametrize("answer, expected", [("c", "single"), ("e", "stop")])
 def test_limit_menu_single_and_stop(tmp_path, answer, expected):
     state = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
     with patch.object(agent.R.console, "input", return_value=answer) as ask:
@@ -128,7 +128,21 @@ def test_orchestrated_limit_switch_retries_stage(tmp_path):
     assert reset.call_args.args[3] == ["gemini"]
 
 
-def test_limit_menu_renders_all_four_options_without_rich_conceal(tmp_path):
+def test_orchestrated_stage_limit_switch_model_singleagent(tmp_path):
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    state.agent_mode = "singleagent"
+    def choose(state, client, failed):
+        state.configure_singleagent("gemini")
+        return "switch"
+    with patch.object(subagents, "_offer_limit_multiagent", side_effect=choose), patch.object(state, "save", return_value=""), patch.object(subagents, "_reset_provider_chats_for_account_change") as reset:
+        assert subagents._recover_orchestrated_stage_limit(state, object(), {"limit_exhausted": True}, pending_goal="build")
+    assert state.model == "gemini"
+    assert state.agent_mode == "singleagent"
+    assert state.multiagent_queue == []
+    assert reset.call_args.args[3] == ["gemini"]
+
+
+def test_limit_menu_renders_all_five_options_without_rich_conceal(tmp_path):
     from io import StringIO
     from rich.console import Console
     from wsa_agent import renderer
@@ -136,7 +150,7 @@ def test_limit_menu_renders_all_four_options_without_rich_conceal(tmp_path):
     state = SessionState(project_root=tmp_path, selected_model="claude")
     buf = StringIO()
     test_console = Console(file=buf, force_terminal=True, width=100)
-    with patch.object(renderer, "console", test_console), patch.object(test_console, "input", return_value="d"):
+    with patch.object(renderer, "console", test_console), patch.object(test_console, "input", return_value="e"):
         assert agent._offer_limit_multiagent(state, object(), "claude") == "stop"
 
     raw_ansi = buf.getvalue()
@@ -150,9 +164,66 @@ def test_limit_menu_renders_all_four_options_without_rich_conceal(tmp_path):
         "[a] Default queue",
         "[b] Custom queue",
         "[c] Single agent",
-        "[d] Stop",
+        "[d] Switch model",
+        "[e] Stop",
     ):
         assert expected in out
+
+
+def test_limit_menu_switch_model_singleagent(tmp_path):
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    state.agent_mode = "singleagent"
+    with patch.object(agent.R.console, "input", side_effect=["d", "gemini"]), patch.object(state, "save", return_value=""):
+        res = agent._offer_limit_multiagent(state, object(), "claude")
+    assert res == "switch"
+    assert state.model == "gemini"
+    assert state.agent_mode == "singleagent"
+    assert state.multiagent_queue == []
+
+
+def test_limit_menu_switch_model_shortcut(tmp_path):
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    with patch.object(agent.R.console, "input", return_value="d gemini"), patch.object(state, "save", return_value=""):
+        res = agent._offer_limit_multiagent(state, object(), "claude")
+    assert res == "switch"
+    assert state.model == "gemini"
+    assert state.agent_mode == "singleagent"
+
+
+def test_limit_menu_switch_model_cancel_returns_to_menu(tmp_path):
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    # First choose 'd', cancel with empty Enter, then choose 'e' (stop)
+    with patch.object(agent.R.console, "input", side_effect=["d", "", "e"]):
+        res = agent._offer_limit_multiagent(state, object(), "claude")
+    assert res == "stop"
+
+
+def test_singleagent_model_switch_repeats_on_subsequent_limits(tmp_path):
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    calls = []
+
+    class Client:
+        def stream(self, messages, model, **kwargs):
+            calls.append((model, list(messages), kwargs))
+            if len(calls) == 1:
+                raise ProviderLimitError("limit claude", provider="claude")
+            if len(calls) == 2:
+                raise ProviderLimitError("limit gemini", provider="gemini")
+            return {"content": "completed on chatgpt", "tool_calls": []}
+
+    # Recovery 1: claude limit -> user switches to gemini (singleagent)
+    # Recovery 2: gemini limit -> user switches to chatgpt (singleagent)
+    with patch.object(agent.R.console, "input", side_effect=["d gemini", "d chatgpt"]), patch.object(state, "save", return_value=""):
+        result = agent.execute_agent_loop("Build multi-stage task", state, Client(), quiet_ui=False)
+
+    assert result["ok"]
+    assert len(calls) == 3
+    assert calls[0][0] == "claude"
+    assert calls[1][0] == "gemini"
+    assert calls[2][0] == "chatgpt"
+    assert state.model == "chatgpt"
+    assert state.agent_mode == "singleagent"
+    assert state.multiagent_queue == []
 
 
 def test_yes_no_prompts_define_explicit_options(tmp_path):

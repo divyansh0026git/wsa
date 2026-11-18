@@ -1891,10 +1891,20 @@ def _prompt_all_agents_exhausted(
 
 
 def _offer_limit_multiagent(state: SessionState, client: Any, failed_model: str) -> str:
-    """Offer a queue after a single-provider limit; return switch, single, or stop."""
+    """Offer failover queue, single-agent model switch, account retry, or stop after a provider limit."""
     from .renderer import console
+    from .session import MODEL_CATALOG, normalize_web_model, get_model_info
     R._release_console_live(console)
     R.sync_theme()
+    norm_failed = normalize_web_model(failed_model)
+    if not norm_failed:
+        raw_fm = str(failed_model or "").strip().lower()
+        for cand in ("claude", "gemini", "chatgpt", "deepseek", "venice"):
+            if cand in raw_fm:
+                norm_failed = cand
+                break
+    norm_failed = norm_failed or getattr(state, "model", "") or "gemini"
+
     while True:
         try:
             console.print(
@@ -1905,26 +1915,117 @@ def _offer_limit_multiagent(state: SessionState, client: Any, failed_model: str)
                 f"  [bold {R.Theme.ACCENT}]\\[a][/] Default queue  — switch to multiagent mode using the default failover queue\n"
                 f"  [bold {R.Theme.ACCENT}]\\[b][/] Custom queue   — switch to multiagent mode and pick your own provider order\n"
                 f"  [bold {R.Theme.ACCENT}]\\[c][/] Single agent   — stay on this provider (option to switch account and retry)\n"
-                f"  [bold {R.Theme.ACCENT}]\\[d][/] Stop           — pause workflow cleanly (context already preserved)"
+                f"  [bold {R.Theme.ACCENT}]\\[d][/] Switch model   — switch to another model in single-agent mode (transfers session & context)\n"
+                f"  [bold {R.Theme.ACCENT}]\\[e][/] Stop           — pause workflow cleanly (context already preserved)"
             )
-            raw_choice = console.input("  Choice [a/b/c/d]: ", markup=False).strip().lower()
+            raw_choice = console.input("  Choice [a/b/c/d/e]: ", markup=False).strip().lower()
             choice = raw_choice.strip("[](). ")
         except (EOFError, KeyboardInterrupt):
             return "stop"
-        if choice in ("c", "d"):
-            return "single" if choice == "c" else "stop"
-        if choice not in ("a", "b"):
-            R.print_warn("Choose a, b, c, or d.")
+
+        if choice in ("e", "stop"):
+            return "stop"
+        if choice in ("c", "single", "same", "retry"):
+            return "single"
+
+        # Check for single-agent model switch: 'd', 'switch', 'model', or 'd <model>' / 'switch <model>'
+        is_model_switch = False
+        target_arg = ""
+        if choice in ("d", "switch", "model", "switch model", "switch_model"):
+            is_model_switch = True
+        elif choice.startswith("d ") or choice.startswith("switch ") or choice.startswith("model "):
+            parts = choice.split(None, 1)
+            if len(parts) > 1:
+                is_model_switch = True
+                target_arg = parts[1].strip()
+
+        if is_model_switch:
+            candidates = [m["id"] for m in MODEL_CATALOG if m["id"] != norm_failed]
+            if not candidates:
+                R.print_warn("No alternative models available; choose another option.")
+                continue
+
+            chosen_model: Optional[str] = None
+            if target_arg:
+                if target_arg.isdigit():
+                    idx = int(target_arg)
+                    if 1 <= idx <= len(candidates):
+                        chosen_model = candidates[idx - 1]
+                else:
+                    norm_target = normalize_web_model(target_arg)
+                    if not norm_target:
+                        for cand in candidates:
+                            if cand in target_arg:
+                                norm_target = cand
+                                break
+                    if norm_target in candidates:
+                        chosen_model = norm_target
+
+            while chosen_model is None:
+                console.print(f"\n  [bold {R.Theme.PRIMARY}]Select model for single-agent mode:[/]")
+                for idx, mid in enumerate(candidates, 1):
+                    info = get_model_info(mid, state=state)
+                    console.print(
+                        f"  [bold {R.Theme.ACCENT}]\\[{idx}][/] {info['name']:<14} [{R.Theme.DIM}]({info['site']})[/]"
+                    )
+                try:
+                    raw_sub = console.input(
+                        f"  Choice [1-{len(candidates)} or name, Enter to cancel]: ",
+                        markup=False,
+                    ).strip().lower().strip("[](). ")
+                except (EOFError, KeyboardInterrupt):
+                    break
+                if not raw_sub or raw_sub in ("cancel", "back", "q", "exit"):
+                    break
+                if raw_sub.isdigit():
+                    num = int(raw_sub)
+                    if 1 <= num <= len(candidates):
+                        chosen_model = candidates[num - 1]
+                        break
+                    R.print_warn(f"Choose a number between 1 and {len(candidates)}.")
+                    continue
+                norm_sub = normalize_web_model(raw_sub)
+                if not norm_sub:
+                    for cand in candidates:
+                        if cand in raw_sub:
+                            norm_sub = cand
+                            break
+                if norm_sub in candidates:
+                    chosen_model = norm_sub
+                    break
+                if norm_sub == norm_failed:
+                    R.print_warn(f"{R.friendly_model_name(norm_failed)} reached its limit; pick another provider.")
+                    continue
+                R.print_warn(f"Unknown model '{raw_sub}'. Choose from: {', '.join(candidates)}.")
+
+            if not chosen_model:
+                continue
+
+            state.configure_singleagent(chosen_model)
+            _reset_provider_chats_for_account_change(
+                state, client, getattr(state, "session_id", None),
+                [chosen_model], clear_roles=True, refresh_health=True,
+            )
+            state._force_new_chat_next = True
+            _preserve_workflow_state_and_context(state)
+            R.print_success(
+                f"Switched to [bold {R.Theme.ACCENT}]{R.friendly_model_name(chosen_model)}[/] with full context (single-agent mode)."
+            )
+            return "switch"
+
+        if choice not in ("a", "b", "default", "custom"):
+            R.print_warn("Choose a, b, c, d, or e.")
             continue
+
         from .commands import _cmd_multiagent
-        _cmd_multiagent("default" if choice == "a" else "custom", state, client=client)
+        _cmd_multiagent("default" if choice in ("a", "default") else "custom", state, client=client)
         queue = list(getattr(state, "multiagent_queue", []) or [])
         if getattr(state, "agent_mode", "singleagent") != "multiagent" or not queue:
             continue
-        candidates = [model for model in queue if model != failed_model]
+        candidates = [model for model in queue if model != norm_failed]
         if not candidates:
             R.print_warn("The selected queue has no other provider; choose another option.")
-            state.configure_singleagent(failed_model)
+            state.configure_singleagent(norm_failed)
             continue
         # The exhausted provider must not reappear later in this recovery.
         # configure_multiagent also keeps model/index/queue consistent on resume.
@@ -2523,19 +2624,27 @@ def execute_agent_loop(
                                 keep_recent_tools=2 if next_budget < MAX_WEB_PROMPT_CHARS else 6,
                                 max_chars=next_budget,
                             )
+                            is_single_switch = getattr(state, "agent_mode", "singleagent") == "singleagent"
                             q_list = getattr(state, "multiagent_queue", []) or []
-                            slot_num = (q_list.index(next_model) + 1) if next_model in q_list else getattr(state, "multiagent_index", 0) + 1
-                            msg = (
-                                f"Limit reached on {R.friendly_model_name(prev_model)} — "
-                                f"switching with full context to {R.friendly_model_name(next_model)} "
-                                f"(slot {slot_num}/{max(len(q_list), slot_num)})."
-                            )
-                            cur_status_hint = f"Failover -> {next_model}"
+                            if is_single_switch:
+                                msg = (
+                                    f"Limit reached on {R.friendly_model_name(prev_model)} — "
+                                    f"switched to {R.friendly_model_name(next_model)} with full context (single-agent mode)."
+                                )
+                                cur_status_hint = f"Switch -> {next_model}"
+                            else:
+                                slot_num = (q_list.index(next_model) + 1) if next_model in q_list else getattr(state, "multiagent_index", 0) + 1
+                                msg = (
+                                    f"Limit reached on {R.friendly_model_name(prev_model)} — "
+                                    f"switching with full context to {R.friendly_model_name(next_model)} "
+                                    f"(slot {slot_num}/{max(len(q_list), slot_num)})."
+                                )
+                                cur_status_hint = f"Failover -> {next_model}"
                             if active_visual_tracker is not None:
                                 visual_fallback_from = prev_model
                             if event_callback:
                                 event_callback(
-                                    "failover",
+                                    "switch_model" if is_single_switch else "failover",
                                     {
                                         "from": prev_model,
                                         "to": next_model,
@@ -2543,10 +2652,14 @@ def execute_agent_loop(
                                         "to_model": next_model,
                                         "message": msg,
                                         "reason": str(ple)[:160],
+                                        "mode": "singleagent" if is_single_switch else "multiagent",
                                     },
                                 )
                             if not quiet_ui:
-                                R.print_warn(msg)
+                                if is_single_switch:
+                                    R.print_success(msg)
+                                else:
+                                    R.print_warn(msg)
                             continue
 
                         # Queue exhausted (multiagent) OR single-agent limit hit:

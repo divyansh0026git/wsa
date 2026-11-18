@@ -440,6 +440,7 @@ class SessionState:
         """Switch to single-agent mode (optional target web provider) and clear multiagent queue."""
         self.agent_mode = "singleagent"
         self.multiagent_index = 0
+        self.multiagent_queue = []
         if model:
             self.set_model(model)
         return self.model
