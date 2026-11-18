@@ -2095,8 +2095,8 @@ console.log("NODE_HELPERS_OK");
         bg_src = (ext_dir / "background.js").read_text(encoding="utf-8")
 
         self.assertEqual(manifest.get("name"), "WSA — Web Browser Bridge")
-        self.assertEqual(manifest.get("version"), "2.0.2")
-        self.assertEqual(manifest.get("version_name"), "2.0.2")
+        self.assertEqual(manifest.get("version"), "2.0.3")
+        self.assertEqual(manifest.get("version_name"), "2.0.3")
         self.assertEqual(manifest.get("author"), "Divyansh Saraf")
         self.assertIn("Engineered by Divyansh Saraf", manifest.get("description", ""))
         self.assertNotIn("downloads", manifest.get("permissions", []))
@@ -7934,16 +7934,16 @@ async function run() {
     vm.runInNewContext("(" + bg._installWsaDomUtilsFn.toString() + ")()", sb);
     vm.runInNewContext("(" + bg._chatgptInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaDomUtils.version, 3);
-    assert.strictEqual(sb.__wsaDomUtils.rev, 8);
+    assert.strictEqual(sb.__wsaDomUtils.rev, 10);
     assert.strictEqual(sb.__wsaChatgptRuntime.version, 3);
-    assert.strictEqual(sb.__wsaChatgptRuntime.rev, 7);
+    assert.strictEqual(sb.__wsaChatgptRuntime.rev, 8);
     assert.strictEqual(sb.__wsaChatgptRuntime.findSendButton(ed), realSend);
 
     sb.__wsaDomUtils.setEditablePromptText(ed, promptMulti);
     assert.strictEqual(replaceCalls, 0, "Normalized match must NOT clobber execCommand <p> nodes via replaceChildren");
     assert.strictEqual(sb.__wsaDomUtils.isPromptStillInEditor(ed, promptMulti), true);
 
-    // Trigger direct requestSubmit + Enter fallback cleanly when sendBtn omitted temporarily
+    // Trigger requestSubmit without an extra Enter cleanly when sendBtn omitted temporarily
     const formNoBtn = new MockDomEl("form");
     formNoBtn.requestSubmit = () => { requestSubmits += 1; };
     const bareEd = new MockDomEl("div", { id: "bare", contenteditable: "true" });
@@ -7952,7 +7952,7 @@ async function run() {
     formNoBtn.appendChild(bareEd);
     sb.__wsaDomUtils.triggerSendSubmission({ findEditor: () => bareEd, findSendButton: () => null }, bareEd, true);
     assert.strictEqual(requestSubmits, 1);
-    assert.strictEqual(bareEnters, 1);
+    assert.strictEqual(bareEnters, 0);
 
     // Start turn (click #1 + retry pointerdown+click #2 leave prompt in editor for rebase test)
     const st = await vm.runInNewContext("(" + bg._chatgptStartTurnFn.toString() + ")('cg-hist', " + JSON.stringify(promptMulti) + ", [])", sb);
@@ -8013,7 +8013,7 @@ async function run() {
     vm.runInNewContext("(" + bg._installWsaDomUtilsFn.toString() + ")()", sb);
     vm.runInNewContext("(" + bg._claudeInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaClaudeRuntime.version, 4);
-    assert.strictEqual(sb.__wsaClaudeRuntime.rev, 7);
+    assert.strictEqual(sb.__wsaClaudeRuntime.rev, 8);
     assert.strictEqual(sb.__wsaClaudeRuntime.findSendButton(ed), sendBtn);
 
     sb.__wsaClaudeRuntime.setPromptText(ed, promptMulti);
@@ -8066,7 +8066,7 @@ async function run() {
     vm.runInNewContext("(" + bg._installWsaDomUtilsFn.toString() + ")()", sb);
     vm.runInNewContext("(" + bg._deepseekInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaDeepseekRuntime.version, 3);
-    assert.strictEqual(sb.__wsaDeepseekRuntime.rev, 6);
+    assert.strictEqual(sb.__wsaDeepseekRuntime.rev, 7);
     assert.strictEqual(sb.__wsaDeepseekRuntime.findSendButton(ta), sendDiv);
 
     await vm.runInNewContext("(" + bg._deepseekStartTurnFn.toString() + ")('ds-h', 'DeepSeek prompt', [])", sb);
@@ -8119,7 +8119,7 @@ async function run() {
     });
     vm.runInNewContext("(" + bg._domInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaRuntime.version, 2);
-    assert.strictEqual(sb.__wsaRuntime.rev, 6);
+    assert.strictEqual(sb.__wsaRuntime.rev, 7);
     assert.strictEqual(sb.__wsaRuntime.findEnabledSendButton(ed), sendBtn);
 
     sb.__wsaRuntime.setPromptTextInEditor(ed, promptMulti);
@@ -8255,8 +8255,8 @@ async function run() {
     await sw.ensurePageRuntime(1, "chatgpt");
     assert.strictEqual(execCheckCalls, 1);
     assert.deepStrictEqual(installedFns, ["_installWsaDomUtilsFn", "_chatgptInstallPageRuntimeFn"]);
-    assert.strictEqual(pageCtx.__wsaDomUtils.rev, 8);
-    assert.strictEqual(pageCtx.__wsaChatgptRuntime.rev, 7);
+    assert.strictEqual(pageCtx.__wsaDomUtils.rev, 10);
+    assert.strictEqual(pageCtx.__wsaChatgptRuntime.rev, 8);
 
     installedFns.length = 0;
     await sw.ensurePageRuntime(1, "chatgpt");

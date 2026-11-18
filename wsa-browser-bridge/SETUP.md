@@ -2,26 +2,26 @@
 
 > Engineered by Divyansh Saraf
 
-MV3 browser bridge connecting your open **Brave** or **Chrome** tabs (ChatGPT, Claude, Gemini, and DeepSeek) with **WSA** (`wsa`) and the local server on `http://127.0.0.1:8081`.
+MV3 browser bridge connecting your open **Brave** or **Chrome** tabs (ChatGPT, Claude, Gemini, DeepSeek, and Venice) with **WSA** (`wsa`) and the local server on `http://127.0.0.1:8081`.
 
 ## Install
 
 1. Open `brave://extensions` or `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked** and select `wsa-browser-bridge`
-4. Open `https://chatgpt.com`, `https://claude.ai`, `https://gemini.google.com/app`, or `https://chat.deepseek.com`, sign in, and pick your exact model & thinking mode directly inside the website UI
+4. Open `https://chatgpt.com`, `https://claude.ai`, `https://gemini.google.com/app`, `https://chat.deepseek.com`, or `https://venice.ai`, sign in, and pick your exact model & thinking mode directly inside the website UI
 5. Open the **WSA** extension popup and click **Sync**
 
 The popup auto-detects and displays:
 - **Browser**: Brave or Chrome
-- **Website**: `chatgpt.com`, `claude.ai`, `gemini.google.com`, or `chat.deepseek.com`
-- **Account**: Signed-in email / Gmail account
+- **Website**: `chatgpt.com`, `claude.ai`, `gemini.google.com`, `chat.deepseek.com`, or `venice.ai`
+- **Account**: Signed-in email / account
 - **Model**: Active web model selected in that tab
 
 ## Use in WSA CLI
 
 1. Start `wsa` in your workspace (or run `wsa.bat` / `wsa.ps1`).
-2. Switch bridges with `/model chatgpt`, `/model claude`, `/model gemini`, or `/model deepseek`.
+2. Switch bridges with `/model chatgpt`, `/model claude`, `/model gemini`, `/model deepseek`, or `/model venice`.
 3. Inspect or switch browsers with `/account`, `/account chrome`, or `/account brave`.
 
 ## Updating to 2.0.2 and checking background tabs

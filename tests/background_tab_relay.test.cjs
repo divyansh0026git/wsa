@@ -464,7 +464,7 @@ async function unchangedProgressRetriesAfterLostPost() {
 }
 
 async function submittedStageReportsVerifiedUploadAndTimings() {
-  for (const [imagesAttached, uploadMs] of [[true, 380], [false, null]]) {
+  for (const [imagesAttached, uploadMs, existingDraft] of [[true, 380, false], [false, null, false], [true, 380, true]]) {
     const h = harness();
     const tab = {id: 11, active: false, autoDiscardable: false, url: 'https://gemini.google.com/app/test'};
     h.ctx.scanOpenSiteStates = async () => ({
@@ -481,6 +481,7 @@ async function submittedStageReportsVerifiedUploadAndTimings() {
           headers: {get: () => null},
           json: async () => ({
             id: 'req-vis-1',
+            new_chat: true,
             prompt: 'Inspect screenshot',
             provider: 'gemini',
             images: [{filename: 'sheet.png', data: 'YQ=='}],
@@ -496,22 +497,36 @@ async function submittedStageReportsVerifiedUploadAndTimings() {
     h.ctx.ensureAliveAiTab = async () => ({tab, recovered: false});
     h.ctx.protectAiTabs = async () => {};
     h.ctx.readLiveTabIdentity = async () => ({});
-    h.ctx.ensurePageRuntime = async () => true;
+    let freshTabs = 0;
+    h.ctx.openFreshAiTab = async () => {
+      freshTabs++;
+      return {tab: {...tab, id: 12}};
+    };
+    h.ctx.ensureCleanNewChat = async () => {};
+    h.ctx.ensurePageRuntime = async (id, provider, world) => {
+      assert.equal(world, 'ISOLATED');
+      return true;
+    };
     h.ctx.chrome.scripting = {
-      executeScript: async () => [{
-        result: {
+      executeScript: async opts => {
+        if (opts.func.name !== '_domStartTurnFn') return [{result: existingDraft}];
+        assert.equal(opts.world, h.storage.activeRelayJob.world);
+        assert.equal(opts.target.tabId, existingDraft ? 12 : 11);
+        return [{result: {
           ok: true,
           images_attached: imagesAttached,
           upload_ms: uploadMs,
           submit_ms: 420,
-        },
-      }],
+        }}];
+      },
     };
     await h.run('checkAndRelay()');
     await new Promise(setImmediate);
     const sub = progressPosts.find(p => p.stage === 'submitted');
     assert.ok(sub, 'expected /pending-progress stage=submitted post');
     assert.equal(sub.id, 'req-vis-1');
+    assert.equal(freshTabs, existingDraft ? 1 : 0);
+    assert.equal(h.storage.activeRelayJob.world, 'ISOLATED');
     assert.equal(sub.seq, 0);
     assert.equal(sub.images_attached, imagesAttached);
     assert.equal(sub.submit_ms, 420);

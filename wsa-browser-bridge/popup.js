@@ -30,7 +30,10 @@ async function detectIsBrave() {
 
 try {
   const port = chrome.runtime.connect({ name: "relay-keepalive" });
-  port.onDisconnect.addListener(() => {});
+  port.onDisconnect.addListener(() => {
+    const _err = (typeof chrome !== "undefined" && chrome.runtime ? chrome.runtime.lastError : null) || port.error;
+    void _err;
+  });
 } catch { /* ignore */ }
 
 function setOutput(message, kind = "") {
