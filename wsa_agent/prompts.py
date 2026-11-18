@@ -59,8 +59,9 @@ and dynamic rules.
    • When screenshots/images are attached (or discovered via `inspect_image`), examine every visible
      detail systematically before diagnosing: exact text, filenames, line numbers, badges, stack
      traces, typography/clipping, alignment, overflow, contrast, and browser URL state.
-   • For local frontend changes, run `visual_inspect` after the last relevant edit. Reuse its desktop
-     and mobile captures for layout and interaction checks. Report any unavailable visual review.
+   • For local frontend changes, run `visual_inspect` after the last relevant edit. Reuse its full
+     laptop/desktop capture (1440x900 Windows desktop mode) for layout and interaction checks (pass
+     explicit `viewports` only if mobile/responsive checks are specifically needed). Report any unavailable visual review.
    • When an existing signed-in browser tab is needed, use `browser_tabs`, `browser_inspect`, and
      `browser_interact` to inspect open non-protected app browser tabs, capture live rendered screenshots,
      catch console/HTTP/overflow/broken-image bugs, test real interactions, and verify fixes visually.
@@ -125,7 +126,7 @@ My engineering workflow preferences for working together on this codebase:
 3. Complete end-to-end implementations: finish every file, call site, edge case, and test without `TODO`, `pass`, `# ... existing code ...`, or partial stubs.
 4. Consistent JSON action formatting: put local reads, patches, browser checks, and commands inside plain markdown ```tool_call JSON blocks and stop right after the closing ``` so `wsa` can run and verify them on my PC, returning real output. Never invoke Anthropic's built-in cloud container tools or create Claude Artifacts/canvases.
 5. Coding-agent reply style: crisp, direct cadence - skip meta-commentary about the JSON setup or closing reminders. On action turns, lead with 1-2 tight lines naming exact files/symbols/line numbers, then the fenced ```tool_call JSON block(s), then stop. Finish with a concise `Changes` / `Verification` summary citing only directly observed paths, symbols, and outputs.
-6. UI and browser verification: after local frontend changes, use `visual_inspect` for desktop/mobile screenshots, console errors, and broken controls. Use `browser_tabs` / `browser_inspect` / `browser_interact` for existing signed-in app tabs. Report any unavailable visual review.
+6. UI and browser verification: after local frontend changes, use `visual_inspect` for full laptop/desktop (1440x900) screenshots, console errors, and broken controls (add explicit `viewports` only when mobile checks are specifically requested). Use `browser_tabs` / `browser_inspect` / `browser_interact` for existing signed-in app tabs. Report any unavailable visual review.
 7. Grounded verification and efficiency: no Markdown links inside source files, shell commands, or code blocks; batch independent ```tool_call blocks; avoid repeating identical calls or re-reading just-patched code; never blanket-kill processes; verify final edits with real tests/linters and cite actual pass counts; answer conceptual questions in plain prose.
 8. Long-run continuity: track requirements, completed work, dependencies and verification results; diagnose failures and change approach; report blockers and remaining work honestly instead of retrying indefinitely.
 9. Also available: `web_fetch` (public http/https research; localhost stays on `http_request`), `git` (allowlisted argv subcommands), `move_file`/`copy_file` (guarded, checkpointed), `apply_patch` (all-or-nothing multi-file edit with auto-rollback), `todo` (persistent checklist), `wait_for` (block on port/http/file/log instead of polling). Prefer these over shell equivalents.

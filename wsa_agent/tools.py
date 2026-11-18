@@ -715,15 +715,15 @@ TOOL_DEFINITIONS = [
             "name": "visual_inspect",
             "description": (
                 "Render a local HTML/SVG/project path or URL in an isolated headless browser (zero focus stealing), "
-                "capture a multi-viewport 2x2 contact sheet (desktop, mobile, optional interaction/drag, and pixel diff) "
-                "with Set-of-Mark [1][2][3] element badges, audit console/network errors, overflow, occlusion, and "
-                "blank-canvas renders, and attach the composite image to the next turn."
+                "capture a full laptop/desktop (1440x900 Windows desktop mode) screenshot (plus optional interaction/drag, "
+                "pixel diff, or extra viewports when explicitly requested) with Set-of-Mark [1][2][3] element badges, "
+                "audit console/network errors, overflow, occlusion, and blank-canvas renders, and attach the image to the next turn."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target":        {"type": "string",  "description": "Local HTML/SVG path, workspace dir (serving index.html), or http(s) URL (default: 'index.html')"},
-                    "viewports":     {"type": "array",   "description": "Optional viewport list, e.g. [{\"name\":\"desktop\",\"width\":1440,\"height\":900}, {\"name\":\"mobile\",\"width\":390,\"height\":844,\"mobile\":true}]"},
+                    "viewports":     {"type": "array",   "description": "Optional viewport list (defaults to full desktop laptop 1440x900). Pass extra viewports only when specifically checking mobile/tablet, e.g. [{\"name\":\"desktop\",\"width\":1440,\"height\":900}, {\"name\":\"mobile\",\"width\":390,\"height\":844,\"mobile\":true}]"},
                     "actions":       {"type": "array",   "description": "Optional interactions before interactive tile: click, hover, scroll, drag (for 3D/canvas), type, wait"},
                     "annotate":      {"type": "boolean", "description": "Overlay Set-of-Mark [1][2][3] element badges on primary tile (default: true)"},
                     "full_page":     {"type": "boolean", "description": "Capture full scroll height on primary tile (default: false)"},

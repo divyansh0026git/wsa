@@ -39,7 +39,7 @@ def test_visual_tracker_direct_review_honest_stages_and_timings():
     clock = _FakeClock(100.0)
     tr = VisualReviewTracker("gemini", delegated=False, clock=clock)
 
-    assert tr.begin_capture() == "Capturing desktop and mobile views…"
+    assert tr.begin_capture() == "Capturing desktop view…"
     clock.advance(1.35)
     assert tr.end_capture(ok=True) == "Screenshot ready"
     assert tr.capture_ms == 1350
@@ -618,8 +618,9 @@ def test_visual_status_helpers():
     assert format_duration_ms(42_000) == "42s"
     assert format_live_elapsed(3.4) == "3.4s"
     assert format_live_elapsed(42.8) == "42s"
-    assert describe_capture_viewports({}) == "Capturing desktop and mobile views…"
+    assert describe_capture_viewports({}) == "Capturing desktop view…"
     assert describe_capture_viewports({"viewports": [{"name": "desktop"}]}) == "Capturing desktop view…"
+    assert describe_capture_viewports({"viewports": [{"name": "desktop"}, {"name": "mobile"}]}) == "Capturing desktop and mobile views…"
     assert describe_capture_viewports({"viewports": [{"name": "tablet"}, {"name": "mobile"}]}) == "Capturing tablet and mobile views…"
 
 

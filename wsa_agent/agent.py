@@ -1529,7 +1529,7 @@ def _maybe_anti_laziness_nudge(
         return (
             "ui_verify",
             f"[UI Visual & Interaction Gate]: You edited frontend UI file(s) `{ui_targets}` without verifying rendered "
-            "layout or interactive controls. Run `visual_inspect` (background headless desktop+mobile contact sheet with "
+            "layout or interactive controls. Run `visual_inspect` (background headless full laptop/desktop 1440x900 view with "
             "Set-of-Mark badges and telemetry) or `browser_inspect` / `browser_interact` now to verify zero overflow, "
             "occlusion, blank renders, or console errors before concluding.",
         )

@@ -27,8 +27,32 @@ _MAX_PREVIOUS_CACHE = 16
 
 DEFAULT_VIEWPORTS: List[Dict[str, Any]] = [
     {"name": "desktop", "width": 1440, "height": 900, "mobile": False},
-    {"name": "mobile", "width": 390, "height": 844, "mobile": True},
 ]
+
+_DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+_DESKTOP_UA_METADATA: Dict[str, Any] = {
+    "brands": [
+        {"brand": "Google Chrome", "version": "131"},
+        {"brand": "Chromium", "version": "131"},
+        {"brand": "Not_A Brand", "version": "24"},
+    ],
+    "fullVersionList": [
+        {"brand": "Google Chrome", "version": "131.0.0.0"},
+        {"brand": "Chromium", "version": "131.0.0.0"},
+        {"brand": "Not_A Brand", "version": "24.0.0.0"},
+    ],
+    "platform": "Windows",
+    "platformVersion": "15.0.0",
+    "architecture": "x86",
+    "model": "",
+    "mobile": False,
+    "bitness": "64",
+    "wow64": False,
+}
 
 _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
   try {
@@ -313,6 +337,7 @@ class _HeadlessCDPClient:
             "--disable-popup-blocking",
             "--mute-audio",
             "--hide-scrollbars",
+            "--force-device-scale-factor=1",
             "--window-size=1440,900",
         ]
         if self.disable_webgl:
@@ -504,12 +529,41 @@ class _HeadlessCDPClient:
         self.drain_events(max(120, int(wait_ms)))
 
     def set_viewport(self, width: int, height: int, *, mobile: bool = False, scale: float = 1.0) -> None:
+        w = int(width)
+        h = int(height)
+        is_mob = bool(mobile)
+        orientation = (
+            {"type": "portraitPrimary", "angle": 0}
+            if (is_mob or h > w)
+            else {"type": "landscapePrimary", "angle": 0}
+        )
         self.call("Emulation.setDeviceMetricsOverride", {
-            "width": int(width),
-            "height": int(height),
+            "width": w,
+            "height": h,
             "deviceScaleFactor": float(scale),
-            "mobile": bool(mobile),
+            "mobile": is_mob,
+            "screenWidth": w,
+            "screenHeight": h,
+            "positionX": 0,
+            "positionY": 0,
+            "screenOrientation": orientation,
         })
+        try:
+            self.call("Emulation.setTouchEmulationEnabled", {
+                "enabled": is_mob,
+                "maxTouchPoints": 5 if is_mob else 0,
+            })
+        except Exception:
+            pass
+        if not is_mob:
+            try:
+                self.call("Emulation.setUserAgentOverride", {
+                    "userAgent": _DESKTOP_USER_AGENT,
+                    "platform": "Win32",
+                    "userAgentMetadata": _DESKTOP_UA_METADATA,
+                })
+            except Exception:
+                pass
         self.drain_events(120)
 
     def set_color_scheme(self, scheme: str) -> None:

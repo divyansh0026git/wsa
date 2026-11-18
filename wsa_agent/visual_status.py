@@ -75,7 +75,7 @@ def describe_capture_viewports(args: Optional[Dict[str, Any]] = None) -> str:
             return f"Capturing {names[0]} and {names[1]} views…"
         if len(names) > 2:
             return f"Capturing {len(names)} viewport views…"
-    return "Capturing desktop and mobile views…"
+    return "Capturing desktop view…"
 
 
 class VisualReviewTracker:

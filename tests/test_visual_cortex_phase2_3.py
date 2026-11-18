@@ -156,7 +156,7 @@ def test_live_headless_cdp_detects_overflow_console_error_occlusion_and_blank(tm
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body { margin: 0; background: #111; color: #fff; }
-    .wide { width: 720px; height: 80px; background: #334; }
+    .wide { width: 1800px; height: 80px; background: #334; }
     .wrap { position: relative; width: 200px; height: 60px; }
     #covered-btn { position: absolute; inset: 0; z-index: 1; }
     .blocker { position: absolute; inset: 0; z-index: 5; background: rgba(255,0,0,0.5); }
@@ -192,3 +192,92 @@ def test_live_headless_cdp_detects_overflow_console_error_occlusion_and_blank(tm
     finally:
         tools.consume_pending_images()
         tools.set_project_root(prev_root)
+
+
+def test_live_headless_cdp_default_is_full_windows_desktop_laptop_view(tmp_path):
+    """Default visual_inspect must render a full 1440x900 Windows laptop/desktop view with no mobile tile."""
+    _require_chromium()
+    page = tmp_path / "desktop_check.html"
+    page.write_text(
+        """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Desktop Check</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; padding: 32px; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
+    @media (min-width: 1200px) {
+      .grid { grid-template-columns: 280px 1fr; }
+    }
+    .card { background: #1e293b; padding: 24px; border-radius: 12px; }
+  </style>
+</head>
+<body>
+  <main class="grid">
+    <aside class="card"><h1 id="env-badge">Pending</h1></aside>
+    <section class="card"><p>Full laptop desktop layout check.</p></section>
+  </main>
+  <script>
+    const fineHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    const isDesktopBp = window.matchMedia("(min-width: 1200px)").matches;
+    const isHeadless = /HeadlessChrome/i.test(navigator.userAgent || "");
+    const env = [
+      "W=" + window.innerWidth,
+      "H=" + window.innerHeight,
+      "SW=" + window.screen.width,
+      "PLAT=" + navigator.platform,
+      "FINE=" + fineHover,
+      "DESKBP=" + isDesktopBp,
+      "HEADLESS=" + isHeadless,
+    ].join("|");
+    document.getElementById("env-badge").textContent = env;
+    document.title = env;
+  </script>
+</body>
+</html>""",
+        encoding="utf-8",
+    )
+
+    res = visual.capture_visual_inspection(
+        str(page),
+        project_root=tmp_path,
+        annotate=False,
+        include_diff=False,
+        wait_ms=250,
+    )
+    assert res["ok"] is True, res
+    assert len(res["viewports"]) == 1
+    vp = res["viewports"][0]
+    assert vp["name"] == "desktop"
+    assert vp["width"] == 1440
+    assert vp["height"] == 900
+    assert res["image_width"] == 1440
+    assert res["image_height"] == 900
+    assert res["image_mime"] == "image/png"
+    assert all("MOBILE" not in t.upper() for t in res["tiles"])
+
+    title = str((vp.get("audit") or {}).get("title") or "")
+    assert "W=1440" in title, title
+    assert "H=900" in title, title
+    assert "SW=1440" in title, title
+    assert "PLAT=Win32" in title, title
+    assert "FINE=true" in title, title
+    assert "DESKBP=true" in title, title
+    assert "HEADLESS=false" in title, title
+
+    # Explicit multi-viewport (desktop + mobile) still works when requested
+    res_multi = visual.capture_visual_inspection(
+        str(page),
+        project_root=tmp_path,
+        viewports=[
+            {"name": "desktop", "width": 1440, "height": 900, "mobile": False},
+            {"name": "mobile", "width": 390, "height": 844, "mobile": True},
+        ],
+        annotate=False,
+        include_diff=False,
+        wait_ms=200,
+    )
+    assert res_multi["ok"] is True
+    assert [v["name"] for v in res_multi["viewports"]] == ["desktop", "mobile"]
