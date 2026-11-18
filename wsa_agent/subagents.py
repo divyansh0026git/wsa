@@ -77,6 +77,7 @@ CODER_TOOLS: Set[str] = {
     "browser_tabs",
     "browser_inspect",
     "browser_interact",
+    "visual_inspect",
     "move_file",
     "copy_file",
     "git",
@@ -100,6 +101,7 @@ VERIFIER_TOOLS: Set[str] = {
     "browser_tabs",
     "browser_inspect",
     "browser_interact",
+    "visual_inspect",
     "inspect_image",
     "recall",
     "git",
@@ -166,7 +168,8 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "1. Do NOT modify code files (no `write_file`, `patch_file`, or `delete_file`).\n"
         "2. Inspect modified files and execute real verification: test suites (`pytest`), syntax/compile checks "
         "(`py_compile`, `node --check`), functional checks (`run_python`), and UI layout/interaction checks "
-        "(`browser_inspect` / `browser_interact` when UI files changed and a browser relay/server is reachable).\n"
+        "(`visual_inspect` for zero-focus headless multi-viewport + Set-of-Mark visual verification, or "
+        "`browser_inspect` / `browser_interact` when an authenticated live tab is required).\n"
         "3. Check real test pass counts and observed command outputs (not merely exit code 0) and report exact file/line defects.\n"
         "4. End your response with a strict JSON verdict block:\n"
         '   ```json\n   {"verdict": "pass", "checks": ["pytest: 12 passed"], "failures": [], "summary": "..."}\n   ```\n'

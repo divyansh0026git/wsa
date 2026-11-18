@@ -1543,8 +1543,9 @@ def _maybe_anti_laziness_nudge(
         return (
             "ui_verify",
             f"[UI Visual & Interaction Gate]: You edited frontend UI file(s) `{ui_targets}` without verifying rendered "
-            "layout or interactive buttons in a browser (`browser_inspect` / `browser_interact`) or headless DOM test. "
-            "Verify every interactive button, zero horizontal overflow/clipping, and console cleanliness now (or report honestly if no browser relay is attached).",
+            "layout or interactive controls. Run `visual_inspect` (background headless desktop+mobile contact sheet with "
+            "Set-of-Mark badges and telemetry) or `browser_inspect` / `browser_interact` now to verify zero overflow, "
+            "occlusion, blank renders, or console errors before concluding.",
         )
 
     if not isinstance(content, str) or not content.strip() or continue_nudges_used >= 2:
@@ -1895,6 +1896,51 @@ def _offer_limit_multiagent(state: SessionState, client: Any, failed_model: str)
         state.configure_multiagent(candidates)
         _preserve_workflow_state_and_context(state)
         return "switch"
+
+
+def _run_visual_critic_bridge(
+    pending_imgs: List[Dict[str, Any]],
+    telemetry_text: str,
+    state: SessionState,
+    client: Any,
+    vision_model: str,
+) -> Optional[str]:
+    """Delegate a 1-turn multimodal visual critique to a synced vision-capable web bridge."""
+    if not pending_imgs or not vision_model or not callable(getattr(client, "stream", None)):
+        return None
+    critic_parts: List[Dict[str, Any]] = [{
+        "type": "text",
+        "text": (
+            "Inspect the attached UI/visual contact sheet and telemetry. "
+            "Check for blank/collapsed renders, broken proportions/lighting, text clipping, "
+            "overflow, occlusion, poor contrast, or misaligned elements. "
+            "Reference Set-of-Mark badge numbers [1], [2], etc. when visible.\n\n"
+            f"Telemetry:\n{str(telemetry_text or '')[:2200]}\n\n"
+            'Return ONLY concise JSON: {"pass": true|false, "defects": [{"tile": "...", "mark": "[N]", '
+            '"severity": "high|medium|low", "issue": "...", "suggested_fix": "..."}], "summary": "..."}'
+        ),
+    }]
+    for im in pending_imgs[:2]:
+        if im.get("url"):
+            critic_parts.append({"type": "image_url", "image_url": {"url": im["url"]}})
+    try:
+        resp = client.stream(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are WSA Visual Critic. Inspect screenshots strictly from observed pixels and telemetry; never invent unseen defects.",
+                },
+                {"role": "user", "content": critic_parts},
+            ],
+            model=vision_model,
+            use_tools=False,
+            session_id=f"{getattr(state, 'session_id', 'wsa')}:role:visual_critic",
+            new_chat=True,
+        )
+        txt = str((resp or {}).get("content") or "").strip() if isinstance(resp, dict) else ""
+        return txt[:3000] if txt else None
+    except Exception:
+        return None
 
 
 def _prompt_store_progress(state: SessionState) -> bool:
@@ -3147,21 +3193,51 @@ def execute_agent_loop(
                 break
             pending_imgs = consume_pending_images()
             if pending_imgs:
-                visual_parts: List[Dict] = [{
-                    "type": "text",
-                    "text": (
-                        "[Visual Attachment]: Carefully examine every visible detail in the attached "
-                        "screenshot/image(s) ("
-                        + ", ".join(im.get("filename", "image") for im in pending_imgs)
-                        + "), correlate with exact codebase files, and continue execution."
-                    ),
-                }]
-                for im in pending_imgs[:4]:
-                    if im.get("url"):
-                        visual_parts.append({"type": "image_url", "image_url": {"url": im["url"]}})
-                vis_msg = {"role": "user", "content": visual_parts}
-                messages.append(vis_msg)
-                new_messages.append(vis_msg)
+                from .session import pick_vision_critic_provider, provider_supports_vision
+                critic_text = None
+                critic_model = None
+                if not provider_supports_vision(effective_model):
+                    critic_model = pick_vision_critic_provider(state, exclude=effective_model)
+                    if critic_model:
+                        telemetry_blob = "\n".join(
+                            str(m.get("content") or "")
+                            for m in tool_result_messages
+                            if m.get("name") in ("visual_inspect", "browser_inspect", "browser_interact", "inspect_image")
+                        )
+                        if not quiet_ui:
+                            R.print_info(f"Routing visual critique to {R.friendly_model_name(critic_model)}…")
+                        critic_text = _run_visual_critic_bridge(
+                            pending_imgs, telemetry_blob, state, client, critic_model
+                        )
+                if critic_text and critic_model:
+                    vis_msg = {
+                        "role": "user",
+                        "content": (
+                            f"[Visual Critic via {R.friendly_model_name(critic_model)}]:\n"
+                            f"{critic_text}\n\n"
+                            "Use these visual findings together with the exact telemetry above to fix any defects "
+                            "and verify cleanly."
+                        ),
+                    }
+                    messages.append(vis_msg)
+                    new_messages.append(vis_msg)
+                else:
+                    visual_parts: List[Dict] = [{
+                        "type": "text",
+                        "text": (
+                            "[Visual Attachment]: Carefully examine every visible detail in the attached "
+                            "screenshot/image(s) ("
+                            + ", ".join(im.get("filename", "image") for im in pending_imgs)
+                            + "), correlate Set-of-Mark badges [1][2][3] and telemetry with exact codebase files, "
+                            "and continue execution."
+                        ),
+                    }]
+                    for im in pending_imgs[:4]:
+                        if im.get("url"):
+                            visual_parts.append({"type": "image_url", "image_url": {"url": im["url"]}})
+                    vis_msg = {"role": "user", "content": visual_parts}
+                    messages.append(vis_msg)
+                    new_messages.append(vis_msg)
             if messages and messages[0].get("role") == "system":
                 messages[0] = _make_system_msg(effective_model)
             if (round_num + 1) % 5 == 0:

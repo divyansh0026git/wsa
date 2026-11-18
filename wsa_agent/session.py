@@ -46,6 +46,8 @@ MODEL_CATALOG = [
         "thinking": "Web-controlled",
         "requires": "Open claude.ai tab",
         "features": "Bridges to open claude.ai tab (select Claude model & extended thinking on web)",
+        "supports_vision": True,
+        "vision_priority": 1,
     },
     {
         "id": "deepseek",
@@ -56,6 +58,8 @@ MODEL_CATALOG = [
         "thinking": "Web-controlled (DeepThink)",
         "requires": "Open chat.deepseek.com tab",
         "features": "Bridges to open chat.deepseek.com tab (select DeepSeek-V3 or DeepThink R1 on web)",
+        "supports_vision": False,
+        "vision_priority": 99,
     },
     {
         "id": "gemini",
@@ -66,6 +70,8 @@ MODEL_CATALOG = [
         "thinking": "Web-controlled",
         "requires": "Open gemini.google.com tab",
         "features": "Bridges to open gemini.google.com tab (select any Gemini model on web)",
+        "supports_vision": True,
+        "vision_priority": 2,
     },
     {
         "id": "chatgpt",
@@ -76,6 +82,8 @@ MODEL_CATALOG = [
         "thinking": "Web-controlled (Think)",
         "requires": "Open chatgpt.com tab",
         "features": "Bridges to open chatgpt.com tab (select ChatGPT model & Think pill on web)",
+        "supports_vision": True,
+        "vision_priority": 3,
     },
     {
         "id": "venice",
@@ -86,8 +94,39 @@ MODEL_CATALOG = [
         "thinking": "Web-controlled (Reasoning)",
         "requires": "Open venice.ai tab",
         "features": "Bridges to open venice.ai tab (DeepSeek V4.1 Flash Uncensored · 524K ctx)",
+        "supports_vision": False,
+        "vision_priority": 99,
     },
 ]
+
+VISION_CAPABLE_PROVIDERS = {
+    entry["id"]: int(entry.get("vision_priority", 50))
+    for entry in MODEL_CATALOG
+    if entry.get("supports_vision")
+}
+
+
+def provider_supports_vision(model_id: str) -> bool:
+    """Return True when the web bridge reliably accepts direct visual image attachments."""
+    low = str(model_id or "").strip().lower()
+    return any(low == pid or low.startswith(pid) for pid in VISION_CAPABLE_PROVIDERS)
+
+
+def pick_vision_critic_provider(state: "SessionState", exclude: str = "") -> Optional[str]:
+    """Select the highest-priority synced vision-capable provider tab available for Visual Critic delegation."""
+    excl = str(exclude or "").strip().lower()
+    pmap = getattr(state, "providers_info", None) or {}
+    candidates = []
+    for pid, prio in VISION_CAPABLE_PROVIDERS.items():
+        if excl and (pid == excl or excl.startswith(pid)):
+            continue
+        info = pmap.get(pid)
+        if isinstance(info, dict) and info.get("has_tab"):
+            candidates.append((prio, pid))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][1]
 
 ALL_MODELS = [
     (entry["id"], f"{entry['name']} ({entry['site']}) — {entry['features']}")
