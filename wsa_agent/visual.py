@@ -624,13 +624,13 @@ def analyze_screenshot_pixels(png_bytes: bytes) -> Dict[str, Any]:
             gray = small.convert("L")
             std_luma = float(ImageStat.Stat(gray).stddev[0])
             # Quantize to 4-bit per channel buckets to count distinct visible tones
-            px = list(small.getdata())
-            buckets = {(r >> 4, g >> 4, b >> 4) for (r, g, b) in px}
-            blank = (std_luma < 1.5 and len(buckets) <= 2)
+            palette = small.point(lambda channel: channel >> 4)
+            bucket_count = len(palette.getcolors(maxcolors=16 ** 3))
+            blank = (std_luma < 1.5 and bucket_count <= 2)
             return {
                 "ok": True,
                 "blank": blank,
-                "unique_buckets": len(buckets),
+                "unique_buckets": bucket_count,
                 "std_luma": round(std_luma, 2),
                 "width": im.size[0],
                 "height": im.size[1],
@@ -661,21 +661,14 @@ def build_pixel_diff_tile(prev_png: bytes, curr_png: bytes) -> Tuple[Optional[by
                 d_work = diff.resize((nw, nh))
             else:
                 b_work, d_work = b, diff
-            base_gray = b_work.convert("L").convert("RGB")
-            base_px = list(base_gray.getdata())
-            diff_px = list(d_work.getdata())
-            out_px = []
-            changed = 0
-            for (gr, gg, gb), (dr, dg, db) in zip(base_px, diff_px):
-                if dr > 18 or dg > 18 or db > 18:
-                    changed += 1
-                    out_px.append((255, 46, 147))  # high-contrast magenta diff highlight
-                else:
-                    out_px.append((gr // 2, gg // 2, gb // 2))
-            total = max(1, len(diff_px))
+            red, green, blue = d_work.split()
+            max_delta = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+            mask = max_delta.point(lambda delta: 255 if delta > 18 else 0)
+            changed = mask.histogram()[255]
+            total = mask.width * mask.height
             pct = round((changed * 100.0) / total, 2)
-            out_img = Image.new("RGB", b_work.size)
-            out_img.putdata(out_px)
+            out_img = b_work.convert("L").point(lambda gray: gray // 2).convert("RGB")
+            out_img.paste((255, 46, 147), mask=mask)
             buf = io.BytesIO()
             out_img.save(buf, format="PNG")
             return buf.getvalue(), pct

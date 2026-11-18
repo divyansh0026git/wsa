@@ -17,6 +17,24 @@ def _require_chromium() -> str:
     return exe
 
 
+def test_pixel_diff_preserves_threshold_and_highlight_in_each_channel():
+    from PIL import Image
+
+    def png(image):
+        data = io.BytesIO()
+        image.save(data, format="PNG")
+        return data.getvalue()
+
+    before = Image.new("RGB", (4, 1), (100, 100, 100))
+    after = before.copy()
+    after.putdata([(118, 118, 118), (119, 100, 100), (100, 81, 100), (100, 100, 119)])
+    tile, changed_pct = visual.build_pixel_diff_tile(png(before), png(after))
+    assert changed_pct == 75.0
+    with Image.open(io.BytesIO(tile)) as highlighted:
+        assert highlighted.size == (4, 1)
+        assert highlighted.tobytes() == bytes((59, 59, 59) + (255, 46, 147) * 3)
+
+
 def test_visual_inspect_permission_policy(tmp_path):
     smart = SessionState(project_root=tmp_path, permission_mode="smart")
     strict = SessionState(project_root=tmp_path, permission_mode="strict")
