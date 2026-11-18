@@ -2739,21 +2739,30 @@ function _domInstallPageRuntimeFn() {
   }
 
   function readModePickerBadge() {
+    const modelRe = /(?:Gemini\s+)?(Argon|Carbon|Pro|Flash(?:-Lite|\s+Lite)?|Fast|Thinking|Auto)\b/i;
     const btn = document.querySelector(
-      "button[aria-label*='mode picker' i], button[aria-label*='Switch model' i], button[aria-label*='model picker' i], [data-test-id='bard-mode-menu-button'] button, [data-test-id='bard-mode-menu-button']"
+      "button[aria-label*='mode picker' i], button[aria-label*='Switch model' i], button[aria-label*='model picker' i], button[aria-label*='model' i], button[aria-label*='Gemini' i], [data-test-id='bard-mode-menu-button'] button, [data-test-id='bard-mode-menu-button'], [data-test-id*='mode' i], [data-test-id*='model' i], [data-testid*='mode' i], [data-testid*='model' i]"
     );
     if (btn) {
       const aria = btn.getAttribute("aria-label") || "";
       const m = aria.match(/currently\s+(.+)$/i);
-      if (m) return m[1].replace(/\s+/g, " ").trim();
-      const txt = (btn.innerText || btn.textContent || "").replace(/\s+/g, " ").trim();
-      if (txt) return txt;
+      if (m) {
+        const am = m[1].match(modelRe);
+        return am ? am[0] : m[1].replace(/^[^\w]+|[^\w]+$/g, "").replace(/\s+/g, " ").trim();
+      }
+      const rawTxt = (btn.innerText || btn.textContent || "").replace(/\s+/g, " ").trim();
+      const txtMatch = rawTxt.match(modelRe);
+      if (txtMatch) return txtMatch[0];
+      const cleaned = rawTxt.replace(/^[^\w]+|[^\w]+$/g, "").trim();
+      if (cleaned) return cleaned;
     }
-    const modelRe = /^(?:\d+(?:\.\d+)?\s*)?(?:Gemini\s+)?(Argon|Carbon|Pro|Flash(?:-Lite|\s+Lite)?|Fast|Thinking|Auto)\b/i;
-    for (const b of document.querySelectorAll("button")) {
+    for (const b of document.querySelectorAll("button, [role='button'], [aria-haspopup='menu']")) {
       if (!isVisibleElement(b)) continue;
       const t = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim();
-      if (t && t.length <= 48 && modelRe.test(t)) return t;
+      const m = t.match(modelRe);
+      if (m && t.length <= 64) {
+        return m[0];
+      }
     }
     return "";
   }
@@ -3812,13 +3821,24 @@ function _domInstallPageRuntimeFn() {
 
   function readErrorBanner() {
     const msgs = [];
-    for (const el of document.querySelectorAll(
-      "mat-dialog-container, [role='dialog'], [role='alertdialog'], [role='alert'], " +
-      ".snackbar, simple-snack-bar, [data-testid*='limit' i], [data-test-id*='limit' i], [class*='error' i]"
-    )) {
+    const selectors = [
+      "mat-dialog-container", "[role='dialog']", "[role='alertdialog']", "[role='alert']", "[role='status']",
+      ".snackbar", "simple-snack-bar", "[data-testid*='limit' i]", "[data-test-id*='limit' i]",
+      "[class*='error' i]", "[class*='limit' i]", "[class*='quota' i]", "[class*='banner' i]",
+      "[class*='pill' i]", "[class*='card' i]", "[aria-label*='limit' i]", "[aria-label*='resets' i]"
+    ];
+    for (const el of document.querySelectorAll(selectors.join(", "))) {
       if (!isVisibleElement(el)) continue;
       const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
-      if (t && t.length <= 1500) msgs.push(t);
+      if (t && t.length <= 1500 && !msgs.includes(t)) msgs.push(t);
+    }
+    // Also scan for floating composer cards, quota indicators or toast elements containing limit keywords
+    for (const el of document.querySelectorAll("div, p, span, section, aside, [role='region']")) {
+      if (!isVisibleElement(el)) continue;
+      const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      if (t && t.length <= 250 && /\b(?:limit\s+reached|resets?\s+\d+:\d+|\bgemini\s+auto\b)/i.test(t)) {
+        if (!msgs.includes(t)) msgs.push(t);
+      }
     }
     return msgs.join(" | ");
   }
@@ -3910,13 +3930,29 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
   if (!rt || rt.version !== 2) {
     return { ok: false, error: "Page relay runtime missing" };
   }
+
+  // 1. Immediate early limit check BEFORE waiting for editor or doing any typing/uploading
+  const earlyBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+  const earlyLimit = (earlyBanner && typeof rt.detectLimitMessage === "function")
+    ? rt.detectLimitMessage(earlyBanner, true)
+    : (/\blimit\s+reached\b/i.test(earlyBanner) ? earlyBanner : "");
+  if (earlyLimit) {
+    return { ok: false, error: `[LIMIT_REACHED] Gemini: ${earlyLimit}` };
+  }
+
+  const initialBadge = typeof rt.readModePickerBadge === "function" ? rt.readModePickerBadge() : "";
+  if (initialBadge && /(?:auto|flash(?:-lite|\s+lite)?)/i.test(initialBadge) && earlyBanner && (/\blimit\b/i.test(earlyBanner) || /\bresets?\b/i.test(earlyBanner))) {
+    return { ok: false, error: `[LIMIT_REACHED] Gemini: Limit reached · Model auto-switched to ${initialBadge}` };
+  }
+
   const sleepMs = ms => new Promise(r => setTimeout(r, ms));
   let inputEl = rt.findEditor();
   for (let i = 0; !inputEl && i < 80; i++) {
     if (i >= 6 && typeof rt.readErrorBanner === "function" && typeof rt.detectLimitMessage === "function") {
-      const earlyLimit = rt.detectLimitMessage(rt.readErrorBanner(), true);
-      if (earlyLimit) {
-        return { ok: false, error: `[LIMIT_REACHED] Gemini: ${earlyLimit}` };
+      const waitBanner = rt.readErrorBanner();
+      const waitLimit = rt.detectLimitMessage(waitBanner, true) || (/\blimit\s+reached\b/i.test(waitBanner) ? waitBanner : "");
+      if (waitLimit) {
+        return { ok: false, error: `[LIMIT_REACHED] Gemini: ${waitLimit}` };
       }
     }
     await sleepMs(250);
@@ -3925,8 +3961,8 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
   if (!inputEl) {
     const missingBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
     const missingLimit = typeof rt.detectLimitMessage === "function" ? rt.detectLimitMessage(missingBanner, true) : "";
-    if (missingLimit) {
-      return { ok: false, error: `[LIMIT_REACHED] Gemini: ${missingLimit}` };
+    if (missingLimit || /\blimit\s+reached\b/i.test(missingBanner)) {
+      return { ok: false, error: `[LIMIT_REACHED] Gemini: ${missingLimit || missingBanner}` };
     }
     return {
       ok: false,
@@ -3934,7 +3970,13 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
     };
   }
 
-  const selectedBadge = rt.readModePickerBadge();
+  const selectedBadge = rt.readModePickerBadge() || initialBadge;
+  if (selectedBadge && /(?:auto|flash(?:-lite|\s+lite)?)/i.test(selectedBadge)) {
+    const bannerNow = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+    if (bannerNow && (/\blimit\b/i.test(bannerNow) || /\bresets?\b/i.test(bannerNow))) {
+      return { ok: false, error: `[LIMIT_REACHED] Gemini: Limit reached · Model auto-switched to ${selectedBadge}` };
+    }
+  }
 
   const monoNow = () => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
   const tTurnStart = monoNow();
@@ -4009,7 +4051,20 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
   };
 
   const submitted = await rt.submitPromptToPage(prompt, inputEl, initialCtx, beforeDomCount);
+
+  const curBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+  const curLimit = (curBanner && typeof rt.detectLimitMessage === "function") ? rt.detectLimitMessage(curBanner, true) : "";
+  const curBadge = typeof rt.readModePickerBadge === "function" ? rt.readModePickerBadge() : selectedBadge;
+  const isDowngraded = Boolean(curBadge && /(?:auto|flash(?:-lite|\s+lite)?)/i.test(curBadge));
+
+  if (curLimit || /\blimit\s+reached\b/i.test(curBanner) || (isDowngraded && curBanner && (/\blimit\b/i.test(curBanner) || /\bresets?\b/i.test(curBanner)))) {
+    return { ok: false, error: `[LIMIT_REACHED] Gemini: ${curLimit || curBanner || ("Limit reached on " + curBadge)}` };
+  }
+
   if (imagesAttached && submitted === false) {
+    if (isDowngraded) {
+      return { ok: false, error: `[LIMIT_REACHED] Gemini: Limit reached (active model: ${curBadge})` };
+    }
     return { ok: false, error: "Gemini did not acknowledge the screenshot and prompt submission." };
   }
   const afterEd = rt.findEditor() || inputEl;
@@ -4130,10 +4185,12 @@ function _domPollTurnFn(reqId) {
     ? livePickerBadge
     : (job.selectedBadge || livePickerBadge);
 
-  if (!busy && typeof rt.detectLimitMessage === "function") {
-    const turnLimitErr = job.lastText ? rt.detectLimitMessage(job.lastText) : "";
-    const pageBannerErr = typeof rt.readErrorBanner === "function" ? rt.detectLimitMessage(rt.readErrorBanner(), true) : "";
-    const matchedLimit = turnLimitErr || (!job.lastText ? pageBannerErr : "");
+  const pageBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
+  if (typeof rt.detectLimitMessage === "function" || (pageBanner && /\blimit\s+reached\b/i.test(pageBanner))) {
+    const turnLimitErr = (!busy && job.lastText) ? rt.detectLimitMessage(job.lastText) : "";
+    const pageBannerErr = pageBanner ? (rt.detectLimitMessage(pageBanner, true) || (/\blimit\s+reached\b/i.test(pageBanner) ? pageBanner : "")) : "";
+    const isAutoWithLimit = Boolean(/(?:auto|flash(?:-lite|\s+lite)?)/i.test(effectiveBadge) && (pageBanner && (/\blimit\b/i.test(pageBanner) || /\bresets?\b/i.test(pageBanner))));
+    const matchedLimit = turnLimitErr || pageBannerErr || (isAutoWithLimit ? `Limit reached (active model: ${effectiveBadge})` : "");
     if (matchedLimit && !job.lastText.includes("```")) {
       delete globalThis.__wsaActiveJob;
       return {
@@ -4148,6 +4205,27 @@ function _domPollTurnFn(reqId) {
       };
     }
   }
+  const isAutoDowngraded = Boolean(
+    /(?:auto|flash(?:-lite|\s+lite)?)/i.test(effectiveBadge) &&
+    !/(?:auto|flash(?:-lite|\s+lite)?)/i.test(job.selectedBadge || "")
+  );
+
+  if ((isAutoDowngraded && !job.lastText) || (pageBanner && /\blimit\s+reached\b/i.test(pageBanner))) {
+    delete globalThis.__wsaActiveJob;
+    return {
+      done: false,
+      error: isAutoDowngraded
+        ? `[LIMIT_REACHED] Gemini: Limit reached · Upstream model auto-switched to ${effectiveBadge}`
+        : `[LIMIT_REACHED] Gemini: ${pageBanner}`,
+      text: "",
+      thinking: "",
+      model: effectiveBadge,
+      url: window.location.href,
+      busy: false,
+      hasTurnActions,
+    };
+  }
+
   const isPromptInEd = Boolean(job.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, job.prompt));
   const promptUnsent = Boolean(
     !job.sawNewTurn &&
@@ -4156,6 +4234,19 @@ function _domPollTurnFn(reqId) {
     !job.lastThinking &&
     isPromptInEd
   );
+  if (promptUnsent && (/(?:auto|flash(?:-lite|\s+lite)?)/i.test(effectiveBadge) || (pageBanner && /\blimit\s+reached\b/i.test(pageBanner)))) {
+    delete globalThis.__wsaActiveJob;
+    return {
+      done: false,
+      error: `[LIMIT_REACHED] Gemini: Limit reached (active model: ${effectiveBadge || "Gemini Auto"})`,
+      text: "",
+      thinking: "",
+      model: effectiveBadge,
+      url: window.location.href,
+      busy: false,
+      hasTurnActions,
+    };
+  }
   if (promptUnsent && typeof rt.triggerDomSubmit === "function" && (job.submitRetries || 0) < 4 && (now - (job.lastRetryAt || job.startedAt)) >= 1800) {
     const sendMissing = typeof rt.findEnabledSendButton === "function" && !rt.findEnabledSendButton(liveEd);
     if (sendMissing && isPromptInEd && (job.submitRetries || 0) < 2 && typeof rt.setPromptTextInEditor === "function") {
@@ -7141,8 +7232,19 @@ function _installWsaDomUtilsFn() {
   }
 
   async function startTurn(rt, reqId, prompt, images = [], opts = {}) {
-    const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     const provLabel = opts.label || opts.defaultModel || "Web AI";
+    if (typeof rt.readErrorBanner === "function") {
+      const earlyBanner = rt.readErrorBanner();
+      const earlyTooLong = typeof detectPromptTooLongMessage === "function" ? detectPromptTooLongMessage(earlyBanner, true) : "";
+      if (earlyTooLong) {
+        return { ok: false, error: `[PROMPT_TOO_LONG] ${provLabel}: ${earlyTooLong}` };
+      }
+      const earlyLimit = typeof detectLimitMessage === "function" ? detectLimitMessage(earlyBanner, true) : "";
+      if (earlyLimit || /\blimit\s+reached\b/i.test(earlyBanner)) {
+        return { ok: false, error: `[LIMIT_REACHED] ${provLabel}: ${earlyLimit || earlyBanner}` };
+      }
+    }
+    const sleepMs = ms => new Promise(r => setTimeout(r, ms));
     let editor = rt.findEditor();
     for (let i = 0; !editor && i < 80; i++) {
       if (i >= 6 && typeof rt.readErrorBanner === "function") {
