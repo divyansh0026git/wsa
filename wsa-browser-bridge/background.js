@@ -1716,12 +1716,12 @@ async function ensurePageRuntime(tabId, provider = "gemini") {
     target: { tabId },
     world: "MAIN",
     func: (rtKey, rtVer, needsUtils, rtRev) => Boolean(
-      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 7 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
+      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 8 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
       globalThis[rtKey] &&
       globalThis[rtKey].version === rtVer &&
       globalThis[rtKey].rev === rtRev
     ),
-    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude") ? 6 : 5],
+    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude") ? 7 : 6],
   });
   if (probe?.[0]?.result) return true;
   if (spec.needsDomUtils) {
@@ -3239,21 +3239,34 @@ function _domInstallPageRuntimeFn() {
       : null) || ed?.parentElement?.parentElement || null;
     const roots = scope ? [scope, document] : [document];
     const isSendCandidate = (btn) => {
-      if (!isVisibleElement(btn) || btn.disabled || btn.getAttribute("aria-disabled") === "true") return false;
+      if (!isVisibleElement(btn)) return false;
+      if (btn.disabled || btn.getAttribute("aria-disabled") === "true" || btn.classList.contains("disabled")) return false;
       const meta = (
         (btn.getAttribute("data-test-id") || "") + " " +
+        (btn.getAttribute("data-testid") || "") + " " +
         (btn.getAttribute("aria-label") || "") + " " +
         (btn.getAttribute("title") || "") + " " +
         (btn.className || "") + " " +
         (btn.innerText || "")
       ).toLowerCase();
-      if (/\b(?:feedback|stop|mic|microphone|voice|dictate|attach|upload|add|image|tool|canvas|gem|model|menu|more|expand|collapse|full\s*screen)\b/.test(meta)) {
+      const isExplicitSend =
+        btn.classList.contains("send-button") ||
+        (btn.getAttribute("data-test-id") || "").toLowerCase().includes("send-button") ||
+        (btn.getAttribute("data-testid") || "").toLowerCase().includes("send-button") ||
+        meta.includes("send message") ||
+        meta.includes("send prompt") ||
+        meta.trim() === "send";
+      if (isExplicitSend) {
+        if (/\b(?:stop|pause|feedback|voice|dictate|mic|microphone)\b/i.test(meta)) return false;
+        return true;
+      }
+      if (/\b(?:add\s+image|upload\s+image|attach\s+file|insert\s+image|select\s+file|browse\s+files|feedback|stop|mic|microphone|voice|dictate|attach|upload|tool|canvas|gem|model|menu|more|expand|collapse|full\s*screen)\b/i.test(meta)) {
         return false;
       }
       return meta.includes("send message") || meta.trim() === "send" || btn.classList.contains("send-button") || /\bsend\b/.test(meta);
     };
     for (const root of roots) {
-      const candidates = [...root.querySelectorAll("button")].filter(isSendCandidate);
+      const candidates = [...root.querySelectorAll("button, [role='button'], .send-button, div.send-button, [data-test-id*='send' i], [data-testid*='send' i]")].filter(isSendCandidate);
       if (candidates.length > 0) {
         return candidates.find(b => b.classList.contains("send-button") || (b.getAttribute("aria-label") || "").toLowerCase().includes("send message")) || candidates[0];
       }
@@ -3396,7 +3409,8 @@ function _domInstallPageRuntimeFn() {
         try { liveEd.focus(); } catch { /* ignore */ }
       }
       if (typeof Event === "function" && typeof liveEd.dispatchEvent === "function") {
-        try { liveEd.dispatchEvent(new Event("input", { bubbles: true })); } catch { /* ignore */ }
+        try { liveEd.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
+        try { liveEd.dispatchEvent(new Event("change", { bubbles: true, composed: true })); } catch { /* ignore */ }
       }
       sendBtn = findEnabledSendButton(liveEd);
     }
@@ -3404,8 +3418,8 @@ function _domInstallPageRuntimeFn() {
       if (typeof sendBtn.scrollIntoView === "function") {
         try { sendBtn.scrollIntoView({ block: "nearest" }); } catch { /* ignore */ }
       }
-      if (allowFormSubmitFallback && typeof Event === "function" && typeof sendBtn.dispatchEvent === "function") {
-        for (const evType of ["pointerdown", "mousedown", "mouseup"]) {
+      if (typeof Event === "function" && typeof sendBtn.dispatchEvent === "function") {
+        for (const evType of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
           try {
             const Ctor = evType.startsWith("pointer") && typeof PointerEvent === "function"
               ? PointerEvent
@@ -3414,7 +3428,12 @@ function _domInstallPageRuntimeFn() {
           } catch { /* ignore */ }
         }
       }
-      sendBtn.click();
+      try {
+        if (typeof MouseEvent === "function" && typeof sendBtn.dispatchEvent === "function") {
+          sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+        }
+      } catch { /* ignore */ }
+      try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
     }
     if (typeof liveEd.focus === "function") {
@@ -3465,11 +3484,14 @@ function _domInstallPageRuntimeFn() {
   function hasActiveUploadSpinner(rootEl) {
     const scope = rootEl && typeof rootEl.querySelectorAll === "function" ? rootEl : document;
     const spinners = scope.querySelectorAll(
-      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading"], ' +
-      '[class*="upload-progress"], [class*="uploading"], svg[class*="animate-spin"]'
+      'mat-progress-spinner, mat-spinner, mat-progress-bar, ' +
+      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading" i], [data-test-id*="uploading" i], ' +
+      '[data-testid*="loading" i], [data-test-id*="loading" i], ' +
+      '[class*="upload-progress" i], [class*="uploading" i], [class*="loading" i], [class*="spinner" i], ' +
+      'svg[class*="animate-spin" i]'
     );
     for (const sp of spinners) {
-      if (isVisible(sp)) return true;
+      if (isVisibleElement(sp)) return true;
     }
     return false;
   }
@@ -3530,8 +3552,9 @@ function _domInstallPageRuntimeFn() {
       return false;
     };
     const waitUploadSettled = async () => {
-      const deadline = Date.now() + 12000;
-      while (Date.now() < deadline && hasActiveUploadSpinner(root)) {
+      const deadline = Date.now() + 15000;
+      await sleepMs(400);
+      while (Date.now() < deadline && (hasActiveUploadSpinner(root) || (typeof document !== "undefined" && hasActiveUploadSpinner(document)))) {
         await sleepMs(200);
       }
       await sleepMs(300);
@@ -3660,15 +3683,21 @@ function _domInstallPageRuntimeFn() {
       setPromptTextInEditor(inputEl, prompt);
       await sleepMs(160);
 
+      const root = resolveComposerAttachmentRoot(findEditor() || inputEl);
+      const beforeMediaCount = countComposerMediaPreviews(root);
+      const hasMedia = beforeMediaCount > 0;
+      const maxBtnWait = hasMedia ? 40 : 20;
+
       let sendBtn = null;
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < maxBtnWait; i++) {
         sendBtn = findEnabledSendButton(inputEl);
         if (sendBtn) break;
-        if (i === 8) {
+        if (i === 8 || (hasMedia && i === 24)) {
           setPromptTextInEditor(findEditor() || inputEl, prompt);
-        } else if ((i === 4 || i === 12) && typeof Event === "function") {
+        } else if ((i === 4 || i === 12 || i === 20) && typeof Event === "function") {
           const liveEd = findEditor() || inputEl;
-          try { liveEd.dispatchEvent(new Event("input", { bubbles: true })); } catch { /* ignore */ }
+          try { liveEd.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
+          try { liveEd.dispatchEvent(new Event("change", { bubbles: true, composed: true })); } catch { /* ignore */ }
         }
         await sleepMs(140);
       }
@@ -3678,19 +3707,20 @@ function _domInstallPageRuntimeFn() {
         if (isStopButtonVisible() || detectReactBusy()) return true;
         if (readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
         if (!isPromptStillInEditor(findEditor() || inputEl, prompt)) return true;
+        if (hasMedia && countComposerMediaPreviews(resolveComposerAttachmentRoot(findEditor() || inputEl)) < beforeMediaCount) return true;
         if (readErrorBanner() !== beforeBanner) return true;
         return false;
       };
 
       triggerDomSubmit(inputEl, false);
-      for (let i = 0; i < 16; i++) {
+      for (let i = 0; i < 18; i++) {
         await sleepMs(140);
         if (hasSubmitEffect()) {
           submitted = true;
           break;
         }
-        if (i === 3 || i === 9) {
-          triggerDomSubmit(inputEl, i >= 9);
+        if (i === 3 || i === 8 || i === 14) {
+          triggerDomSubmit(inputEl, i >= 8);
         }
       }
     }
@@ -3756,7 +3786,7 @@ function _domInstallPageRuntimeFn() {
 
   globalThis.__wsaRuntime = {
     version: 2,
-    rev: 5,
+    rev: 6,
     log,
     computeTailDomRange,
     isVisibleElement,
@@ -3782,6 +3812,9 @@ function _domInstallPageRuntimeFn() {
     submitPromptToPage,
     isPromptStillInEditor,
     triggerDomSubmit,
+    resolveComposerAttachmentRoot,
+    countComposerMediaPreviews,
+    hasActiveUploadSpinner,
     readErrorBanner,
     detectPromptTooLongMessage,
     detectLimitMessage,
@@ -4017,19 +4050,19 @@ function _domPollTurnFn(reqId) {
       };
     }
   }
+  const composerRoot = typeof rt.resolveComposerAttachmentRoot === "function" ? rt.resolveComposerAttachmentRoot(liveEd) : (liveEd?.parentElement || (typeof document !== "undefined" ? document : null));
+  const hasStuckMedia = typeof rt.countComposerMediaPreviews === "function" && rt.countComposerMediaPreviews(composerRoot) > 0;
+  const isPromptInEd = Boolean(job.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, job.prompt));
   const promptUnsent = Boolean(
     !job.sawNewTurn &&
     !busy &&
     !job.lastText &&
     !job.lastThinking &&
-    job.prompt &&
-    liveEd &&
-    typeof rt.isPromptStillInEditor === "function" &&
-    rt.isPromptStillInEditor(liveEd, job.prompt)
+    (isPromptInEd || hasStuckMedia)
   );
-  if (promptUnsent && typeof rt.triggerDomSubmit === "function" && (job.submitRetries || 0) < 3 && (now - (job.lastRetryAt || job.startedAt)) >= 1800) {
+  if (promptUnsent && typeof rt.triggerDomSubmit === "function" && (job.submitRetries || 0) < 4 && (now - (job.lastRetryAt || job.startedAt)) >= 1800) {
     const sendMissing = typeof rt.findEnabledSendButton === "function" && !rt.findEnabledSendButton(liveEd);
-    if (sendMissing && (job.submitRetries || 0) < 2 && typeof rt.setPromptTextInEditor === "function") {
+    if (sendMissing && isPromptInEd && (job.submitRetries || 0) < 2 && typeof rt.setPromptTextInEditor === "function") {
       rt.setPromptTextInEditor(liveEd, job.prompt);
     }
     rt.triggerDomSubmit(liveEd, (job.submitRetries || 0) >= 1);
@@ -4571,7 +4604,7 @@ async function handleBrowserCommand(cmd) {
 }
 
 function _claudeInstallPageRuntimeFn() {
-  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 6) {
+  if (globalThis.__wsaClaudeRuntime && globalThis.__wsaClaudeRuntime.version === 4 && globalThis.__wsaClaudeRuntime.rev === 7) {
     return true;
   }
 
@@ -4630,9 +4663,14 @@ function _claudeInstallPageRuntimeFn() {
     const roots = scope ? [scope, document] : [document];
     const selectors = [
       "button[data-testid='send-button']",
+      "[role='button'][data-testid='send-button']",
+      "[data-testid='send-button']",
       "button[aria-label*='Send message' i]",
+      "[role='button'][aria-label*='Send message' i]",
       "button[aria-label*='Send prompt' i]",
+      "[role='button'][aria-label*='Send prompt' i]",
       "button[aria-label*='Send' i]",
+      "[role='button'][aria-label*='Send' i]",
       "button[type='submit']",
     ];
     for (let rIdx = 0; rIdx < roots.length; rIdx++) {
@@ -4640,11 +4678,16 @@ function _claudeInstallPageRuntimeFn() {
       for (const sel of selectors) {
         if (sel === "button[type='submit']" && (!scope || rIdx > 0)) continue;
         for (const b of root.querySelectorAll(sel)) {
-          const meta = `${b.getAttribute("data-testid") || ""} ${b.id || ""} ${b.getAttribute("aria-label") || ""} ${b.getAttribute("title") || ""} ${b.innerText || ""}`;
-          if (/\b(?:feedback|voice|dictate|stop|mic|microphone|attach|upload|model|menu|more|expand|collapse|full\s*screen)\b/i.test(meta)) continue;
-          if (isVisible(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true") {
+          if (!isVisible(b) || b.disabled || b.getAttribute("aria-disabled") === "true") continue;
+          const meta = `${b.getAttribute("data-testid") || ""} ${b.id || ""} ${b.getAttribute("aria-label") || ""} ${b.getAttribute("title") || ""} ${b.innerText || ""}`.toLowerCase();
+          const testId = (b.getAttribute("data-testid") || "").toLowerCase();
+          const isExplicit = testId === "send-button" || meta.includes("send message") || meta.includes("send prompt") || meta.trim() === "send";
+          if (isExplicit) {
+            if (/\b(?:feedback|voice|dictate|stop|mic|microphone)\b/i.test(meta)) continue;
             return b;
           }
+          if (/\b(?:add\s+attachment|upload\s+image|attach\s+file|feedback|voice|dictate|stop|mic|microphone|attach|upload|model|menu|more|expand|collapse|full\s*screen)\b/i.test(meta)) continue;
+          return b;
         }
       }
     }
@@ -5394,8 +5437,9 @@ function _claudeInstallPageRuntimeFn() {
       '[data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], ' +
       'button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
     const spinnerSel =
-      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading"], ' +
-      '[class*="uploading"], svg[class*="animate-spin"]';
+      'mat-progress-spinner, mat-spinner, mat-progress-bar, ' +
+      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading" i], [data-testid*="loading" i], ' +
+      '[class*="uploading" i], [class*="loading" i], [class*="spinner" i], svg[class*="animate-spin" i]';
     const countAttachments = (scope) => {
       try { return (scope || document).querySelectorAll(attachSel).length; } catch { return 0; }
     };
@@ -5481,7 +5525,8 @@ function _claudeInstallPageRuntimeFn() {
     }
 
     if (attachedMethod) {
-      const deadline = Date.now() + 12000;
+      const deadline = Date.now() + 15000;
+      await sleepMs(400);
       while (Date.now() < deadline && hasUploadSpinner()) {
         await sleepMs(200);
       }
@@ -5636,8 +5681,8 @@ function _claudeInstallPageRuntimeFn() {
       if (typeof sendBtn.scrollIntoView === "function") {
         try { sendBtn.scrollIntoView({ block: "nearest" }); } catch { /* ignore */ }
       }
-      if (allowFormSubmitFallback && typeof Event === "function" && typeof sendBtn.dispatchEvent === "function") {
-        for (const evType of ["pointerdown", "mousedown", "mouseup"]) {
+      if (typeof Event === "function" && typeof sendBtn.dispatchEvent === "function") {
+        for (const evType of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
           try {
             const Ctor = evType.startsWith("pointer") && typeof PointerEvent === "function"
               ? PointerEvent
@@ -5646,7 +5691,12 @@ function _claudeInstallPageRuntimeFn() {
           } catch { /* ignore */ }
         }
       }
-      sendBtn.click();
+      try {
+        if (typeof MouseEvent === "function" && typeof sendBtn.dispatchEvent === "function") {
+          sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+        }
+      } catch { /* ignore */ }
+      try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
     }
     if (typeof liveEd.focus === "function") {
@@ -5768,7 +5818,7 @@ function _claudeInstallPageRuntimeFn() {
 
   globalThis.__wsaClaudeRuntime = {
     version: 4,
-    rev: 6,
+    rev: 7,
     turns: Object.create(null),
     findEditor: findClaudeEditor,
     findSendButton: findClaudeSendButton,
@@ -5851,14 +5901,16 @@ async function _claudeStartTurnFn(reqId, prompt, images = []) {
   rt.setPromptText(editor, prompt);
   await sleepMs(160);
 
+  const maxBtnWait = imagesAttached ? 40 : 20;
   let sendBtn = rt.findSendButton(rt.findEditor() || editor);
-  for (let i = 0; !sendBtn && i < 20; i++) {
-    if (i === 8) {
+  for (let i = 0; !sendBtn && i < maxBtnWait; i++) {
+    if (i === 8 || (imagesAttached && i === 24)) {
       rt.setPromptText(rt.findEditor() || editor, prompt);
-    } else if ((i === 4 || i === 12) && typeof Event === "function") {
+    } else if ((i === 4 || i === 12 || i === 20) && typeof Event === "function") {
       const liveEd = rt.findEditor() || editor;
       if (liveEd && typeof liveEd.dispatchEvent === "function") {
-        try { liveEd.dispatchEvent(new Event("input", { bubbles: true })); } catch { /* ignore */ }
+        try { liveEd.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
+        try { liveEd.dispatchEvent(new Event("change", { bubbles: true, composed: true })); } catch { /* ignore */ }
       }
     }
     await sleepMs(150);
@@ -5924,6 +5976,7 @@ function _claudePollTurnFn(reqId) {
   if (!turn) return { missing: true };
 
   const now = Date.now();
+  const pageUrl = typeof window !== "undefined" && window.location ? window.location.href : (typeof location !== "undefined" ? location.href : "");
   const allTurns = rt.readAllTurns();
   const stopVisible = rt.hasStopButton();
   const liveEd = typeof rt.findEditor === "function" ? rt.findEditor() : null;
@@ -5993,7 +6046,7 @@ function _claudePollTurnFn(reqId) {
           text: "",
           thinking: "",
           model: rt.readModelBadge() || turn.modelBadge || "Claude Web",
-          url: location.href,
+          url: pageUrl,
         };
       }
     }
@@ -6010,7 +6063,7 @@ function _claudePollTurnFn(reqId) {
           text: "",
           thinking: "",
           model: rt.readModelBadge() || turn.modelBadge || "Claude Web",
-          url: location.href,
+          url: pageUrl,
         };
       }
     }
@@ -6026,23 +6079,24 @@ function _claudePollTurnFn(reqId) {
           text: "",
           thinking: "",
           model: rt.readModelBadge() || turn.modelBadge || "Claude Web",
-          url: location.href,
+          url: pageUrl,
         };
       }
     }
   }
+  const composerRoot = (liveEd && typeof liveEd.closest === "function" ? liveEd.closest("form, fieldset, [class*='composer' i]") : null) || (typeof document !== "undefined" ? document : null);
+  const attachSel = 'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], [data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
+  const hasStuckMedia = Boolean(composerRoot && typeof composerRoot.querySelectorAll === "function" && composerRoot.querySelectorAll(attachSel).length > 0);
+  const isPromptInEd = Boolean(turn.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, turn.prompt));
   const promptUnsent = Boolean(
     !turn.sawActivity &&
     !isStillStreaming &&
     allTurns.length <= turn.beforeTurnCount &&
-    turn.prompt &&
-    liveEd &&
-    typeof rt.isPromptStillInEditor === "function" &&
-    rt.isPromptStillInEditor(liveEd, turn.prompt)
+    (isPromptInEd || hasStuckMedia)
   );
-  if (promptUnsent && typeof rt.triggerSubmit === "function" && (turn.submitRetries || 0) < 3 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
+  if (promptUnsent && typeof rt.triggerSubmit === "function" && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
     const sendMissing = typeof rt.findSendButton === "function" && !rt.findSendButton(liveEd);
-    if (sendMissing && (turn.submitRetries || 0) < 2 && typeof rt.setPromptText === "function") {
+    if (sendMissing && isPromptInEd && (turn.submitRetries || 0) < 2 && typeof rt.setPromptText === "function") {
       rt.setPromptText(liveEd, turn.prompt);
     }
     rt.triggerSubmit(liveEd, (turn.submitRetries || 0) >= 1);
@@ -6077,7 +6131,7 @@ function _claudePollTurnFn(reqId) {
       text: turn.lastText,
       thinking: stoppedByUser ? "" : turn.lastThinking,
       model: rt.readModelBadge() || turn.modelBadge || "Claude Web",
-      url: location.href,
+      url: pageUrl,
     };
   }
 
@@ -6098,7 +6152,7 @@ function _claudePollTurnFn(reqId) {
     thinking: turn.lastThinking,
     streaming: isStillStreaming,
     model: rt.readModelBadge() || turn.modelBadge || "Claude Web",
-    url: location.href,
+    url: pageUrl,
   };
 }
 
@@ -6106,7 +6160,7 @@ function _installWsaDomUtilsFn() {
   if (
     globalThis.__wsaDomUtils &&
     globalThis.__wsaDomUtils.version === 3 &&
-    globalThis.__wsaDomUtils.rev === 7 &&
+    globalThis.__wsaDomUtils.rev === 8 &&
     typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function"
   ) {
     return true;
@@ -6563,8 +6617,9 @@ function _installWsaDomUtilsFn() {
       '[data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], ' +
       '[class*="file-preview"], button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
     const spinnerSel =
-      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading"], ' +
-      '[class*="uploading"], svg[class*="animate-spin"]';
+      'mat-progress-spinner, mat-spinner, mat-progress-bar, ' +
+      '[role="progressbar"], [aria-busy="true"], [data-testid*="uploading" i], [data-testid*="loading" i], ' +
+      '[class*="uploading" i], [class*="loading" i], [class*="spinner" i], svg[class*="animate-spin" i]';
     const countAttachments = (scope) => {
       try { return (scope || document).querySelectorAll(attachSel).length; } catch { return 0; }
     };
@@ -6647,7 +6702,8 @@ function _installWsaDomUtilsFn() {
     }
 
     if (attachedMethod) {
-      const deadline = Date.now() + 12000;
+      const deadline = Date.now() + 15000;
+      await sleepMs(400);
       while (Date.now() < deadline && hasUploadSpinner()) {
         await sleepMs(200);
       }
@@ -6856,8 +6912,8 @@ function _installWsaDomUtilsFn() {
       if (typeof sendBtn.scrollIntoView === "function") {
         try { sendBtn.scrollIntoView({ block: "nearest" }); } catch { /* ignore */ }
       }
-      if (allowFormSubmitFallback && typeof Event === "function" && typeof sendBtn.dispatchEvent === "function") {
-        for (const evType of ["pointerdown", "mousedown", "mouseup"]) {
+      if (typeof Event === "function" && typeof sendBtn.dispatchEvent === "function") {
+        for (const evType of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
           try {
             const Ctor = evType.startsWith("pointer") && typeof PointerEvent === "function"
               ? PointerEvent
@@ -6866,7 +6922,12 @@ function _installWsaDomUtilsFn() {
           } catch { /* ignore */ }
         }
       }
-      sendBtn.click();
+      try {
+        if (typeof MouseEvent === "function" && typeof sendBtn.dispatchEvent === "function") {
+          sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+        }
+      } catch { /* ignore */ }
+      try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
     }
     if (typeof liveEd.focus === "function") {
@@ -7006,15 +7067,17 @@ function _installWsaDomUtilsFn() {
     setEditablePromptText(editor, prompt);
     await sleepMs(160);
 
+    const maxBtnWait = imagesAttached ? 40 : 20;
     let sendBtn = rt.findSendButton(rt.findEditor() || editor);
-    for (let i = 0; !sendBtn && i < 20; i++) {
-      if (i === 8) {
+    for (let i = 0; !sendBtn && i < maxBtnWait; i++) {
+      if (i === 8 || (imagesAttached && i === 24)) {
         const liveEd = rt.findEditor() || editor;
         if (liveEd) setEditablePromptText(liveEd, prompt);
-      } else if ((i === 4 || i === 12) && typeof Event === "function") {
+      } else if ((i === 4 || i === 12 || i === 20) && typeof Event === "function") {
         const liveEd = rt.findEditor() || editor;
         if (liveEd && typeof liveEd.dispatchEvent === "function") {
-          try { liveEd.dispatchEvent(new Event("input", { bubbles: true })); } catch { /* ignore */ }
+          try { liveEd.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
+          try { liveEd.dispatchEvent(new Event("change", { bubbles: true, composed: true })); } catch { /* ignore */ }
         }
       }
       await sleepMs(150);
@@ -7076,6 +7139,7 @@ function _installWsaDomUtilsFn() {
     const label = opts.label || "Web AI";
     const defaultModel = opts.defaultModel || label;
     const now = Date.now();
+    const pageUrl = typeof window !== "undefined" && window.location ? window.location.href : (typeof location !== "undefined" ? location.href : "");
     const allTurns = rt.readAllTurns();
     const stopVisible = rt.hasStopButton();
     const liveEd = typeof rt.findEditor === "function" ? rt.findEditor() : null;
@@ -7162,7 +7226,7 @@ function _installWsaDomUtilsFn() {
           text: "",
           thinking: "",
           model: rt.readModelBadge() || turn.modelBadge || defaultModel,
-          url: location.href,
+          url: pageUrl,
         };
       }
       const turnLimitErr = curText ? detectLimitMessage(curText) : "";
@@ -7176,22 +7240,24 @@ function _installWsaDomUtilsFn() {
           text: "",
           thinking: "",
           model: rt.readModelBadge() || turn.modelBadge || defaultModel,
-          url: location.href,
+          url: pageUrl,
         };
       }
     }
 
+    const composerRoot = (liveEd && typeof liveEd.closest === "function" ? liveEd.closest("form, [role='region'], [class*='composer' i], [class*='input' i]") : null) || liveEd?.parentElement || (typeof document !== "undefined" ? document : null);
+    const attachSel = 'img[src^="blob:"], img[src^="data:image/"], [data-testid*="file-thumbnail"], [data-testid*="attachment"], [class*="thumbnail"], [class*="attachment"], [class*="file-preview"], button[aria-label*="Remove" i], button[aria-label*="Delete" i]';
+    const hasStuckMedia = Boolean(composerRoot && typeof composerRoot.querySelectorAll === "function" && composerRoot.querySelectorAll(attachSel).length > 0);
+    const isPromptInEd = Boolean(turn.prompt && liveEd && isPromptStillInEditor(liveEd, turn.prompt));
     const promptUnsent = Boolean(
       !turn.sawActivity &&
       !isStillStreaming &&
       allTurns.length <= turn.beforeTurnCount &&
-      turn.prompt &&
-      liveEd &&
-      isPromptStillInEditor(liveEd, turn.prompt)
+      (isPromptInEd || hasStuckMedia)
     );
-    if (promptUnsent && (turn.submitRetries || 0) < 3 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
+    if (promptUnsent && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
       const sendMissing = typeof rt.findSendButton === "function" && !rt.findSendButton(liveEd);
-      if (sendMissing && (turn.submitRetries || 0) < 2) {
+      if (sendMissing && isPromptInEd && (turn.submitRetries || 0) < 2) {
         setEditablePromptText(liveEd, turn.prompt);
       }
       triggerSendSubmission(rt, liveEd, (turn.submitRetries || 0) >= 1);
@@ -7226,7 +7292,7 @@ function _installWsaDomUtilsFn() {
         text: turn.lastText,
         thinking: stoppedByUser ? "" : turn.lastThinking,
         model: rt.readModelBadge() || turn.modelBadge || defaultModel,
-        url: location.href,
+        url: pageUrl,
       };
     }
 
@@ -7246,13 +7312,13 @@ function _installWsaDomUtilsFn() {
       thinking: turn.lastThinking,
       streaming: isStillStreaming,
       model: rt.readModelBadge() || turn.modelBadge || defaultModel,
-      url: location.href,
+      url: pageUrl,
     };
   }
 
   globalThis.__wsaDomUtils = {
     version: 3,
-    rev: 7,
+    rev: 8,
     getClassStr,
     isVisible,
     normalizeCompareText,
@@ -7272,7 +7338,7 @@ function _installWsaDomUtilsFn() {
 }
 
 function _chatgptInstallPageRuntimeFn() {
-  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 6) {
+  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 7) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -7308,12 +7374,15 @@ function _chatgptInstallPageRuntimeFn() {
     const roots = scope ? [scope, document] : [document];
     const selectors = [
       "button[data-testid='send-button']",
+      "[role='button'][data-testid='send-button']",
+      "[data-testid='send-button']",
       "#composer-submit-button",
       "button#composer-submit-button",
       "button[aria-label='Send']",
       "button[aria-label*='Send prompt' i]",
       "button[aria-label*='Send message' i]",
       "button[aria-label*='Send' i]",
+      "[role='button'][aria-label*='Send' i]",
       "button[type='submit']",
       "button.bg-composer-primary",
       "form button.bg-composer-primary",
@@ -7323,11 +7392,16 @@ function _chatgptInstallPageRuntimeFn() {
       for (const sel of selectors) {
         if ((sel === "button[type='submit']" || sel === "button.bg-composer-primary") && (!scope || rIdx > 0)) continue;
         for (const b of root.querySelectorAll(sel)) {
-          const meta = `${b.getAttribute("data-testid") || ""} ${b.id || ""} ${b.getAttribute("aria-label") || ""} ${b.getAttribute("title") || ""} ${b.innerText || ""}`;
-          if (/\b(?:voice|dictate|stop|speech|audio|talk|mic|microphone|attach|upload|add files?|think|reason|search|model|menu|more|feedback|regenerate|retry|expand|collapse|full\s*screen)\b/i.test(meta)) continue;
-          if (isVisible(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true") {
+          if (!isVisible(b) || b.disabled || b.getAttribute("aria-disabled") === "true") continue;
+          const meta = `${b.getAttribute("data-testid") || ""} ${b.id || ""} ${b.getAttribute("aria-label") || ""} ${b.getAttribute("title") || ""} ${b.innerText || ""}`.toLowerCase();
+          const testId = (b.getAttribute("data-testid") || "").toLowerCase();
+          const isExplicit = testId === "send-button" || b.id === "composer-submit-button" || meta.includes("send message") || meta.includes("send prompt") || meta.trim() === "send";
+          if (isExplicit) {
+            if (/\b(?:voice|dictate|stop|speech|audio|talk|mic|microphone)\b/i.test(meta)) continue;
             return b;
           }
+          if (/\b(?:voice|dictate|stop|speech|audio|talk|mic|microphone|attach|upload|add files?|think|reason|search|model|menu|more|feedback|regenerate|retry|expand|collapse|full\s*screen)\b/i.test(meta)) continue;
+          return b;
         }
       }
     }
@@ -7594,7 +7668,7 @@ function _chatgptInstallPageRuntimeFn() {
 
   globalThis.__wsaChatgptRuntime = {
     version: 3,
-    rev: 6,
+    rev: 7,
     turns: Object.create(null),
     findEditor,
     findSendButton,
@@ -7631,7 +7705,7 @@ function _chatgptPollTurnFn(reqId) {
 }
 
 function _deepseekInstallPageRuntimeFn() {
-  if (globalThis.__wsaDeepseekRuntime && globalThis.__wsaDeepseekRuntime.version === 3 && globalThis.__wsaDeepseekRuntime.rev === 5) {
+  if (globalThis.__wsaDeepseekRuntime && globalThis.__wsaDeepseekRuntime.version === 3 && globalThis.__wsaDeepseekRuntime.rev === 6) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -7670,6 +7744,7 @@ function _deepseekInstallPageRuntimeFn() {
       "button.ds-button--primary.ds-button--circle",
       "div[role='button']._52c986b",
       "button[data-testid='send-button']",
+      "[role='button'][data-testid='send-button']",
       "button[aria-label*='Send' i]",
       "div[role='button'][aria-label*='Send' i]",
       "button[type='submit']",
@@ -7680,11 +7755,16 @@ function _deepseekInstallPageRuntimeFn() {
         if (sel === "button[type='submit']" && (scope === document || rIdx > 0)) continue;
         if (rIdx > 0 && !sel.includes("send-button") && !sel.includes("Send")) continue;
         for (const b of root.querySelectorAll(sel)) {
-          const meta = `${b.getAttribute("data-testid") || ""} ${b.getAttribute("aria-label") || ""} ${b.getAttribute("title") || ""} ${b.innerText || ""}`;
-          if (/\b(?:deep\s*think|r1|search|upload|attach|file|voice|mic|stop|feedback|regenerate|retry|like|dislike|copy|share|edit|expand|collapse|full\s*screen)\b/i.test(meta)) continue;
-          if (isVisible(b) && !isButtonDisabled(b)) {
+          if (!isVisible(b) || isButtonDisabled(b)) continue;
+          const meta = `${b.getAttribute("data-testid") || ""} ${b.getAttribute("aria-label") || ""} ${b.getAttribute("title") || ""} ${b.innerText || ""}`.toLowerCase();
+          const cls = getClassStr(b);
+          const isExplicit = cls.includes("ds-button--primary") || (b.getAttribute("data-testid") || "").toLowerCase().includes("send-button") || meta.includes("send");
+          if (isExplicit) {
+            if (/\b(?:stop|voice|mic)\b/i.test(meta)) continue;
             return b;
           }
+          if (/\b(?:deep\s*think|r1|search|upload|attach|file|voice|mic|stop|feedback|regenerate|retry|like|dislike|copy|share|edit|expand|collapse|full\s*screen)\b/i.test(meta)) continue;
+          return b;
         }
       }
     }
@@ -7921,7 +8001,7 @@ function _deepseekInstallPageRuntimeFn() {
 
   globalThis.__wsaDeepseekRuntime = {
     version: 3,
-    rev: 5,
+    rev: 6,
     turns: Object.create(null),
     findEditor,
     findSendButton,
@@ -7958,7 +8038,7 @@ function _deepseekPollTurnFn(reqId) {
 }
 
 function _veniceInstallPageRuntimeFn() {
-  if (globalThis.__wsaVeniceRuntime && globalThis.__wsaVeniceRuntime.version === 1 && globalThis.__wsaVeniceRuntime.rev === 5) {
+  if (globalThis.__wsaVeniceRuntime && globalThis.__wsaVeniceRuntime.version === 1 && globalThis.__wsaVeniceRuntime.rev === 6) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -7973,7 +8053,7 @@ function _veniceInstallPageRuntimeFn() {
 
   function isButtonDisabled(b) {
     if (!b) return true;
-    return Boolean(b.disabled || b.getAttribute("aria-disabled") === "true" || b.hasAttribute("data-disabled"));
+    return Boolean(b.disabled || b.getAttribute?.("aria-disabled") === "true" || (typeof b.hasAttribute === "function" && b.hasAttribute("data-disabled")));
   }
 
   function findEditor() {
@@ -8001,10 +8081,15 @@ function _veniceInstallPageRuntimeFn() {
     const roots = scope !== document ? [scope, document] : [document];
     const primarySelectors = [
       "button[aria-label='Send message']",
+      "[role='button'][aria-label='Send message']",
       "button[aria-label*='Send message' i]",
+      "[role='button'][aria-label*='Send message' i]",
       "button[aria-label='Submit chat']",
+      "[role='button'][aria-label='Submit chat']",
       "button[aria-label*='Submit chat' i]",
+      "[role='button'][aria-label*='Submit chat' i]",
       "button[data-testid='send-button']",
+      "[role='button'][data-testid='send-button']",
       "button[type='submit']",
     ];
     const rejectRe = /\b(?:dictate|voice|mic|microphone|attach|file|upload|stop|settings|actions|model|new\s*chat|get\s*pro|more\s*models)\b/i;
@@ -8014,9 +8099,15 @@ function _veniceInstallPageRuntimeFn() {
         if (sel === "button[type='submit']" && (scope === document || rIdx > 0)) continue;
         for (const b of root.querySelectorAll(sel)) {
           if (b.closest?.("[role='dialog']")) continue;
+          if (!isVisible(b) || isButtonDisabled(b)) continue;
           const lbl = getBtnLabel(b);
+          const isExplicit = /^(?:send(?:\s*message)?|submit(?:\s*chat)?)$/i.test(lbl) || (b.getAttribute("data-testid") || "").toLowerCase() === "send-button";
+          if (isExplicit) {
+            if (/\b(?:dictate|voice|mic|stop)\b/i.test(lbl)) continue;
+            return b;
+          }
           if (rejectRe.test(lbl)) continue;
-          if (isVisible(b) && !isButtonDisabled(b)) return b;
+          return b;
         }
       }
     }
@@ -8326,7 +8417,7 @@ function _veniceInstallPageRuntimeFn() {
 
   globalThis.__wsaVeniceRuntime = {
     version: 1,
-    rev: 5,
+    rev: 6,
     turns: Object.create(null),
     findEditor,
     findSendButton,
