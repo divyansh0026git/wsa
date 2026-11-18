@@ -184,7 +184,25 @@ def _extract_limit_error_from_dict(err_obj: object, status_code: int = 0) -> Opt
             "server is busy",
             "limit resets",
             "responses will use another model",
+            "responses will use a different model",
+            "responses will use the mini model",
+            "responses will use gemini auto",
+            "responses will use gemini flash-lite",
+            "responses will use auto",
+            "responses will use flash-lite",
+            "switched to gemini auto",
+            "switched to gemini flash-lite",
+            "switched to auto",
+            "switched to flash-lite",
+            "switched to flash lite",
+            "using gemini auto",
+            "using gemini flash-lite",
+            "gemini pro limit reached",
+            "gemini advanced limit reached",
         )
+    ) or (
+        ("reached" in low_msg or "exceeded" in low_msg or "hit" in low_msg or "resets" in low_msg)
+        and ("limit" in low_msg or "quota" in low_msg or "cap" in low_msg)
     ):
         return (prov, msg)
     return None

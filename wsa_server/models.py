@@ -223,7 +223,13 @@ def extract_upstream_model_info(raw_or_inner) -> dict:
             if t and len(t) > thinking_chars:
                 thinking_chars = len(t)
 
-    if isinstance(raw_or_inner, list):
+    if isinstance(raw_or_inner, dict):
+        badge = raw_or_inner.get("badge")
+        model_hex = raw_or_inner.get("hex")
+        executed_mode = raw_or_inner.get("mode")
+        executed_slot = raw_or_inner.get("slot80")
+        thinking_chars = raw_or_inner.get("thinking_chars", 0)
+    elif isinstance(raw_or_inner, list):
         _inspect_inner(raw_or_inner)
     elif isinstance(raw_or_inner, str):
         for line in raw_or_inner.split("\n"):
@@ -238,7 +244,10 @@ def extract_upstream_model_info(raw_or_inner) -> dict:
             except Exception:
                 pass
 
-    is_downgraded = bool(executed_mode == 6 or (badge and "Flash-Lite" in badge))
+    is_downgraded = bool(
+        executed_mode == 6
+        or (badge and any(k in badge.lower() for k in ("flash-lite", "flash lite", "auto", "gemini auto")))
+    )
     is_tier4 = bool(
         not is_downgraded
         and (

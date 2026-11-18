@@ -2497,19 +2497,17 @@ def execute_agent_loop(
                         if getattr(state, "_force_new_chat_next", False):
                             state._force_new_chat_next = False
                         # Multiagent-only: a silent model downgrade reported on
-                        # THIS request (e.g. Gemini falling back to Flash-Lite)
+                        # THIS request (e.g. Gemini falling back to Flash-Lite or Auto)
                         # means the active web account hit its limit. Escalate to
                         # the ProviderLimitError failover path so context transfers
-                        # to the next queued agent. Single-agent mode never aborts
-                        # here — the answer is still usable.
+                        # to the next queued agent, or offers the user model switch in singleagent mode.
                         _um = response.get("upstream_model") if isinstance(response, dict) else None
                         if (
-                            getattr(state, "agent_mode", "singleagent") == "multiagent"
-                            and not model_override
+                            not model_override
                             and isinstance(_um, dict)
                             and _um.get("is_downgraded_flash_lite") is True
                         ):
-                            _badge = str(_um.get("badge") or "Flash-Lite")
+                            _badge = str(_um.get("badge") or "Flash-Lite / Auto")
                             raise ProviderLimitError(
                                 f"Provider limit reached ({effective_model}): silently "
                                 f"downgraded to {_badge} (upstream model downgrade counts "

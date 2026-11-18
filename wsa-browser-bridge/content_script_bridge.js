@@ -92,7 +92,38 @@
     connectKeepalive();
   });
 
+  function autoDismissWaitPrompts() {
+    try {
+      const candidates = document.querySelectorAll(
+        "button, [role='button'], .mat-mdc-button-base, [role='dialog'] button, mat-dialog-container button, .modal button"
+      );
+      for (const b of candidates) {
+        const txt = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (txt === "wait" || txt === "keep waiting" || txt === "wait for page" || txt === "continue waiting") {
+          b.click();
+          console.log("[WSA bridge] Auto-clicked 'Wait' prompt on page.");
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Observe DOM for any unresponsive/wait modals appearing dynamically
+  try {
+    const waitObserver = new MutationObserver(() => {
+      autoDismissWaitPrompts();
+    });
+    if (document.body) {
+      waitObserver.observe(document.body, { childList: true, subtree: true });
+    } else {
+      document.addEventListener("DOMContentLoaded", () => {
+        if (document.body) waitObserver.observe(document.body, { childList: true, subtree: true });
+      });
+    }
+  } catch { /* ignore */ }
+
   setInterval(() => {
+    autoDismissWaitPrompts();
     if (!keepalivePort) {
       connectKeepalive();
     } else {
@@ -105,7 +136,7 @@
         }
       });
     }
-  }, 5000);
+  }, 3000);
 
   document.addEventListener("visibilitychange", () => {
     // Wake the worker immediately when switching AWAY as well as returning.

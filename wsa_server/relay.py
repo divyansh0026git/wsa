@@ -2019,7 +2019,7 @@ def dom_relay_iter(
             "thinking_level": THINKING_LEVEL_NAMES[2] if argon_hit else "WEB_UI",
             "is_tier4_high": bool(argon_hit),
             "is_downgraded_flash_lite": bool(
-                prov == "gemini" and "flash-lite" in model_badge.lower()
+                prov == "gemini" and any(k in model_badge.lower() for k in ("flash-lite", "flash lite", "auto", "gemini auto"))
             ),
             "thinking_chars": len(thinking_text),
             "updated_at": int(time.time()),

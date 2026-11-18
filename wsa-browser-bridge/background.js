@@ -2749,11 +2749,11 @@ function _domInstallPageRuntimeFn() {
       const txt = (btn.innerText || btn.textContent || "").replace(/\s+/g, " ").trim();
       if (txt) return txt;
     }
-    const modelRe = /^(?:\d+(?:\.\d+)?\s*)?(Argon|Carbon|Pro|Flash|Fast|Thinking|Auto)\b/i;
+    const modelRe = /^(?:\d+(?:\.\d+)?\s*)?(?:Gemini\s+)?(Argon|Carbon|Pro|Flash(?:-Lite|\s+Lite)?|Fast|Thinking|Auto)\b/i;
     for (const b of document.querySelectorAll("button")) {
       if (!isVisibleElement(b)) continue;
       const t = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim();
-      if (t && t.length <= 40 && modelRe.test(t)) return t;
+      if (t && t.length <= 48 && modelRe.test(t)) return t;
     }
     return "";
   }
@@ -3362,11 +3362,10 @@ function _domInstallPageRuntimeFn() {
       }
       return;
     }
+    autoDismissWaitPrompts();
+    const isLongText = cleanText.length > 1200 || cleanText.split("\n").length > 15;
     selectEditorContents(inputEl);
     let inserted = false;
-    try {
-      inserted = Boolean(document.execCommand && document.execCommand("insertText", false, cleanText));
-    } catch { /* ignore */ }
     const expNorm = normalizeCompareText(cleanText);
     const probePrefix = expNorm.slice(0, 24).trim();
     const probeTail = expNorm.slice(-24).trim();
@@ -3381,6 +3380,23 @@ function _domInstallPageRuntimeFn() {
       }
       return true;
     };
+
+    // For long text, prefer paste event first to avoid Quill's O(N^2) character-by-character layout freeze
+    if (isLongText && typeof ClipboardEvent === "function" && typeof DataTransfer === "function") {
+      try {
+        const dt = new DataTransfer();
+        dt.setData("text/plain", cleanText);
+        inputEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+        if (hasExpectedText()) inserted = true;
+      } catch { /* ignore */ }
+    }
+
+    if (!inserted) {
+      try {
+        inserted = Boolean(document.execCommand && document.execCommand("insertText", false, cleanText));
+      } catch { /* ignore */ }
+    }
+
     if (!inserted || !hasExpectedText()) {
       try {
         if (typeof ClipboardEvent === "function" && typeof DataTransfer === "function") {
@@ -3394,13 +3410,25 @@ function _domInstallPageRuntimeFn() {
     }
     if (!inserted || !hasExpectedText()) {
       if (typeof document.createElement === "function" && typeof inputEl.replaceChildren === "function") {
-        const pNodes = cleanText.split("\n").map((line) => {
-          const p = document.createElement("p");
-          if (line) p.appendChild(document.createTextNode(line));
-          else p.appendChild(document.createElement("br"));
-          return p;
-        });
-        inputEl.replaceChildren(...pNodes);
+        const lines = cleanText.split("\n");
+        const frag = typeof document.createDocumentFragment === "function" ? document.createDocumentFragment() : null;
+        if (lines.length > 80) {
+          for (let i = 0; i < lines.length; i += 20) {
+            const chunk = lines.slice(i, i + 20).join("\n");
+            const p = document.createElement("p");
+            p.textContent = chunk;
+            if (frag) frag.appendChild(p); else inputEl.appendChild(p);
+          }
+          if (frag) inputEl.replaceChildren(frag);
+        } else {
+          const pNodes = lines.map((line) => {
+            const p = document.createElement("p");
+            if (line) p.appendChild(document.createTextNode(line));
+            else p.appendChild(document.createElement("br"));
+            return p;
+          });
+          inputEl.replaceChildren(...pNodes);
+        }
       } else {
         inputEl.textContent = cleanText;
       }
@@ -3413,6 +3441,22 @@ function _domInstallPageRuntimeFn() {
         inputEl.dispatchEvent(new Event("input", { bubbles: true }));
       }
     }
+    autoDismissWaitPrompts();
+  }
+
+  function autoDismissWaitPrompts() {
+    try {
+      const candidates = document.querySelectorAll(
+        "button, [role='button'], .mat-mdc-button-base, [role='dialog'] button, mat-dialog-container button, .modal button"
+      );
+      for (const b of candidates) {
+        const txt = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (txt === "wait" || txt === "keep waiting" || txt === "wait for page" || txt === "continue waiting") {
+          b.click();
+          break;
+        }
+      }
+    } catch { /* ignore */ }
   }
 
   function readEditorPromptText(editorEl) {
@@ -3809,7 +3853,7 @@ function _domInstallPageRuntimeFn() {
     const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
     const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
     const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
-    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini)\s+model)/i;
+    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+auto|auto|gemini\s+flash-lite|flash-lite|flash\s+lite|gemini\s+flash|flash)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:until|because|due\s+to|after)\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
@@ -4080,6 +4124,12 @@ function _domPollTurnFn(reqId) {
       }
     }
   }
+  if (typeof autoDismissWaitPrompts === "function") autoDismissWaitPrompts();
+  const livePickerBadge = typeof rt.readModePickerBadge === "function" ? rt.readModePickerBadge() : "";
+  const effectiveBadge = (livePickerBadge && /(?:auto|flash(?:-lite|\s+lite)?)/i.test(livePickerBadge))
+    ? livePickerBadge
+    : (job.selectedBadge || livePickerBadge);
+
   if (!busy && typeof rt.detectLimitMessage === "function") {
     const turnLimitErr = job.lastText ? rt.detectLimitMessage(job.lastText) : "";
     const pageBannerErr = typeof rt.readErrorBanner === "function" ? rt.detectLimitMessage(rt.readErrorBanner(), true) : "";
@@ -4091,7 +4141,7 @@ function _domPollTurnFn(reqId) {
         error: "[LIMIT_REACHED] Gemini: " + matchedLimit,
         text: "",
         thinking: "",
-        model: job.selectedBadge || rt.readModePickerBadge(),
+        model: effectiveBadge,
         url: window.location.href,
         busy: false,
         hasTurnActions,
@@ -4134,7 +4184,7 @@ function _domPollTurnFn(reqId) {
             : "Gemini tab did not start or produce a text response")),
       text: job.lastText,
       thinking: job.lastThinking,
-      model: job.selectedBadge || rt.readModePickerBadge(),
+      model: effectiveBadge,
       url: window.location.href,
       busy: false,
       hasTurnActions,
@@ -4161,7 +4211,7 @@ function _domPollTurnFn(reqId) {
     done,
     text: job.lastText,
     thinking: job.lastThinking,
-    model: job.selectedBadge || rt.readModePickerBadge(),
+    model: effectiveBadge,
     url: window.location.href,
     busy,
     streaming: busy,
@@ -5651,7 +5701,7 @@ function _claudeInstallPageRuntimeFn() {
     const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
     const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
     const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
-    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini)\s+model)/i;
+    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+auto|auto|gemini\s+flash-lite|flash-lite|flash\s+lite|gemini\s+flash|flash)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:until|because|due\s+to|after)\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
@@ -6851,11 +6901,9 @@ function _installWsaDomUtilsFn() {
         }
       } catch { /* ignore */ }
     };
+    const isLongText = textToInsert.length > 1200 || textToInsert.split("\n").length > 15;
     selectEditableRange();
     let inserted = false;
-    try {
-      inserted = Boolean(document.execCommand && document.execCommand("insertText", false, textToInsert));
-    } catch { /* ignore */ }
     const expNorm = normalizeCompareText(cleanText);
     const probePrefix = expNorm.slice(0, 24).trim();
     const probeTail = expNorm.slice(-24).trim();
@@ -6870,6 +6918,25 @@ function _installWsaDomUtilsFn() {
       }
       return true;
     };
+    if (isLongText && typeof ClipboardEvent === "function" && typeof DataTransfer === "function") {
+      try {
+        const dt = new DataTransfer();
+        dt.setData("text/plain", textToInsert);
+        editorEl.dispatchEvent(new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt,
+        }));
+        if (hasExpectedText()) {
+          inserted = true;
+        }
+      } catch { /* ignore */ }
+    }
+    if (!inserted) {
+      try {
+        inserted = Boolean(document.execCommand && document.execCommand("insertText", false, textToInsert));
+      } catch { /* ignore */ }
+    }
     if (!inserted || !hasExpectedText()) {
       try {
         if (typeof ClipboardEvent === "function" && typeof DataTransfer === "function") {
@@ -6899,13 +6966,25 @@ function _installWsaDomUtilsFn() {
         }
         hostBlock.appendChild(document.createTextNode(textToInsert));
       } else if (typeof document.createElement === "function" && typeof editorEl.replaceChildren === "function") {
-        const pNodes = cleanText.split("\n").map((line) => {
-          const p = document.createElement("p");
-          if (line) p.textContent = line;
-          else p.appendChild(document.createElement("br"));
-          return p;
-        });
-        editorEl.replaceChildren(...pNodes);
+        const lines = cleanText.split("\n");
+        const frag = typeof document.createDocumentFragment === "function" ? document.createDocumentFragment() : null;
+        if (lines.length > 80) {
+          for (let i = 0; i < lines.length; i += 20) {
+            const chunk = lines.slice(i, i + 20).join("\n");
+            const p = document.createElement("p");
+            p.textContent = chunk;
+            if (frag) frag.appendChild(p); else editorEl.appendChild(p);
+          }
+          if (frag) editorEl.replaceChildren(frag);
+        } else {
+          const pNodes = lines.map((line) => {
+            const p = document.createElement("p");
+            if (line) p.textContent = line;
+            else p.appendChild(document.createElement("br"));
+            return p;
+          });
+          editorEl.replaceChildren(...pNodes);
+        }
       } else {
         editorEl.textContent = cleanText;
       }
@@ -7047,7 +7126,7 @@ function _installWsaDomUtilsFn() {
     const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
     const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
     const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
-    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini)\s+model)/i;
+    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+auto|auto|gemini\s+flash-lite|flash-lite|flash\s+lite|gemini\s+flash|flash)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:until|because|due\s+to|after)\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
@@ -7195,7 +7274,23 @@ function _installWsaDomUtilsFn() {
     };
   }
 
+  function autoDismissWaitPrompts() {
+    try {
+      const candidates = document.querySelectorAll(
+        "button, [role='button'], .mat-mdc-button-base, [role='dialog'] button, mat-dialog-container button, .modal button"
+      );
+      for (const b of candidates) {
+        const txt = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (txt === "wait" || txt === "keep waiting" || txt === "wait for page" || txt === "continue waiting") {
+          b.click();
+          break;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   function pollTurn(rt, reqId, opts = {}) {
+    autoDismissWaitPrompts();
     let turn = rt.turns[reqId];
     if (!turn) {
       if (typeof rt.hasStopButton === "function" && rt.hasStopButton()) {

@@ -2095,8 +2095,8 @@ console.log("NODE_HELPERS_OK");
         bg_src = (ext_dir / "background.js").read_text(encoding="utf-8")
 
         self.assertEqual(manifest.get("name"), "WSA — Web Browser Bridge")
-        self.assertEqual(manifest.get("version"), "2.0.3")
-        self.assertEqual(manifest.get("version_name"), "2.0.3")
+        self.assertEqual(manifest.get("version"), "2.0.4")
+        self.assertEqual(manifest.get("version_name"), "2.0.4")
         self.assertEqual(manifest.get("author"), "Divyansh Saraf")
         self.assertIn("Engineered by Divyansh Saraf", manifest.get("description", ""))
         self.assertNotIn("downloads", manifest.get("permissions", []))
