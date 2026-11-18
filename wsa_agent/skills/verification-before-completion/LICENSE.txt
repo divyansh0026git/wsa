@@ -1,0 +1,2 @@
+MIT License — Adapted for WSA from obra/superpowers
+Upstream reference: https://github.com/obra/superpowers

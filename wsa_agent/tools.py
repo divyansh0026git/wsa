@@ -1225,6 +1225,25 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_skill",
+            "description": (
+                "Read one or more bundled WSA engineering/UI/3D/debugging/security skills before planning or editing. "
+                "Pass comma-separated skill names (e.g. 'impeccable,threejs-skills') or 'catalog' to list all skills."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name":    {"type": "string", "description": "Skill slug(s) comma-separated, or 'catalog'"},
+                    "mode":    {"type": "string", "description": "'brief' (default compressed rules) or 'full'"},
+                    "section": {"type": "string", "description": "Optional heading filter for a specific section"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 _BUILTIN_TOOL_NAMES = frozenset(item["function"]["name"] for item in TOOL_DEFINITIONS)
@@ -1971,6 +1990,7 @@ def _execute_tool_unlocked(name: str, args: dict) -> str:
         if name == "todo":             return _todo(**args)
         if name == "wait_for":         return _wait_for(**args)
         if name == "apply_patch":      return _apply_patch(**args)
+        if name == "read_skill":       return _read_skill(**args)
         if name == "remember":         return _remember(**args)
         if name == "recall":           return _recall(**args)
         if name == "spawn_subagent":   return _spawn_subagent(**args)
@@ -2012,6 +2032,19 @@ def _spawn_subagent(
         owned_files=owned_files,
         acceptance=acceptance,
     )
+
+
+def _read_skill(
+    name: str = "catalog",
+    mode: str = "brief",
+    section: str = "",
+    max_chars: int = 8000,
+) -> str:
+    """Load one or more bundled WSA skills in compressed or full form."""
+    from .task_skills import read_skill_content
+    cap = max(1200, min(int(max_chars or 8000), 14000))
+    text, _loaded = read_skill_content(name=name, mode=mode, section=section, max_chars=cap)
+    return text
 
 
 _IMAGE_EXT_MIME = {

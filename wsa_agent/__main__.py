@@ -234,7 +234,7 @@ except ImportError:
 SLASH_COMMANDS = [
     "/help", "/shortcuts", "/model", "/models", "/multiagent", "/singleagent", "/theme", "/project",
     "/status", "/tokens", "/init", "/files", "/read", "/run", "/search",
-    "/team", "/plan", "/verify",
+    "/team", "/plan", "/verify", "/skills",
     "/diff", "/undo", "/rules", "/tools", "/perm", "/account", "/free", "/save", "/load", "/new", "/clear", "/compact", "/exit", "/quit",
 ]
 

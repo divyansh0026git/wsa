@@ -1,0 +1,2 @@
+MIT License — Adapted for WSA from mattpocock/skills
+Upstream reference: https://github.com/mattpocock/skills

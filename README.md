@@ -106,24 +106,20 @@ wsa [options] [query ...]
 - **Session**: `/new [keep]`, `/clear`, `/compact`, `/save`, `/load`, `/status`, `/tokens`, `/theme [name]`, `/help`, `/exit`
 - **Web Bridges & Browser**: `/model [name]`, `/models`, `/singleagent [model]`, `/multiagent`, `/account [name]`
 - **Workspace**: `/init`, `/project [dir]`, `/read <path>`, `/run <cmd>`, `/search <pattern>`, `/diff`, `/undo`
-- **Orchestration & Controls**: `/team [auto|on|off|single-chat|role-chats|dual|single]`, `/plan [task]`, `/verify [scope]`, `/perm [smart|strict|auto]`, `/tools`, `/rules`
+- **Orchestration & Controls**: `/team [auto|on|off|single-chat|role-chats|dual|single]`, `/plan [task]`, `/verify [scope]`, `/skills [name|scan <path>]`, `/perm [smart|strict|auto]`, `/tools`, `/rules`
 - **Shortcuts**: `Shift+Tab` cycles permission mode, `?` shows keyboard shortcuts, `@path` attaches workspace files, and `Ctrl+C` interrupts the active turn cleanly.
 
-## Built-in task skills and orchestrator output
+## Built-in task skills, read-first workflow & post-build security fixing
 
-WSA selects local skill excerpts from the original request. UI, interface, dashboard,
-website, and frontend work uses Anthropic's
-[frontend-design](https://github.com/anthropics/skills/tree/main/skills/frontend-design)
-together with Damir Sokolovsky's [unslop](https://github.com/heydamir/unslop) by default.
-Feature implementation uses [test-driven-development](https://github.com/obra/superpowers/tree/main/skills/test-driven-development).
-Crashes, failing tests, and repair passes use [systematic-debugging](https://github.com/obra/superpowers/tree/main/skills/systematic-debugging).
-Relevant skills can run together. WSA prints the selection once and passes it to each scoped
-role. Naming a skill explicitly also selects it. Free mode omits the skills.
+WSA bundles **18 curated non-overlapping skills** under `wsa_agent/skills/` across 5 domains:
 
-The upstream Markdown and license files ship under `wsa_agent/skills/`. Anthropic's
-skill uses Apache-2.0, `unslop` uses CC-BY-4.0 (credit: Damir Sokolovsky / `@heydamir`),
-and the two Superpowers skills use MIT. Updates are distributed with WSA. Selecting a skill
-works offline and adds no model round-trip.
+1. **3D, Shaders & Motion**: `dream-loop` (`achimala/dream-loop`), `img2threejs` (`img2threejs/img2threejs`), `gsap-skills` (`greensock/gsap-skills`), `threejs-skills` (`CloudAI-X/threejs-skills`).
+2. **UI & UX Design (Anti-Slop)**: `impeccable` (`pbakaus/impeccable`), `frontend-design` (`anthropics/skills`), `unslop` (`heydamir/unslop`, CC-BY-4.0), `web-design-guidelines` (`vercel-labs/agent-skills`).
+3. **Debugging, Optimization & Live Browser QA**: `systematic-debugging` & `verification-before-completion` (`obra/superpowers`), `chrome-devtools-qa` (`ChromeDevTools/chrome-devtools-mcp`).
+4. **Website Security & Pre-Install Skill Safety**: `security-audit` (`cloudflare/security-audit-skill`), `semgrep-guardrails` (`semgrep/skills`), `skill-spector` (`NVIDIA/SkillSpector`).
+5. **Core Software Engineering**: `karpathy-skills` (`multica-ai/andrej-karpathy-skills`), `test-driven-development` (`obra/superpowers`), `grill-and-git-guardrails` (`mattpocock/skills`), `context7-docs` (`upstash/context7`).
+
+Instead of bloating web chat prompts with full `SKILL.md` dumps, WSA detects domain and vibe-coder prompt signals (such as *premium*, *AI slop*, *looks AI-generated*, *3D*, *Igloo.inc*, *laggy/optimization*, *buggy*, *security audit*) combined with web-agent workflow/skill judging, renders the detected signals and appointed skills in the TUI, and directs the web agent to load them first via the read-only `read_skill` tool in compressed form. Whenever a website or web app is built, WSA automatically enforces a post-build **Security Fixing** pass (`security-audit` + `semgrep-guardrails`) before final verification. Run `/skills` to browse all 18 skills or `/skills scan <path>` to vet external skills with SkillSpector. Free mode omits skills.
 
 Orchestrator mode streams the web provider's available response text, keeps stage output
 in terminal history, and shows tool calls, returned line ranges, and short file previews.

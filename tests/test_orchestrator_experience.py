@@ -8,27 +8,70 @@ from wsa_agent.session import SessionState
 from wsa_agent.task_skills import select_task_skills, skill_guidance
 
 
-@pytest.mark.parametrize(("prompt", "names"), [
-    ("Make a premium 3D ecommerce website", ("frontend-design", "unslop")),
-    ("Build a clean analytics interface", ("frontend-design", "unslop")),
-    ("Redesign the frontend dashboard", ("frontend-design", "unslop")),
-    ("Clean up the admin panel", ("frontend-design", "unslop")),
-    ("Unslop this page", ("unslop",)),
-    ("Add OAuth2 to the API", ("test-driven-development",)),
-    ("Add a TypeScript interface for the API", ("test-driven-development",)),
-    ("Debug a timeout in checkout", ("systematic-debugging",)),
-    ("Fix the broken dashboard layout", ("frontend-design", "unslop", "systematic-debugging")),
-    ("Build a responsive web app", ("frontend-design", "unslop", "test-driven-development")),
-    ("Explain what an API is", ()),
-    ("What is systematic debugging?", ()),
-    ("Thank you", ()),
+@pytest.mark.parametrize(("prompt", "required", "forbidden"), [
+    (
+        "Make a premium 3D ecommerce website",
+        ("frontend-design", "unslop", "impeccable", "web-design-guidelines", "threejs-skills", "dream-loop", "img2threejs"),
+        ("systematic-debugging", "skill-spector"),
+    ),
+    (
+        "Build a clean analytics interface",
+        ("frontend-design", "unslop", "impeccable"),
+        ("threejs-skills", "systematic-debugging"),
+    ),
+    (
+        "Redesign the frontend dashboard",
+        ("frontend-design", "unslop", "impeccable", "web-design-guidelines"),
+        ("threejs-skills", "systematic-debugging"),
+    ),
+    (
+        "Clean up the admin panel",
+        ("frontend-design", "unslop", "impeccable"),
+        ("threejs-skills", "systematic-debugging"),
+    ),
+    ("Unslop this page", ("unslop",), ("threejs-skills", "systematic-debugging")),
+    (
+        "Add OAuth2 to the API",
+        ("test-driven-development", "karpathy-skills", "security-audit", "semgrep-guardrails"),
+        ("frontend-design", "unslop", "impeccable"),
+    ),
+    (
+        "Add a TypeScript interface for the API",
+        ("test-driven-development", "karpathy-skills", "verification-before-completion"),
+        ("frontend-design", "unslop", "impeccable"),
+    ),
+    (
+        "Debug a timeout in checkout",
+        ("systematic-debugging", "verification-before-completion"),
+        ("frontend-design", "threejs-skills"),
+    ),
+    (
+        "Fix the broken dashboard layout",
+        ("frontend-design", "unslop", "impeccable", "systematic-debugging", "chrome-devtools-qa"),
+        ("threejs-skills", "skill-spector"),
+    ),
+    (
+        "Build a responsive web app",
+        ("frontend-design", "unslop", "impeccable", "web-design-guidelines", "test-driven-development", "karpathy-skills"),
+        ("threejs-skills", "systematic-debugging"),
+    ),
+    ("Explain what an API is", (), ("frontend-design", "test-driven-development", "systematic-debugging")),
+    ("What is systematic debugging?", (), ("systematic-debugging", "verification-before-completion")),
+    ("Thank you", (), ("frontend-design", "karpathy-skills", "systematic-debugging")),
 ])
-def test_skill_selection(prompt, names):
-    assert select_task_skills(prompt) == names
-    guidance = skill_guidance(names)
-    for name in names:
+def test_skill_selection(prompt, required, forbidden):
+    selected = select_task_skills(prompt)
+    if not required:
+        assert selected == ()
+    else:
+        for name in required:
+            assert name in selected, f"Expected {name!r} in {selected!r} for prompt={prompt!r}"
+    for banned in forbidden:
+        assert banned not in selected, f"Unexpected {banned!r} in {selected!r} for prompt={prompt!r}"
+    guidance = skill_guidance(selected)
+    for name in selected:
         assert "[" + name + "]" in guidance
-    if "unslop" in names:
+    if "unslop" in selected:
         assert "@heydamir" in guidance
         assert "One bright element" in guidance
         assert "No emoji left in the interface" in guidance

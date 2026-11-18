@@ -1,0 +1,2 @@
+MIT License — Adapted for WSA from img2threejs/img2threejs
+Upstream reference: https://github.com/img2threejs/img2threejs

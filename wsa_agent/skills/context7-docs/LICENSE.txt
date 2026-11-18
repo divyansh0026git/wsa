@@ -1,0 +1,2 @@
+MIT License — Adapted for WSA from upstash/context7
+Upstream reference: https://github.com/upstash/context7

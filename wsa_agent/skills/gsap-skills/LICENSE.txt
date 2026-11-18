@@ -1,0 +1,2 @@
+MIT License — Adapted for WSA from greensock/gsap-skills
+Upstream reference: https://github.com/greensock/gsap-skills

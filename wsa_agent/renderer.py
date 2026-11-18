@@ -1606,6 +1606,7 @@ _TOOL_VERBS = {
     "glob_files": "Glob",
     "search_files": "Search",
     "spawn_subagent": "Delegate",
+    "read_skill": "ReadSkill",
 }
 
 
@@ -1624,6 +1625,17 @@ def _format_tool_header(name: str, args: Optional[dict]) -> tuple[str, str]:
 
     if name == "get_file_outline":
         return verb, str(a.get("path", ""))
+
+    if name == "read_skill":
+        sname = str(a.get("name") or "catalog").strip()
+        sec = str(a.get("section") or "").strip()
+        mode = str(a.get("mode") or "").strip().lower()
+        parts = [sname]
+        if sec:
+            parts.append(sec)
+        elif mode == "full":
+            parts.append("full")
+        return verb, " · ".join(parts)
 
     if name == "spawn_subagent":
         rname = str(a.get("role") or "subagent")
@@ -1773,6 +1785,14 @@ def print_tool_result(
             _print_tree_line(extra[:140], style=Theme.DIM)
         return
 
+    if name == "read_skill":
+        summary = re.sub(r"^\[OK\]\s*", "", lines[0])[:160] if lines else "Skill loaded"
+        _print_tree_line(f"{summary}{dur}", style=Theme.INFO, first=True)
+        for extra in lines[1:3]:
+            if extra.startswith("[Warn]"):
+                _print_tree_line(extra[:140], style=Theme.WARN)
+        return
+
     if name in ("read_file", "read_files"):
         header_match = re.search(r"(?:Showing\s+)?lines\s+(\d+)-(\d+)\s+of\s+(\d+)", clean, re.IGNORECASE)
         trunc_match = re.search(r"showing\s+first\s+(\d+)\s+of\s+(\d+)\s+lines", clean, re.IGNORECASE)
@@ -1897,6 +1917,7 @@ def print_help() -> None:
             ("/team [mode]", "Configure subagent pipeline (auto | on | off | single-chat | role-chats | dual | single)"),
             ("/plan [task]", "Build or view a dependency-ordered execution plan"),
             ("/verify [scope]", "Run independent verifier checks on codebase/UI"),
+            ("/skills [name|scan]", "Browse 18 bundled WSA skills, read a skill, or run SkillSpector scan"),
         ]),
     ]
 
@@ -2134,6 +2155,75 @@ def print_subagent_banner(role: str, label: str) -> None:
         f"  [{Theme.ACCENT}]◆[/] [bold {Theme.ACCENT}]{escape(role_key)}[/] "
         f"[{Theme.SECONDARY}]{escape(str(label or ''))}[/]"
     )
+
+
+def print_skill_appointment(appointment) -> None:
+    """Render crisp TUI visuals when WSA detects prompt signals and appoints skills to read first."""
+    if appointment is None:
+        return
+    skills = tuple(getattr(appointment, "skills", ()) or ())
+    requires_sec = bool(getattr(appointment, "requires_security_pass", False))
+    if not skills and not requires_sec:
+        return
+    sync_theme()
+    headline = str(getattr(appointment, "headline", "") or "").strip()
+    if not headline:
+        headline = "This prompt detected specialized signals — forcing web agents to read the relevant skills first..."
+    console.print(
+        f"  [{Theme.ACCENT}]◆[/] [bold {Theme.INFO}]{escape(sanitize_surrogates(headline))}[/]"
+    )
+    cues = tuple(getattr(appointment, "matched_cues", ()) or ())
+    ai_picks = tuple(getattr(appointment, "ai_recommended", ()) or ())
+    sec_skills = tuple(getattr(appointment, "security_skills", ()) or ())
+
+    rows: list[tuple[str, str, str]] = []
+    if cues:
+        rows.append(("Signals", ", ".join(cues[:8]), Theme.SECONDARY))
+    if skills:
+        skill_text = ", ".join(skills)
+        if ai_picks:
+            extra_ai = [s for s in ai_picks if s in skills]
+            if extra_ai:
+                skill_text += f"  (web-agent judged: {', '.join(extra_ai)})"
+        rows.append(("Read first", skill_text, Theme.PRIMARY))
+    if requires_sec:
+        sec_str = ", ".join(sec_skills or ("security-audit", "semgrep-guardrails"))
+        rows.append(("Security pass", f"{sec_str} (auto-enforced after website build)", Theme.WARN))
+
+    for idx, (lbl, val, style) in enumerate(rows):
+        branch = "└─" if idx == len(rows) - 1 else "├─"
+        console.print(
+            f"    [{Theme.DIM}]{branch}[/] [bold {Theme.DIM}]{escape(lbl)}:[/] "
+            f"[{style}]{escape(sanitize_surrogates(val))}[/]"
+        )
+
+
+def print_skills_table(specs, category_labels: dict, loaded_skills: Iterable[str] = ()) -> None:
+    """Render all bundled WSA skills grouped cleanly by domain for `/skills`."""
+    sync_theme()
+    loaded = set(loaded_skills or ())
+    console.print()
+    console.print(Rule(title=f"[bold {Theme.PRIMARY}]WSA Bundled Skills ({len(specs)})[/]", align="left", style=Theme.BORDER))
+    table = Table(box=None, show_header=True, header_style=f"bold {Theme.DIM}", padding=(0, 2), expand=False)
+    table.add_column("Skill", style=f"bold {Theme.ACCENT}", no_wrap=True)
+    table.add_column("Domain", style=Theme.INFO, no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Purpose", style=Theme.SECONDARY)
+
+    for spec in specs:
+        cat = category_labels.get(spec.category, spec.category)
+        status = f"[{Theme.SUCCESS}]loaded[/]" if spec.name in loaded else f"[{Theme.DIM}]ready[/]"
+        table.add_row(escape(spec.name), escape(cat), status, escape(spec.tagline))
+
+    console.print(table)
+    console.print(
+        Padding(
+            Text("Usage: /skills <name>  ·  /skills scan <path>  ·  Agent tool: read_skill(name=\"...\")", style=Theme.DIM),
+            (0, 2),
+        )
+    )
+    console.print(Rule(style=Theme.BORDER))
+    console.print()
 
 
 def print_subagent_event(stage_label: str, kind: str, payload: dict) -> None:

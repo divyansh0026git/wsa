@@ -1,0 +1,2 @@
+Apache-2.0 License — Adapted for WSA from cloudflare/security-audit-skill
+Upstream reference: https://github.com/cloudflare/security-audit-skill

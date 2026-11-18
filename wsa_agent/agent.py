@@ -17,7 +17,14 @@ import uuid
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Tuple, Any, Callable
 
-from .task_skills import select_task_skills, skill_guidance
+from .task_skills import (
+    SkillAppointment,
+    analyze_prompt_skills,
+    normalize_skill_name,
+    select_task_skills,
+    skill_guidance,
+    skill_read_directive,
+)
 from .session import SessionState, is_provider_thread_url
 from .client import WSAClient, ProviderLimitError, PromptTooLongError
 from .visual_status import VisualReviewTracker, describe_capture_viewports
@@ -1071,6 +1078,26 @@ def _condense_single_tool_output(name: str, content: str, max_chars: int = 1200)
     text = str(content or "")
     if len(text) <= max_chars:
         return text
+    if name == "read_skill":
+        keep_lines: List[str] = []
+        used = 0
+        for raw_ln in text.splitlines():
+            s = raw_ln.strip()
+            if not s:
+                continue
+            if (
+                s.startswith(("[OK]", "===", "##", "-", "*", "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."))
+                or "IRON LAW" in s.upper()
+                or "NEVER" in s
+                or "ALWAYS" in s
+            ):
+                if used + len(raw_ln) + 1 > max_chars - 70:
+                    break
+                keep_lines.append(raw_ln)
+                used += len(raw_ln) + 1
+        if keep_lines:
+            keep_lines.append("... [Skill rules compacted; call read_skill(name=..., section=...) if needed]")
+            return "\n".join(keep_lines)
     lines = text.splitlines()
     picked: List[str] = []
     seen_idx: Set[int] = set()
@@ -1501,6 +1528,9 @@ def _maybe_anti_laziness_nudge(
     free_mode: bool,
     browser_verified_after_ui_edit: bool = True,
     ui_verify_nudges_used: int = 0,
+    requires_security_pass: bool = False,
+    security_verified_after_edit: bool = True,
+    security_nudges_used: int = 0,
 ) -> Optional[Tuple[str, str]]:
     """Return `(kind, continuation_prompt)` if work is unverified/incomplete; never loop after verified completion."""
     if free_mode:
@@ -1508,6 +1538,21 @@ def _maybe_anti_laziness_nudge(
 
     code_written = [p for p in sorted(written_this_turn) if Path(p).suffix.lower() not in _NON_VERIFY_EXTS]
     ui_written = [p for p in code_written if Path(p).suffix.lower() in _UI_VERIFY_EXTS]
+    if (
+        requires_security_pass
+        and code_written
+        and not security_verified_after_edit
+        and security_nudges_used < 1
+    ):
+        sec_targets = ", ".join(code_written[:8])
+        return (
+            "security_fix",
+            f"[Website Security Fixing Gate]: You built/modified `{sec_targets}`. Before finishing, "
+            "call `read_skill(name=\"security-audit,semgrep-guardrails\")` first, audit these files for real "
+            "XSS/DOM-injection (`innerHTML`), unsafe links (`noopener`), CSRF/CORS/CSP, auth/IDOR, injection, "
+            "input validation, and secret-exposure flaws, apply surgical `patch_file` fixes for any confirmed "
+            "issues, and re-verify cleanly.",
+        )
     if code_written and not verified_after_last_edit and verify_nudges_used < 1:
         targets = ", ".join(code_written[:6])
         if tests_exist:
@@ -2138,6 +2183,7 @@ def execute_agent_loop(
     stage_label: str = "",
     live_ui: Optional[bool] = None,
     flush_final_stream: bool = True,
+    skill_appointment: Optional[SkillAppointment] = None,
 ) -> Dict[str, Any]:
     """
     Execute an agentic tool loop for either the main session (`run_turn`) or a scoped subagent role.
@@ -2188,26 +2234,40 @@ def execute_agent_loop(
     elif persist_to_state:
         messages.extend(state.messages)
     outgoing_content = user_content
+    active_appointment: Optional[SkillAppointment] = None
     if role == "main" and not free_mode:
-        names = select_task_skills(user_input)
-        if names:
-            block = skill_guidance(names)
-            if isinstance(user_content, list):
-                outgoing_content = [*user_content, {"type": "text", "text": block}]
-            else:
-                outgoing_content = f"{user_content}\n\n{block}"
+        active_appointment = skill_appointment if isinstance(skill_appointment, SkillAppointment) else analyze_prompt_skills(user_input)
+        if active_appointment.skills or active_appointment.requires_security_pass:
+            block = skill_read_directive(
+                active_appointment,
+                already_loaded=getattr(state, "loaded_skills", ()),
+            )
+            if block:
+                if isinstance(user_content, list):
+                    outgoing_content = [*user_content, {"type": "text", "text": block}]
+                else:
+                    outgoing_content = f"{user_content}\n\n{block}"
             if not quiet_ui:
-                R.print_info("Skills: " + ", ".join(names))
+                R.print_skill_appointment(active_appointment)
     messages.append({"role": "user", "content": outgoing_content})
 
     new_messages: List[Dict] = [{"role": "user", "content": user_content}]
 
     written_this_turn: Set[str] = set()
     verified_this_turn: Set[str] = set()
+    skills_read_this_turn: Set[str] = set()
+    active_requires_security_pass: bool = bool(
+        role == "main" and active_appointment is not None and active_appointment.requires_security_pass
+    )
+    security_skills_read_this_turn: bool = bool(
+        {"security-audit", "semgrep-guardrails"} & set(getattr(state, "loaded_skills", set()))
+    )
     verified_after_last_edit: bool = True
     browser_verified_after_ui_edit: bool = True
+    security_verified_after_edit: bool = True
     verify_nudges_used: int = 0
     ui_verify_nudges_used: int = 0
+    security_nudges_used: int = 0
     continue_nudges_used: int = 0
     test_check_done: bool = getattr(state, "_test_check_done", False)
     tests_exist: Optional[bool] = getattr(state, "_tests_exist", None)
@@ -3023,10 +3083,22 @@ def execute_agent_loop(
                         free_mode=free_mode,
                         browser_verified_after_ui_edit=browser_verified_after_ui_edit,
                         ui_verify_nudges_used=ui_verify_nudges_used,
+                        requires_security_pass=active_requires_security_pass,
+                        security_verified_after_edit=security_verified_after_edit,
+                        security_nudges_used=security_nudges_used,
                     )
                     if nudge:
                         kind, nudge_prompt = nudge
-                        if kind == "verify":
+                        if kind == "security_fix":
+                            security_nudges_used += 1
+                            security_verified_after_edit = True
+                            if not quiet_ui:
+                                R.print_info(
+                                    "Website security fixing pass active — forcing web agent to read security skills "
+                                    "(security-audit, semgrep-guardrails) and harden code…"
+                                )
+                            last_tool_hint = "Running post-build security audit & hardening…"
+                        elif kind == "verify":
                             verify_nudges_used += 1
                             if not quiet_ui:
                                 R.print_info("Verification gate active — prompting final check after edits…")
@@ -3326,11 +3398,24 @@ def execute_agent_loop(
                     for wp in written_paths:
                         written_this_turn.add(wp)
                         state.written_files.add(wp)
+                    if written_paths and active_requires_security_pass and not security_skills_read_this_turn:
+                        security_verified_after_edit = False
                     if written_paths and not test_check_done:
                         test_check_done = True
                         state._test_check_done = True
                         tests_exist = _check_tests_exist(state.project_root)
                         state._tests_exist = tests_exist
+                if name == "read_skill" and not is_err:
+                    raw_snames = str(args.get("name") or "")
+                    for tok in re.split(r"[,;\s]+", raw_snames):
+                        norm_s = normalize_skill_name(tok)
+                        if norm_s:
+                            skills_read_this_turn.add(norm_s)
+                            if hasattr(state, "loaded_skills") and isinstance(state.loaded_skills, set):
+                                state.loaded_skills.add(norm_s)
+                            if norm_s in ("security-audit", "semgrep-guardrails"):
+                                security_skills_read_this_turn = True
+                                security_verified_after_edit = True
                 if name == "rollback" and not is_err and str(args.get("action") or "rollback").lower() == "rollback":
                     verification_evidence.clear()
                     state._workspace_snapshot = None
@@ -3720,6 +3805,7 @@ def execute_agent_loop(
         "limit_exhausted": bool(limit_exhausted),
         "messages": new_messages,
         "verification_evidence": list(verification_evidence.values()),
+        "skills_read": sorted(skills_read_this_turn),
     }
 
 
@@ -3728,7 +3814,7 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
     """
     Execute one full agentic turn:
     1. Capture persistent constraints/decisions cleanly from user instructions.
-    2. Use adaptive complexity routing (`/team auto|on|off`) to either run the surgical
+    2. Use adaptive complexity & skill routing (`/team auto|on|off`) to either run the surgical
        single-agent loop or trigger the scoped multi-role subagent pipeline.
     """
     free_mode = getattr(state, "free_mode", False)
@@ -3736,6 +3822,8 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
         state.decisions = capture_user_decisions(user_input, getattr(state, "decisions", None))
 
     team_mode = str(getattr(state, "team_mode", "auto") or "auto").lower()
+    ai_skills: List[str] = []
+    ai_security_pass: Optional[bool] = None
     if not free_mode and team_mode != "off":
         complexity = classify_task_complexity(user_input, state)
         # Cheap conversational turns and natural resume/continuation replies need no extra
@@ -3763,6 +3851,9 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
             if decision.get("stopped"):
                 return decision["result"]
             complexity = decision
+        ai_skills = list(complexity.get("skills") or [])
+        if isinstance(complexity.get("security_pass"), bool):
+            ai_security_pass = complexity["security_pass"]
         should_orchestrate = (
             complexity.get("mode") == "orchestrate"
             or (team_mode == "on" and len(str(user_input or "").split()) >= 4)
@@ -3771,21 +3862,36 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
             from .subagents import run_orchestrated_turn
             R.print_info("This certain prompt Requires Long Agentic Workflow, forcing web agents in deep thinking mode...")
             R.print_info("Deep reasoning is requested in the role prompts; website thinking settings remain controlled by the selected web agent.")
-            return run_orchestrated_turn(user_input, state, client, reasons=complexity.get("reasons") or [])
+            appointment = analyze_prompt_skills(
+                user_input,
+                ai_skills=ai_skills,
+                ai_security_pass=ai_security_pass,
+            )
+            orch_kwargs: Dict[str, Any] = {"reasons": complexity.get("reasons") or []}
+            if ai_skills or ai_security_pass is not None:
+                orch_kwargs["skill_appointment"] = appointment
+            return run_orchestrated_turn(user_input, state, client, **orch_kwargs)
 
+    exec_kwargs: Dict[str, Any] = {"allow_auto_decisions": False}
+    if not free_mode and (ai_skills or ai_security_pass is not None):
+        exec_kwargs["skill_appointment"] = analyze_prompt_skills(
+            user_input,
+            ai_skills=ai_skills,
+            ai_security_pass=ai_security_pass,
+        )
     return execute_agent_loop(
         user_input,
         state,
         client,
-        allow_auto_decisions=False,  # already captured above
+        **exec_kwargs,
     )
 
 
 def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fallback: Dict) -> Dict:
-    """One bounded, tool-free routing decision; never execute classifier tool calls."""
+    """One bounded, tool-free routing & skill-judging decision; never execute classifier tool calls."""
     from .prompts import WORKFLOW_JUDGMENT_PROMPT
     from .subagents import _recover_orchestrated_stage_limit
-    R.print_info("Assessing whether this request needs a long agentic workflow...")
+    R.print_info("Assessing workflow scope and checking relevant WSA skills...")
     while True:
         sr = None
         try:
@@ -3797,7 +3903,7 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
             try:
                 sr = R.StreamRenderer(
                     round_num=0,
-                    status_hint="Assessing whether this request needs a long agentic workflow…",
+                    status_hint="Assessing workflow scope & relevant WSA skills…",
                     model=state.model,
                     stage_label="router",
                     flush_final=False,
@@ -3810,7 +3916,7 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
             prior_ctx = str(getattr(state, "context_summary", "") or "").encode("utf-8", "replace")[:1500].decode("utf-8", "ignore").strip()
             router_user_msg = (
                 "Workflow routing check for the next user request (do not execute the task or call tools; "
-                'reply only with JSON: {"mode":"orchestrate"|"direct","reason":"short scope-based reason"}):\n\n'
+                'reply only with JSON: {"mode":"orchestrate"|"direct","reason":"short scope-based reason","skills":["relevant-slug"],"security_pass":false}):\n\n'
                 f"User request:\n{req_txt}"
             )
             if prior_ctx:
@@ -3852,7 +3958,18 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
             reason = decision.get("reason")
             if not isinstance(reason, str) or not reason.strip():
                 raise ValueError("missing workflow reason")
-            return {"mode": decision["mode"], "reasons": [reason[:240]]}
+            out_dec: Dict[str, Any] = {"mode": decision["mode"], "reasons": [reason[:240]]}
+            raw_skills = decision.get("skills")
+            if isinstance(raw_skills, list):
+                valid_skills = [
+                    norm for item in raw_skills
+                    if isinstance(item, str) and (norm := normalize_skill_name(item))
+                ]
+                if valid_skills:
+                    out_dec["skills"] = list(dict.fromkeys(valid_skills))
+            if isinstance(decision.get("security_pass"), bool):
+                out_dec["security_pass"] = decision["security_pass"]
+            return out_dec
         except ProviderLimitError as exc:
             if state.agent_mode == "multiagent" and state.advance_multiagent_queue(state.model):
                 continue

@@ -1,0 +1,2 @@
+MIT License — Adapted for WSA from achimala/dream-loop
+Upstream reference: https://github.com/achimala/dream-loop

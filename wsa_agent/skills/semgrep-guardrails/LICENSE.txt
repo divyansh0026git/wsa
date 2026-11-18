@@ -1,0 +1,2 @@
+MIT / LGPL-2.1 Reference — Adapted for WSA from semgrep/skills
+Upstream reference: https://github.com/semgrep/skills

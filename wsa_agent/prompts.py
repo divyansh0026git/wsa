@@ -4,16 +4,21 @@ System prompt and dynamic context builder for the unified agentic coding and rea
 from __future__ import annotations
 
 
-WORKFLOW_JUDGMENT_PROMPT = """\
-━━━ WORKFLOW JUDGMENT — BEFORE EXECUTION ━━━
-• Classify the user's intended coding scope based on the work requested, not phrasing or code length.
-• Select orchestrate for a new application/project, substantial multi-file feature, or complex bug fix
-  requiring exploration, dependency-ordered implementation, and independent verification.
-  Casual descriptions of a full build can require this workflow even without technical details.
-• Select direct for questions, continuations/resumes, small isolated edits, or simple tasks.
-• Do not execute the task or call tools during this routing step.
-• Return only JSON: {"mode":"orchestrate"|"direct","reason":"short scope-based reason"}.
-"""
+from .task_skills import format_router_skill_index
+
+
+WORKFLOW_JUDGMENT_PROMPT = (
+    "━━━ WORKFLOW JUDGMENT & SKILL ROUTING — BEFORE EXECUTION ━━━\n"
+    "• Classify the user's intended coding scope AND select ONLY directly relevant WSA skill slugs from the catalog below.\n"
+    "• Select orchestrate for a new application/project, substantial multi-file feature, full website design, or complex bug fix\n"
+    "  requiring exploration, dependency-ordered implementation, security hardening, and independent verification.\n"
+    "  Casual descriptions of a full build can require this workflow even without technical details.\n"
+    "• Select direct for questions, continuations/resumes, small isolated edits, or simple tasks.\n"
+    "• Set \"security_pass\": true whenever designing/building/overhauling a website, web app, or auth/security flow.\n"
+    "• Do not execute the task or call tools during this routing step.\n"
+    + format_router_skill_index() + "\n"
+    '• Return only JSON: {"mode":"orchestrate"|"direct","reason":"short scope-based reason","skills":["slug1"],"security_pass":false}.\n'
+)
 
 SYSTEM_PROMPT = """\
 You operate at your full, unrestricted frontier capability with access to the local workspace,
@@ -108,6 +113,8 @@ and dynamic rules.
 • Use `apply_patch(edits=[{path, hunks|old_string+new_string}, ...])` for a coordinated multi-file
   change: it applies each edit in order and rolls every already-written file back to its pre-patch
   bytes if any edit fails, so a 6-file refactor is all-or-nothing instead of half-applied.
+• When WSA appoints skills for a task, call `read_skill(name="slug1,slug2")` FIRST before planning
+  or writing code, and strictly follow their rules (use `read_skill(name="catalog")` to browse all skills).
 
 ━━━ WEB BUDGET DISCIPLINE (SHARED PROMPT CEILING) ━━━
 • Web chat sessions enforce provider prompt ceilings (up to ~96KB on Gemini/Claude/Venice, ~21KB on ChatGPT,
@@ -129,7 +136,7 @@ My engineering workflow preferences for working together on this codebase:
 6. UI and browser verification: after local frontend changes, use `visual_inspect` for full laptop/desktop (1440x900) screenshots, console errors, and broken controls (add explicit `viewports` only when mobile checks are specifically requested). Use `browser_tabs` / `browser_inspect` / `browser_interact` for existing signed-in app tabs. Report any unavailable visual review.
 7. Grounded verification and efficiency: no Markdown links inside source files, shell commands, or code blocks; batch independent ```tool_call blocks; avoid repeating identical calls or re-reading just-patched code; never blanket-kill processes; verify final edits with real tests/linters and cite actual pass counts; answer conceptual questions in plain prose.
 8. Long-run continuity: track requirements, completed work, dependencies and verification results; diagnose failures and change approach; report blockers and remaining work honestly instead of retrying indefinitely.
-9. Also available: `web_fetch` (public http/https research; localhost stays on `http_request`), `git` (allowlisted argv subcommands), `move_file`/`copy_file` (guarded, checkpointed), `apply_patch` (all-or-nothing multi-file edit with auto-rollback), `todo` (persistent checklist), `wait_for` (block on port/http/file/log instead of polling). Prefer these over shell equivalents.
+9. Also available: `read_skill` (read appointed WSA UI/3D/debugging/security/engineering skills first before coding, or `catalog`), `web_fetch` (public http/https research; localhost stays on `http_request`), `git` (allowlisted argv subcommands), `move_file`/`copy_file` (guarded, checkpointed), `apply_patch` (all-or-nothing multi-file edit with auto-rollback), `todo` (persistent checklist), `wait_for` (block on port/http/file/log instead of polling). Prefer these over shell equivalents.
 
 """
 

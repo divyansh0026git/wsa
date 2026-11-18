@@ -2740,6 +2740,12 @@ function _domInstallPageRuntimeFn() {
 
   function readModePickerBadge() {
     const modelRe = /(?:Gemini\s+)?(Argon|Carbon|Pro|Flash(?:-Lite|\s+Lite)?|Fast|Thinking|Auto)\b/i;
+    const cleanBadge = (s) => String(s || "")
+      .replace(/\s+/g, " ")
+      .replace(/^(?:menu|expand_more|keyboard_arrow_down|arrow_drop_down)\s+/i, "")
+      .replace(/\s+(?:expand_more|keyboard_arrow_down|arrow_drop_down)$/i, "")
+      .replace(/^[^\w]+|[^\w]+$/g, "")
+      .trim();
     const btn = document.querySelector(
       "button[aria-label*='mode picker' i], button[aria-label*='Switch model' i], button[aria-label*='model picker' i], button[aria-label*='model' i], button[aria-label*='Gemini' i], [data-test-id='bard-mode-menu-button'] button, [data-test-id='bard-mode-menu-button'], [data-test-id*='mode' i], [data-test-id*='model' i], [data-testid*='mode' i], [data-testid*='model' i]"
     );
@@ -2747,21 +2753,17 @@ function _domInstallPageRuntimeFn() {
       const aria = btn.getAttribute("aria-label") || "";
       const m = aria.match(/currently\s+(.+)$/i);
       if (m) {
-        const am = m[1].match(modelRe);
-        return am ? am[0] : m[1].replace(/^[^\w]+|[^\w]+$/g, "").replace(/\s+/g, " ").trim();
+        const cleanedAria = cleanBadge(m[1]);
+        if (cleanedAria) return cleanedAria;
       }
-      const rawTxt = (btn.innerText || btn.textContent || "").replace(/\s+/g, " ").trim();
-      const txtMatch = rawTxt.match(modelRe);
-      if (txtMatch) return txtMatch[0];
-      const cleaned = rawTxt.replace(/^[^\w]+|[^\w]+$/g, "").trim();
-      if (cleaned) return cleaned;
+      const cleanedTxt = cleanBadge(btn.innerText || btn.textContent || "");
+      if (cleanedTxt) return cleanedTxt;
     }
     for (const b of document.querySelectorAll("button, [role='button'], [aria-haspopup='menu']")) {
       if (!isVisibleElement(b)) continue;
-      const t = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim();
-      const m = t.match(modelRe);
-      if (m && t.length <= 64) {
-        return m[0];
+      const cleaned = cleanBadge(b.innerText || b.textContent || "");
+      if (cleaned && cleaned.length <= 64 && modelRe.test(cleaned)) {
+        return cleaned;
       }
     }
     return "";

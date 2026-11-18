@@ -1,0 +1,2 @@
+MIT License — Adapted for WSA from multica-ai/andrej-karpathy-skills
+Upstream reference: https://github.com/multica-ai/andrej-karpathy-skills

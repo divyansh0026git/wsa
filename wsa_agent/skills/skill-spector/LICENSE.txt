@@ -1,0 +1,2 @@
+Apache-2.0 License — Adapted for WSA from NVIDIA/SkillSpector
+Upstream reference: https://github.com/NVIDIA/SkillSpector

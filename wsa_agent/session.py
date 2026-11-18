@@ -332,6 +332,7 @@ class SessionState:
     # Claude Code-style file tracking
     written_files: Set[str] = field(default_factory=set)
     verified_files: Set[str] = field(default_factory=set)
+    loaded_skills: Set[str] = field(default_factory=set)
     active_account_label: str = ""
     active_account_email: str = ""
     active_browser: str = ""
@@ -751,6 +752,7 @@ class SessionState:
             self.total_tokens_out = 0
         self.written_files.clear()
         self.verified_files.clear()
+        self.loaded_skills.clear()
         self.chat_urls.clear()
         self.file_ledger.clear()
         self.decisions.clear()
@@ -976,6 +978,7 @@ class SessionState:
             "auto_approve": self.auto_approve,
             "written_files": sorted(self.written_files),
             "verified_files": sorted(self.verified_files),
+            "loaded_skills": sorted(self.loaded_skills),
             "active_account_label": self.active_account_label,
             "active_account_email": self.active_account_email,
             "active_browser": self.active_browser,
@@ -1059,6 +1062,7 @@ class SessionState:
         self.auto_approve = False
         self.written_files = set(data.get("written_files", []))
         self.verified_files = set(data.get("verified_files", []))
+        self.loaded_skills = set(data.get("loaded_skills", []))
         self.active_account_label = str(data.get("active_account_label") or "")
         self.active_account_email = str(data.get("active_account_email") or "")
         self.active_browser = str(data.get("active_browser") or "")

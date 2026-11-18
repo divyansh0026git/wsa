@@ -15,7 +15,13 @@ import threading
 from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from .task_skills import select_task_skills, skill_guidance
+from .task_skills import (
+    SkillAppointment,
+    analyze_prompt_skills,
+    select_task_skills,
+    skill_guidance,
+    skill_read_directive,
+)
 from . import renderer as R
 from .agent import (
     ACCOUNT_SWITCH_WAIT_SECS,
@@ -38,6 +44,7 @@ from .runtime import serialized_turn
 EXPLORER_TOOLS: Set[str] = {
     "get_file_outline",
     "read_file",
+    "read_skill",
     "get_file_info",
     "search_files",
     "glob_files",
@@ -54,6 +61,7 @@ ARCHITECT_TOOLS: Set[str] = set(EXPLORER_TOOLS)
 CODER_TOOLS: Set[str] = {
     "get_file_outline",
     "read_file",
+    "read_skill",
     "get_file_info",
     "search_files",
     "glob_files",
@@ -89,6 +97,7 @@ CODER_TOOLS: Set[str] = {
 VERIFIER_TOOLS: Set[str] = {
     "get_file_outline",
     "read_file",
+    "read_skill",
     "get_file_info",
     "search_files",
     "glob_files",
@@ -110,11 +119,38 @@ VERIFIER_TOOLS: Set[str] = {
     "wait_for",
 }
 
+SECURITY_TOOLS: Set[str] = {
+    "get_file_outline",
+    "read_file",
+    "read_skill",
+    "get_file_info",
+    "search_files",
+    "glob_files",
+    "list_dir",
+    "patch_file",
+    "apply_patch",
+    "rollback",
+    "run_command",
+    "run_python",
+    "run_tests",
+    "http_request",
+    "browser_tabs",
+    "browser_inspect",
+    "browser_interact",
+    "visual_inspect",
+    "inspect_image",
+    "recall",
+    "git",
+    "todo",
+    "wait_for",
+}
+
 ROLE_ALLOWED_TOOLS: Dict[str, Set[str]] = {
     "explorer": EXPLORER_TOOLS,
     "architect": ARCHITECT_TOOLS,
     "coder": CODER_TOOLS,
     "verifier": VERIFIER_TOOLS,
+    "security": SECURITY_TOOLS,
 }
 
 
@@ -175,6 +211,16 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "4. End your response with a strict JSON verdict block:\n"
         '   ```json\n   {"verdict": "pass", "checks": ["pytest: 12 passed"], "failures": [], "summary": "..."}\n   ```\n'
         '   Use `"verdict": "fail"` whenever any check errors, fails assertions, or leaves broken UI/runtime behavior.'
+    ),
+    "security": (
+        "Role: WSA Security Fixer — adversarial web & application security auditor and surgical remediator.\n"
+        "Guidelines:\n"
+        "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first before auditing or patching.\n"
+        "2. Inspect all newly created/modified website, frontend, API, and server files for real exploit paths: "
+        "DOM/stored/reflected XSS (`innerHTML`/`dangerouslySetInnerHTML`), unsafe `href`/`src` schemes, missing `rel=\"noopener noreferrer\"`, "
+        "CSRF/CORS/CSP/security headers, broken auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"
+        "3. Disprove false positives adversarially; fix every confirmed vulnerability surgically with `patch_file` without breaking UI craft or features.\n"
+        "4. Re-verify modified files cleanly (`node --check`, `py_compile`, tests, or `visual_inspect`) and summarize confirmed fixes concisely."
     ),
 }
 
@@ -971,28 +1017,68 @@ def run_orchestrated_turn(
     client: WSAClient,
     *,
     reasons: Optional[List[str]] = None,
+    skill_appointment: Optional[SkillAppointment] = None,
 ) -> Dict[str, Any]:
     """
     Execute a full adaptive multi-role pipeline:
       1) Explorer recon (read-only)
       2) Architect task DAG (`state.plan_items`)
       3) Scoped Coder slice execution (sequential active relay by default, or optional dual-lane)
+      3.5) Automatic Post-Build Website Security Audit & Hardening pass (when designing/building websites or security requested)
       4) Independent Verifier pass + bounded targeted repair loop (up to 2 fix cycles)
       5) Clean completion summary saved to main `state.messages`.
     """
     reason_str = f" ({', '.join(reasons)})" if reasons else ""
     _ui_stage_banner("orchestrator", f"Engaging scoped 4-role build pipeline{reason_str}")
 
-    names = select_task_skills(user_input)
-    if names:
-        R.print_info("Skills: " + ", ".join(names))
+    appointment = (
+        skill_appointment
+        if isinstance(skill_appointment, SkillAppointment)
+        else analyze_prompt_skills(user_input)
+    )
+    if appointment.skills or appointment.requires_security_pass:
+        R.print_skill_appointment(appointment)
 
     def _run_stage(**kwargs):
-        stage_skills = names
-        if str(kwargs.get("label", "")).startswith("repair#") and "systematic-debugging" not in names:
-            stage_skills = (*names, "systematic-debugging")
-        if stage_skills:
-            kwargs["prompt"] += "\n\n" + skill_guidance(stage_skills)
+        stage_role = str(kwargs.get("role") or "")
+        stage_label = str(kwargs.get("label") or "")
+        if stage_role == "security":
+            sec_appt = SkillAppointment(
+                skills=appointment.security_skills or ("security-audit", "semgrep-guardrails"),
+                categories=("Website Security",),
+                matched_cues=("post-build security pass",),
+                requires_security_pass=False,
+            )
+            directive = skill_read_directive(
+                sec_appt,
+                already_loaded=getattr(state, "loaded_skills", ()),
+                include_security_note=False,
+            )
+            if directive:
+                kwargs["prompt"] += "\n\n" + directive
+            return _run_role_agent(**kwargs)
+
+        stage_skills = appointment.skills
+        if stage_label.startswith("repair#"):
+            extras = [s for s in ("systematic-debugging", "verification-before-completion") if s not in stage_skills]
+            if extras:
+                stage_skills = (*stage_skills, *extras)
+        stage_appt = SkillAppointment(
+            skills=stage_skills,
+            categories=appointment.categories,
+            matched_cues=appointment.matched_cues,
+            requires_security_pass=appointment.requires_security_pass,
+            security_skills=appointment.security_skills,
+            ai_recommended=appointment.ai_recommended,
+            is_website_build=appointment.is_website_build,
+        )
+        directive = skill_read_directive(
+            stage_appt,
+            already_loaded=getattr(state, "loaded_skills", ()),
+            include_security_note=stage_role in ("architect", "coder"),
+        )
+        if directive:
+            kwargs["prompt"] += "\n\n" + directive
         return _run_role_agent(**kwargs)
 
     ledger = getattr(state, "file_ledger", None)
@@ -1235,6 +1321,69 @@ def run_orchestrated_turn(
                     state.auto_checkpoint()
                 break
 
+            if hasattr(state, "auto_checkpoint"):
+                state.auto_checkpoint()
+
+        # ── Stage 3.5: Automatic Post-Build Website Security Fixing ─────────
+        if not aborted_reason and not interrupted and appointment.requires_security_pass and all_written:
+            sec_targets = sorted(all_written)
+            sec_names = ", ".join(appointment.security_skills or ("security-audit", "semgrep-guardrails"))
+            _ui_stage_banner(
+                "security",
+                f"Website build complete — forcing web agents to read security skills ({sec_names}) for security fixing…",
+            )
+            sec_pkt = build_context_packet(
+                project_root=state.project_root,
+                project_type=getattr(state, "project_type", "unknown"),
+                ledger=ledger,
+                decisions=getattr(state, "decisions", None),
+                plan_items=tasks,
+                written_files=sec_targets,
+                focus_files=sec_targets,
+                turn_digest=getattr(state, "turn_digest", None),
+                extra_notes="Task summaries before security hardening:\n" + "\n".join(task_summaries),
+            )
+            while True:
+                with relay_seq_lock:
+                    sec_res = _run_stage(
+                        role="security",
+                        prompt=(
+                            f"Perform post-build website security auditing and surgical fixing for:\n{user_input[:3000]}\n\n"
+                            f"Files created/modified to audit & harden: {', '.join(sec_targets)}\n"
+                            "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first.\n"
+                            "2. Audit every modified HTML/CSS/JS/TS/Python/API file for confirmed XSS (`innerHTML`/`dangerouslySetInnerHTML`), "
+                            "unsafe URL schemes (`javascript:`), missing `rel=\"noopener noreferrer\"`, weak CSP/CORS/security headers, "
+                            "broken auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"
+                            "3. Disprove false positives adversarially; fix every confirmed vulnerability cleanly via `patch_file` without breaking UI craft.\n"
+                            "4. Report confirmed findings fixed and verify syntax/runtime cleanliness."
+                        ),
+                        state=state,
+                        client=client,
+                        context_packet=sec_pkt,
+                        max_rounds=24,
+                        label="security_audit",
+                        owned_files=sec_targets,
+                    )
+                if _recover_orchestrated_stage_limit(state, client, sec_res, pending_goal=user_input, stage_label="security_audit"):
+                    continue
+                break
+            if sec_res.get("limit_exhausted"):
+                aborted_reason = str(sec_res.get("aborted_reason") or "limit_reached")
+            elif sec_res.get("aborted_reason") == "permission_denied":
+                aborted_reason = "permission_denied"
+            elif _is_interrupted_res(sec_res):
+                interrupted = True
+                aborted_reason = "interrupted"
+            else:
+                sec_written = list(sec_res.get("written_files") or [])
+                if sec_written:
+                    all_written.update(sec_written)
+                    state.written_files.update(sec_written)
+                    for p in sec_written:
+                        state.verified_files.discard(p)
+                task_summaries.append(
+                    f"- [security_audit] Post-build security audit & hardening -> patched {sec_written or ['(0 defects)']}; ok={sec_res.get('ok')}"
+                )
             if hasattr(state, "auto_checkpoint"):
                 state.auto_checkpoint()
 

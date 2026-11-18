@@ -97,6 +97,8 @@ def handle_command(cmd_line: str, state: SessionState, client: Optional[Any] = N
         "/tokens":    _cmd_tokens,
         "/rules":     _cmd_rules,
         "/tools":     _cmd_tools,
+        "/skills":    _cmd_skills,
+        "/skill":     _cmd_skills,
         "/perm":      _cmd_perm,
         "/permissions": _cmd_perm,
         "/account":   _cmd_account,
@@ -1134,4 +1136,47 @@ def _cmd_multiagent(arg: str, state: SessionState, client: Optional[Any] = None)
         f"Multiagent active -> [bold {R.Theme.ACCENT}]{' → '.join(active_q)}[/] "
         f"[{R.Theme.DIM}](starting on {escape(state.model)}; auto-failover with full context on limit)[/]"
     )
+    return True, True
+
+
+def _cmd_skills(arg: str, state: SessionState) -> HandlerResult:
+    """List bundled WSA skills, read a specific skill, or run SkillSpector on a path."""
+    from .task_skills import (
+        CATEGORY_LABELS,
+        SKILL_SPECS,
+        read_skill_content,
+        scan_skill_path,
+    )
+
+    clean = str(arg or "").strip()
+    if not clean or clean.lower() in {"list", "catalog"}:
+        R.print_skills_table(SKILL_SPECS, CATEGORY_LABELS, loaded_skills=getattr(state, "loaded_skills", ()))
+        return True, True
+
+    if clean.lower().startswith("scan "):
+        raw_target = clean[5:].strip().strip('"').strip("'")
+        target = Path(raw_target)
+        if not target.is_absolute():
+            target = (Path(state.project_root) / target).resolve()
+        res = scan_skill_path(target)
+        verdict = res["verdict"]
+        score = res["score"]
+        msg = f"SkillSpector verdict: {verdict} (score: {score}/100, files: {res.get('files_scanned', 1)}) — {res['source']}"
+        if verdict == "SAFE":
+            R.print_success(msg)
+        elif verdict == "CAUTION":
+            R.print_warn(msg)
+        else:
+            R.print_error(msg)
+        for finding in res.get("findings") or []:
+            R.print_warn(
+                f"[{finding['severity']}] {finding['source']}:L{finding['line']} ({finding['rule']}): {finding['detail']}"
+            )
+        return True, True
+
+    text, loaded = read_skill_content(clean, mode="brief", max_chars=8000)
+    if loaded:
+        R.print_markdown(text)
+    else:
+        R.print_warn(text)
     return True, True
