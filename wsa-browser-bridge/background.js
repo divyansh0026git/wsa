@@ -992,6 +992,8 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
       }).catch(() => {});
     });
     port.onDisconnect.addListener(() => {
+      const _lastErr = (typeof chrome !== "undefined" && chrome.runtime ? chrome.runtime.lastError : null) || port.error;
+      void _lastErr;
       getRelayActive().then(async (active) => {
         if (!active) return;
         await restoreActiveRelayJob();
@@ -6429,7 +6431,7 @@ function _installWsaDomUtilsFn() {
   }
 
   async function attachComposerFile(file, initialEditor, findEditor, provider) {
-    if (provider === "DeepSeek" || provider === "Venice") {
+    if (provider === "DeepSeek") {
       return { ok: true, attached: 0, expected: 1, verified: true, method: "not_supported", error: "" };
     }
     // Provider previews may live in a sibling of the text input, with either
@@ -6591,7 +6593,7 @@ function _installWsaDomUtilsFn() {
       return { ok: false, attached: 0, expected: images.length, verified: false, method: "decode", error: "No valid image bytes to attach" };
     }
 
-    if (provider === "DeepSeek" || provider === "Venice") {
+    if (provider === "DeepSeek") {
       return { ok: true, attached: 0, expected: images.length, verified: true, method: "not_supported", error: "" };
     }
     if (provider === "Claude") {
@@ -6613,9 +6615,11 @@ function _installWsaDomUtilsFn() {
         if (
           cur.tagName === "FORM" ||
           cur.tagName === "FIELDSET" ||
+          cur.getAttribute?.("aria-label")?.toLowerCase()?.includes("dropzone") ||
+          cur.getAttribute?.("data-slot")?.includes?.("composer") ||
           cur.getAttribute?.("data-testid")?.includes?.("composer") ||
           cur.className?.includes?.("composer") ||
-          cur.querySelector?.("button[data-testid='send-button'], #composer-submit-button, .send-button, [aria-label*='Send' i], [data-testid*='composer']")
+          cur.querySelector?.("button[data-testid='send-button'], #composer-submit-button, .send-button, [aria-label*='Send' i], [aria-label*='Submit chat' i], [data-testid*='composer']")
         ) {
           best = cur;
           break;
@@ -7111,7 +7115,7 @@ function _installWsaDomUtilsFn() {
           error: `[IMAGE_ATTACH_FAILED] ${provLabel}: ${attachRes.error || "Image upload could not be verified before sending."}`,
         };
       }
-      imagesAttached = Boolean(attachRes && attachRes.verified === true);
+      imagesAttached = Boolean(attachRes && attachRes.verified === true && (attachRes.attached > 0 || attachRes.method !== "not_supported") && attachRes.method !== "not_supported");
       if (imagesAttached) {
         uploadMs = Math.max(0, Math.round(monoNow() - tAttachStart));
       }
@@ -8235,7 +8239,8 @@ function _veniceInstallPageRuntimeFn() {
       const txt = (pEl.innerText || pEl.textContent || "").replace(/\s+/g, " ").trim();
       if (txt && txt.length <= 64 && MODEL_KW_RE.test(txt)) return txt;
     }
-    return /\/chat\/agent/i.test(location?.pathname || "") ? "DeepSeek V4.1 Flash Uncensored" : "Venice Web";
+    const locPath = (typeof location !== "undefined" && location?.pathname) || (typeof window !== "undefined" && window.location?.pathname) || "";
+    return /\/chat\/agent/i.test(locPath) ? "DeepSeek V4.1 Flash Uncensored" : "Venice Web";
   }
 
   function isTurnActionGroup(el) {
