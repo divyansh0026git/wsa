@@ -75,6 +75,10 @@ def request_approval(name, args, state, reason):
     R.console.print(f"\n  [bold {R.Theme.WARN}]Permission required:[/] {_escape(str(reason))}")
     R.console.print(f"  [{R.Theme.DIM}]Project:[/] {_escape(str(state.project_root))}")
     R.console.print("  " + name + " " + json.dumps(args, ensure_ascii=False, indent=2), markup=False)
+    R.console.print(
+        f"  [bold {R.Theme.ACCENT}]\\[y][/] Allow once   "
+        f"[bold {R.Theme.ACCENT}]\\[n / Enter][/] Deny and stop this step"
+    )
     try:
         return R.console.input("Allow this action once? [y/N]: ", markup=False).strip().lower() in {"y", "yes"}
     except EOFError:

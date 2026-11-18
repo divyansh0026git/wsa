@@ -149,10 +149,32 @@ def test_limit_menu_renders_all_four_options_without_rich_conceal(tmp_path):
     for expected in (
         "[a] Default queue",
         "[b] Custom queue",
-        "[c] Stick to single agent mode",
-        "[d] Stop (preserve context)",
+        "[c] Single agent",
+        "[d] Stop",
     ):
         assert expected in out
+
+
+def test_yes_no_prompts_define_explicit_options(tmp_path):
+    from io import StringIO
+    from rich.console import Console
+    from wsa_agent import renderer
+
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    plain = Console(file=StringIO(), force_terminal=False, width=120)
+    with patch.object(renderer, "console", plain), patch.object(plain, "input", side_effect=["maybe", "y"]):
+        assert agent._prompt_all_agents_exhausted(state, model_name="claude", is_multiagent=False) is True
+    out = plain.file.getvalue()
+    assert "[y] Yes" in out and "resume automatically" in out
+    assert "[n] No" in out and "stop now" in out
+    assert "Choose y (yes) or n (no)." in out
+
+    plain2 = Console(file=StringIO(), force_terminal=False, width=120)
+    with patch.object(renderer, "console", plain2), patch.object(plain2, "input", return_value="n"):
+        assert agent._prompt_store_progress(state) is False
+    out2 = plain2.file.getvalue()
+    assert "[y] Yes" in out2 and "save session checkpoint" in out2
+    assert "[n] No" in out2 and "skip saving" in out2
 
 
 def test_subagent_role_uses_live_renderer_and_prints_read_line_range(tmp_path):

@@ -396,11 +396,17 @@ def pick_project(current: Path) -> Optional[Path]:
 
 
 def confirm(title: str, text: str, default: bool = False) -> bool:
-    """Clean inline Yes/No prompt."""
+    """Clean inline Yes/No prompt with explicit option legend."""
     suffix = "[Y/n]" if default else "[y/N]"
-    R.console.print(f"  [{R.Theme.DIM}]{R.ui_glyph('bullet')}[/] {escape(text)} [{R.Theme.DIM}]{escape(suffix)}[/] ", end="")
+    yes_lbl = "Yes (default)" if default else "Yes"
+    no_lbl = "No" if default else "No (default)"
+    R.console.print(
+        f"  [{R.Theme.DIM}]{R.ui_glyph('bullet')}[/] {escape(text)} [{R.Theme.DIM}]{escape(suffix)}[/] "
+        f"[{R.Theme.DIM}](y={yes_lbl}, n={no_lbl})[/] ",
+        end="",
+    )
     try:
-        ans = input().strip().lower()
+        ans = input().strip().lower().strip("[](). ")
         if not ans:
             return default
         return ans in ("y", "yes")

@@ -607,10 +607,13 @@ def _try_resume(state: SessionState) -> bool:
         t_n = latest["turns"]
         turn_word = "turn" if t_n == 1 else "turns"
         R.console.print(
-            f"  [dim]{R.ui_glyph('bullet')} Saved session ({t_n} {turn_word}, {latest['saved_at']}). "
-            f"Resume? {escape('[y/N]')}:[/] ",
-            end="",
+            f"  [dim]{R.ui_glyph('bullet')} Saved session ({t_n} {turn_word}, {latest['saved_at']}).[/]"
         )
+        R.console.print(
+            f"    [bold {R.Theme.ACCENT}]\\[y][/] Resume saved session   "
+            f"[bold {R.Theme.ACCENT}]\\[n / Enter][/] Start a fresh session"
+        )
+        R.console.print(f"  [dim]Resume? {escape('[y/N]')}:[/] ", end="")
         ans = input().strip().lower()
         if ans in ("y", "yes"):
             state.load(latest["file"])

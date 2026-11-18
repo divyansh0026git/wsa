@@ -1113,7 +1113,11 @@ def _cmd_multiagent(arg: str, state: SessionState, client: Optional[Any] = None)
             R.print_warn(f"Missing synced open tab(s): {miss_desc}")
         R.print_info("Background tabs are allowed (no need to keep tabs in the foreground).")
         try:
-            ans = input("  Press [Enter] after clicking Sync to re-check (or 'c' to cancel): ").strip().lower()
+            R.console.print(
+                f"  [bold {R.Theme.ACCENT}]\\[Enter][/] Re-check tabs after clicking Sync   "
+                f"[bold {R.Theme.ACCENT}]\\[c][/] Cancel and keep current mode"
+            )
+            ans = input("  > ").strip().lower().strip("[](). ")
         except (EOFError, KeyboardInterrupt):
             R.console.print()
             R.print_info("Multiagent activation cancelled; keeping current mode.")

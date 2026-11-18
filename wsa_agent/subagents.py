@@ -902,10 +902,10 @@ def _recover_orchestrated_stage_limit(
         record_pending_goal=False,
     )
     if is_multi:
-        R.print_warn(f"All agents current account limits got exceed during {stage_label} ({reason[:120]}).")
+        R.print_warn(f"All queued agents reached their account limits during {stage_label} ({reason[:120]}).")
     else:
         R.print_warn(
-            f"{R.friendly_model_name(getattr(state, 'model', 'gemini'))} account limit got exceed during {stage_label} ({reason[:120]})."
+            f"{R.friendly_model_name(getattr(state, 'model', 'gemini'))} account limit reached during {stage_label} ({reason[:120]})."
         )
     R.print_info(
         "Current workflow state & context preserved automatically"

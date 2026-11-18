@@ -1824,25 +1824,34 @@ def _prompt_all_agents_exhausted(
     try:
         from .renderer import console as _console
         R._release_console_live(_console)
+        R.sync_theme()
         if is_multiagent:
-            _console.print(
-                "\n  All agents current account limits got exceed. "
-                "Please change your current account to continue the workflow: y/n",
-                markup=False,
+            header = (
+                "All queued agents reached their account limits. "
+                "Please change your current account to continue the workflow: y/n"
             )
         else:
             target = model_name or getattr(state, "model", "gemini")
-            _console.print(
-                f"\n  {R.friendly_model_name(target)} account limit got exceed. "
-                "Please change your current account to continue the workflow: y/n",
-                markup=False,
+            header = (
+                f"{R.friendly_model_name(target)} account limit reached. "
+                "Please change your current account to continue the workflow: y/n"
             )
-        resp = _console.input("  > ", markup=False).strip().lower()
+        _console.print(f"\n  {header}", markup=False)
+        _console.print(
+            f"  [bold {R.Theme.ACCENT}]\\[y][/] Yes — wait {ACCOUNT_SWITCH_WAIT_SECS}s to switch account in browser and resume automatically\n"
+            f"  [bold {R.Theme.ACCENT}]\\[n][/] No  — stop now (workflow state & context are already preserved)"
+        )
+        while True:
+            raw = _console.input("  Choice [y/n]: ", markup=False).strip().lower().strip("[](). ")
+            if raw in ("y", "yes"):
+                return True
+            if raw in ("n", "no", ""):
+                return False
+            R.print_warn("Choose y (yes) or n (no).")
     except (EOFError, KeyboardInterrupt):
         return False
     except Exception:
         return False
-    return resp in ("y", "yes")
 
 
 def _offer_limit_multiagent(state: SessionState, client: Any, failed_model: str) -> str:
@@ -1853,16 +1862,16 @@ def _offer_limit_multiagent(state: SessionState, client: Any, failed_model: str)
     while True:
         try:
             console.print(
-                "\n  Do you want to switch to multiagent mode using the default queue or your custom queue?",
+                "\n  How would you like to continue after this provider limit?",
                 markup=False,
             )
             console.print(
-                f"  [bold {R.Theme.ACCENT}]\\[a][/] Default queue\n"
-                f"  [bold {R.Theme.ACCENT}]\\[b][/] Custom queue\n"
-                f"  [bold {R.Theme.ACCENT}]\\[c][/] Stick to single agent mode\n"
-                f"  [bold {R.Theme.ACCENT}]\\[d][/] Stop (preserve context)"
+                f"  [bold {R.Theme.ACCENT}]\\[a][/] Default queue  — switch to multiagent mode using the default failover queue\n"
+                f"  [bold {R.Theme.ACCENT}]\\[b][/] Custom queue   — switch to multiagent mode and pick your own provider order\n"
+                f"  [bold {R.Theme.ACCENT}]\\[c][/] Single agent   — stay on this provider (option to switch account and retry)\n"
+                f"  [bold {R.Theme.ACCENT}]\\[d][/] Stop           — pause workflow cleanly (context already preserved)"
             )
-            raw_choice = console.input("  > ", markup=False).strip().lower()
+            raw_choice = console.input("  Choice [a/b/c/d]: ", markup=False).strip().lower()
             choice = raw_choice.strip("[](). ")
         except (EOFError, KeyboardInterrupt):
             return "stop"
@@ -1895,10 +1904,22 @@ def _prompt_store_progress(state: SessionState) -> bool:
     """
     try:
         from .renderer import console as _console
+        R._release_console_live(_console)
+        R.sync_theme()
+        _console.print("\n  Save the full session progress and context to disk?", markup=False)
         _console.print(
-            "\n  Do you want to store the progress/context of the entire session: y/n"
+            f"  [bold {R.Theme.ACCENT}]\\[y][/] Yes — save session checkpoint so you can resume later with `wsa --continue`\n"
+            f"  [bold {R.Theme.ACCENT}]\\[n][/] No  — skip saving and return to the prompt"
         )
-        resp = _console.input("  > ").strip().lower()
+        while True:
+            raw = _console.input("  Choice [y/n]: ", markup=False).strip().lower().strip("[](). ")
+            if raw in ("y", "yes"):
+                resp = "y"
+                break
+            if raw in ("n", "no", ""):
+                resp = "n"
+                break
+            R.print_warn("Choose y (yes) or n (no).")
     except (EOFError, KeyboardInterrupt):
         return False
     except Exception:
@@ -2375,11 +2396,11 @@ def execute_agent_loop(
                         if can_prompt_switch:
                             if is_multi_exhausted:
                                 R.print_warn(
-                                    f"All agents current account limits got exceed ({str(ple)[:120]})."
+                                    f"All queued agents reached their account limits ({str(ple)[:120]})."
                                 )
                             else:
                                 R.print_warn(
-                                    f"{R.friendly_model_name(effective_model)} account limit got exceed ({str(ple)[:120]})."
+                                    f"{R.friendly_model_name(effective_model)} account limit reached ({str(ple)[:120]})."
                                 )
                             R.print_info(
                                 "Current workflow state & context preserved automatically"
