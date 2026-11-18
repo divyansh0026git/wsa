@@ -191,6 +191,7 @@ class WSAHandler(BaseHTTPRequestHandler):
             if req_path == "/pending-prompt":
                 if qs.get("client_id") or qs.get("browser") or qs.get("label"):
                     busy_flag = str((qs.get("busy") or ["0"])[0]).strip().lower() in ("1", "true", "yes")
+                    generating_flag = str((qs.get("generating") or ["0"])[0]).strip().lower() in ("1", "true", "yes")
                     client_payload = {
                         "client_id": (qs.get("client_id") or [""])[0],
                         "browser": (qs.get("browser") or ["chrome"])[0],
@@ -210,6 +211,7 @@ class WSAHandler(BaseHTTPRequestHandler):
                         client_payload,
                         busy=busy_flag,
                         busy_req_id=busy_req_id,
+                        generating=generating_flag,
                     )
                     extra = {
                         "X-Relay-Active": "1" if reg.get("is_active") else "0",

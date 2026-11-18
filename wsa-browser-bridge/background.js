@@ -827,6 +827,9 @@ async function sendBusyHeartbeat(jobOverride = null, { triggerRelay = true } = {
       busy: "1",
       busy_req_id: job?.reqId || "",
     });
+    if (job?.isGenerating) {
+      qs.set("generating", "1");
+    }
     const resp = await fetch(`${LOCAL_API}/pending-prompt?${qs.toString()}`, {
       signal: AbortSignal.timeout(2500),
     });
@@ -1918,9 +1921,10 @@ async function pollActiveRelayJob() {
       gemini: _domPollTurnFn,
       venice: _venicePollTurnFn,
     };
-    const elapsed = Date.now() - (Number(job.startedAt) || Date.now());
     const lastProgAge = Date.now() - (Number(job.lastProgressAt) || Number(job.startedAt) || Date.now());
-    if (elapsed > 900_000 || lastProgAge > 360_000) {
+    // Dynamic liveness timeout: never kill an actively thinking/generating turn on wall-clock duration.
+    // Fail only if the tab produces neither text/thinking progress nor an active Stop/streaming signal for >6 minutes.
+    if (lastProgAge > 360_000) {
       await failActiveRelayJob(job, `Timeout waiting for ${provLabel} response. Ensure an active conversation tab is open.`);
       return;
     }
@@ -1980,8 +1984,10 @@ async function pollActiveRelayJob() {
 
     const curText = typeof res.text === "string" ? res.text : "";
     const curThink = typeof res.thinking === "string" ? res.thinking : "";
+    const isActivelyGenerating = Boolean(res.streaming || res.busy);
     const changed = curText !== (job.sentText || "") || curThink !== (job.sentThinking || "");
-    if (changed) {
+    job.isGenerating = isActivelyGenerating;
+    if (changed || isActivelyGenerating) {
       job.lastProgressAt = Date.now();
     }
 
@@ -4076,6 +4082,7 @@ function _domPollTurnFn(reqId) {
     model: job.selectedBadge || rt.readModePickerBadge(),
     url: window.location.href,
     busy,
+    streaming: busy,
     hasTurnActions,
   };
 }
@@ -6035,6 +6042,7 @@ function _claudePollTurnFn(reqId) {
     done,
     text: turn.lastText,
     thinking: turn.lastThinking,
+    streaming: isStillStreaming,
     model: rt.readModelBadge() || turn.modelBadge || "Claude Web",
     url: location.href,
   };
@@ -7179,6 +7187,7 @@ function _installWsaDomUtilsFn() {
       done,
       text: turn.lastText,
       thinking: turn.lastThinking,
+      streaming: isStillStreaming,
       model: rt.readModelBadge() || turn.modelBadge || defaultModel,
       url: location.href,
     };

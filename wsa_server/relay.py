@@ -1550,7 +1550,10 @@ def dom_relay_iter(
         now_ts = time.time()
         with _dom_relay_lock:
             recent = _dom_relay.setdefault("recent_requests", {})
-            for rk in [k for k, v in recent.items() if (now_ts - float(v.get("ts") or 0.0)) > 300.0]:
+            for rk in [
+                k for k, v in recent.items()
+                if v.get("event") is None and (now_ts - float(v.get("ts") or 0.0)) > 300.0
+            ]:
                 recent.pop(rk, None)
             active_dedup_key = dedup_key
             entry = recent.get(active_dedup_key)
@@ -1581,7 +1584,12 @@ def dom_relay_iter(
         ev_existing = existing_wait_event
         wait_start = time.time()
         while ev_existing is not None and not ev_existing.wait(timeout=step):
-            if (time.time() - wait_start) >= timeout:
+            with _dom_relay_lock:
+                primary_alive = any(
+                    it.get("event") is ev_existing and not it.get("cancelled")
+                    for it in (_dom_relay.get("pending") or {}).values()
+                )
+            if not primary_alive and (time.time() - wait_start) >= timeout:
                 raise RuntimeError(f"DOM relay timeout ({int(timeout)}s) waiting on deduplicated request")
             yield ("keepalive", "")
         with _dom_relay_lock:
@@ -1692,6 +1700,9 @@ def dom_relay_iter(
             "progress_model": "",
             "progress_chat_url": "",
             "last_progress_ts": 0.0,
+            "last_busy_ts": 0.0,
+            "last_generating_ts": 0.0,
+            "is_generating": False,
         }
         if isinstance(ctx_meta, dict):
             ctx_meta["req_id"] = req_id
@@ -1759,7 +1770,19 @@ def dom_relay_iter(
                 prog_resp = cur_item.get("progress_response") or ""
                 prog_think = cur_item.get("progress_thinking") or ""
                 prog_model = " ".join((cur_item.get("progress_model") or "").split())
-                last_act = max(start, float(cur_item.get("last_progress_ts") or 0.0))
+                last_prog_ts = float(cur_item.get("last_progress_ts") or 0.0)
+                last_gen_ts = float(cur_item.get("last_generating_ts") or 0.0)
+                last_busy_ts = float(cur_item.get("last_busy_ts") or 0.0)
+                is_generating_now = bool(cur_item.get("is_generating"))
+                has_live_turn = bool(
+                    cur_seq > 0
+                    or cur_s_mono is not None
+                    or last_gen_ts > 0.0
+                    or streamed_thinking
+                    or streamed_response
+                )
+                live_heartbeat_ts = max(last_gen_ts, last_busy_ts if has_live_turn else 0.0)
+                last_act = max(start, last_prog_ts, live_heartbeat_ts)
                 dispatched_at = float(cur_item.get("dispatched_at") or start)
                 dispatched_id = cur_item.get("dispatched_to") or target_relay_id or ""
                 d_entry_live = (_dom_relay.get("relays") or {}).get(dispatched_id) or {}
@@ -1842,7 +1865,7 @@ def dom_relay_iter(
             now = time.time()
             elapsed = now - start
             idle_elapsed = now - last_act
-            hard_cap = max(float(timeout) * 3.0, 900.0) if last_act > start else float(timeout)
+            max_total_cap = float(CONFIG.get("dom_relay_max_total_sec") or 0.0)
             if not dispatched and elapsed >= pickup_timeout:
                 with _dom_relay_lock:
                     _dom_relay["pending"].pop(req_id, None)
@@ -1881,6 +1904,9 @@ def dom_relay_iter(
                 prov == "claude"
                 and dispatched
                 and cur_seq == 0
+                and cur_s_mono is None
+                and not is_generating_now
+                and last_gen_ts <= 0.0
                 and not streamed_thinking
                 and not streamed_response
             ):
@@ -1893,7 +1919,7 @@ def dom_relay_iter(
                         "(composer did not submit; account limit likely reached)",
                         limit_hit=True,
                     )
-            if idle_elapsed >= timeout or elapsed >= hard_cap:
+            if idle_elapsed >= timeout or (max_total_cap > 0.0 and elapsed >= max_total_cap):
                 with _dom_relay_lock:
                     _dom_relay["pending"].pop(req_id, None)
                 raise _finish_dedup_err(
@@ -2305,6 +2331,7 @@ def dom_relay_poll_for_client(
     client_info: Optional[dict],
     busy: bool = False,
     busy_req_id: str = "",
+    generating: bool = False,
 ) -> tuple:
     """Register/refresh client relay state and return (pending_item_or_None, status_dict)."""
     reg = register_or_touch_relay(client_info)
@@ -2314,14 +2341,25 @@ def dom_relay_poll_for_client(
         reg["busy_req_valid"] = busy_valid
         cid_reg = reg.get("client_id") or ""
         if busy_valid and cid_reg:
+            now_busy = time.time()
             with _dom_relay_lock:
                 owned = (_dom_relay.get("pending") or {}).get(brid)
                 if owned and owned.get("dispatched_to") == cid_reg:
                     owned["idle_polls_since_dispatch"] = 0
                     owned["idle_since_ts"] = None
-                    owned["last_busy_ts"] = time.time()
+                    owned["last_busy_ts"] = now_busy
+                    if generating:
+                        was_gen = bool(owned.get("is_generating"))
+                        owned["is_generating"] = True
+                        owned["last_generating_ts"] = now_busy
+                        if not was_gen:
+                            wev = owned.get("wake_event")
+                            if wev is not None:
+                                wev.set()
+                    else:
+                        owned["is_generating"] = False
                 if cid_reg in (_dom_relay.get("relays") or {}):
-                    _dom_relay["relays"][cid_reg]["last_busy_ts"] = time.time()
+                    _dom_relay["relays"][cid_reg]["last_busy_ts"] = now_busy
         elif not busy_valid:
             log(f"DOM relay: clearing stale busy job '{brid}' reported by {cid_reg or 'browser'}")
         return None, reg

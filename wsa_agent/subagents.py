@@ -144,8 +144,9 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
     "architect": (
         "Role: WSA Architect — read-only system designer and execution planner.\n"
         "Guidelines:\n"
-        "1. Review the Context Packet carefully and do light targeted reads only if an interface is unclear.\n"
-        "2. Decompose the user request into a small, crisp DAG of surgical coding tasks (typically 1–5 tasks).\n"
+        "1. Review the Context Packet carefully and inspect any files, contracts, or edge cases needed before finalizing the design.\n"
+        "2. Reason deeply about architecture, dependencies, and failure modes, then decompose the user request into a clear, "
+        "dependency-ordered DAG of thorough, well-scoped coding tasks.\n"
         "3. Keep `owned_files` disjoint across sibling independent tasks whenever possible.\n"
         "4. Output your final plan inside a ```json block containing a JSON array of objects:\n"
         '   [{"id": "t1", "title": "...", "owned_files": ["path/a.py"], "depends_on": [], '
@@ -505,14 +506,14 @@ def _make_role_event_cb(stage_label: str) -> Callable[[str, Dict[str, Any]], Non
 
 CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
     "explorer": (
-        "Workflow Phase — Explorer: For this stage of our task, let's focus strictly on read-only codebase reconnaissance.\n"
-        "Please stick to the read/search JSON shapes listed below (`read_file`, `get_file_outline`, `get_file_info`, `search_files`, `glob_files`, `list_dir`) rather than proposing edits.\n"
-        "Keep the concise coding-agent style: state in 1 short line what you're inspecting, emit the ```tool_call JSON block(s), wait for the real output, and once you have exact facts and line ranges, summarize your findings crisply."
+        "Workflow Phase — Explorer: For this stage of our task, focus strictly on thorough read-only codebase reconnaissance.\n"
+        "Stick to the read/search JSON shapes listed below (`read_file`, `get_file_outline`, `get_file_info`, `search_files`, `glob_files`, `list_dir`) rather than proposing edits.\n"
+        "Take the time to trace full call paths, shared state, interfaces, and edge cases across relevant files; state what you're inspecting, emit the ```tool_call JSON block(s), wait for real output, and once you have exact facts and line ranges, summarize your findings clearly."
     ),
     "architect": (
-        "Workflow Phase — Architect: For this stage, let's design a concrete, file-exact editing plan before writing code.\n"
-        "If anything in an interface is still unclear, emit a brief technical line + read-only ```tool_call block.\n"
-        "Otherwise, decompose the request into a small, crisp DAG of surgical tasks (typically 1–6 tasks) and output your final plan inside a ```json block containing a JSON array of objects:\n"
+        "Workflow Phase — Architect: For this stage, think deeply and design a concrete, file-exact editing plan before writing code.\n"
+        "Inspect any files, contracts, or edge cases that are unclear using read-only ```tool_call blocks.\n"
+        "Decompose the request into a clear, dependency-ordered DAG of thorough, well-scoped tasks and output your final plan inside a ```json block containing a JSON array of objects:\n"
         '   [{"id": "t1", "title": "...", "owned_files": ["path/a.py"], "depends_on": [], "acceptance": "Exact checkable outcome", "ui": false}]\n'
         "Guidelines:\n"
         "1. Every coding task must declare explicit `owned_files` (relative workspace paths to create or edit).\n"
@@ -521,12 +522,12 @@ CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
         "4. Ground every task in real workspace paths and do not emit code edits in this phase."
     ),
     "coder": (
-        "Workflow Phase — Coder: For this stage, please recommend the exact surgical code changes via my local `wsa` CLI.\n"
-        "Inspect any target region not yet read together before patching, lead with a crisp 1-line diagnosis + ```tool_call block (`patch_file` for existing files; `write_file` only for new/small files) preserving unrelated comments/behavior, and follow up with `run_command` / `run_python` blocks until verified."
+        "Workflow Phase — Coder: For this stage, think deeply through dependencies and edge cases before applying exact surgical code changes via my local `wsa` CLI.\n"
+        "Inspect every target region not yet read together before patching, lead with a clear diagnosis + ```tool_call block (`patch_file` for existing files; `write_file` for new/small files) preserving unrelated comments/behavior, and follow up with `run_command` / `run_python` / `visual_inspect` blocks until thoroughly verified."
     ),
     "verifier": (
-        "Workflow Phase — Verifier: For this stage, please independently check our implemented changes and look for any subtle bugs, edge cases, or regressions.\n"
-        "Avoid source-modification blocks (`patch_file`/`write_file`) here; instead keep the crisp coding-agent style — 1 direct line explaining what you're checking followed by read/search or `run_command`/`run_python` ```tool_call JSON block(s) — wait for real output, and then report an honest pass/fail verdict citing only directly observed results."
+        "Workflow Phase — Verifier: For this stage, independently and thoroughly check our implemented changes and look for subtle bugs, edge cases, or regressions.\n"
+        "Avoid source-modification blocks (`patch_file`/`write_file`) here; explain what you're checking followed by read/search, `run_command`/`run_python`, or `visual_inspect` ```tool_call JSON block(s) — wait for real output, and report an honest pass/fail verdict citing only directly observed results."
     ),
 }
 
@@ -553,7 +554,7 @@ def get_role_system_prompt(role: str, model_id: str = "gemini") -> str:
     )
 
 
-def _attach_context_to_prompt(prompt: str, context_packet: str, max_chars: int = 3800) -> str:
+def _attach_context_to_prompt(prompt: str, context_packet: str, max_chars: int = 6000) -> str:
     """Embed compact scoped ledger/decision/diff context in user prompt so persistent delta turns receive it."""
     pkt = str(context_packet or "").strip()
     base = str(prompt or "").rstrip()
@@ -569,7 +570,7 @@ def _run_role_agent(
     state: SessionState,
     client: WSAClient,
     context_packet: str = "",
-    max_rounds: int = 16,
+    max_rounds: int = 32,
     relay_id_override: Optional[str] = None,
     session_id_override: Optional[str] = None,
     label: str = "",
@@ -702,7 +703,7 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
             state=state,
             client=client,
             context_packet=exp_pkt,
-            max_rounds=12,
+            max_rounds=24,
         )
         if _is_interrupted_res(exp_res):
             R.print_warn("Planning interrupted during Explorer stage — cancelled remaining stages.")
@@ -717,18 +718,18 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
             project_type=getattr(state, "project_type", "unknown"),
             ledger=ledger,
             decisions=getattr(state, "decisions", None),
-            extra_notes=f"Explorer Reconnaissance Findings:\n{(exp_res.get('final_text') or '')[:2200]}",
+            extra_notes=f"Explorer Reconnaissance Findings:\n{(exp_res.get('final_text') or '')[:4500]}",
         )
         arch_res = _run_role_agent(
             role="architect",
             prompt=(
-                f"Design a precise dependency-ordered task plan for:\n{clean_task}\n\n"
-                "Return ONLY the task DAG JSON array in ```json ... ``` plus brief concise notes."
+                f"Think deeply about dependencies and edge cases, then design a thorough dependency-ordered task plan for:\n{clean_task}\n\n"
+                "Return the task DAG JSON array in ```json ... ``` plus concise architectural notes."
             ),
             state=state,
             client=client,
             context_packet=arch_pkt,
-            max_rounds=8,
+            max_rounds=16,
         )
         if _is_interrupted_res(arch_res):
             R.print_warn("Planning interrupted during Architect stage — plan discarded.")
@@ -792,7 +793,7 @@ def run_verify_command(scope_text: str, state: SessionState, client: WSAClient) 
             state=state,
             client=client,
             context_packet=ver_pkt,
-            max_rounds=12,
+            max_rounds=24,
         )
         verdict = _parse_verifier_verdict(ver_res.get("final_text") or "", ver_res)
         if verdict["verdict"] == "pass":
@@ -862,7 +863,7 @@ def spawn_scoped_subagent(
             state=state,
             client=client,
             context_packet=pkt,
-            max_rounds=16,
+            max_rounds=32,
             label=clean_role,
             owned_files=owned if clean_role == "coder" and owned_files is not None else None,
         )
@@ -1015,22 +1016,22 @@ def run_orchestrated_turn(
             written_files=sorted(state.written_files),
             verified_files=sorted(state.verified_files),
             turn_digest=getattr(state, "turn_digest", None),
-            extra_notes=f"Primary user objective:\n{user_input[:1200]}",
+            extra_notes=f"Primary user objective:\n{user_input[:4000]}",
         )
         while True:
             exp_res = _run_stage(
                 role="explorer",
                 prompt=(
-                    f"Perform fast targeted read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
+                    f"Perform thorough read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
                     "1. Inspect directory tree (`list_dir`/`glob_files`), relevant entrypoints (`get_file_outline`), "
-                    "and test setup.\n"
-                    "2. Read only critical sections needed to map interfaces cleanly.\n"
+                    "and test/UI setup.\n"
+                    "2. Read all relevant files, interfaces, shared state, and call sites thoroughly enough to map dependencies and edge cases accurately.\n"
                     "3. Return exact file paths, symbol signatures, existing conventions, and risks."
                 ),
                 state=state,
                 client=client,
                 context_packet=exp_pkt,
-                max_rounds=12,
+                max_rounds=24,
             )
             if _recover_orchestrated_stage_limit(state, client, exp_res, pending_goal=user_input, stage_label="explorer"):
                 continue
@@ -1051,19 +1052,19 @@ def run_orchestrated_turn(
             decisions=getattr(state, "decisions", None),
             written_files=sorted(state.written_files),
             turn_digest=getattr(state, "turn_digest", None),
-            extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:4000]}",
+            extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:6000]}",
         )
         while True:
             arch_res = _run_stage(
                 role="architect",
                 prompt=(
-                    f"Create a minimal dependency-ordered task DAG to complete:\n{user_input}\n\n"
+                    f"Think deeply about architecture, dependencies, and edge cases, then create a complete dependency-ordered task DAG to fulfill:\n{user_input}\n\n"
                     "Ensure every task lists explicit `owned_files` and `acceptance`, and output the JSON task array inside ```json ... ```."
                 ),
                 state=state,
                 client=client,
                 context_packet=arch_pkt,
-                max_rounds=8,
+                max_rounds=16,
             )
             if _recover_orchestrated_stage_limit(state, client, arch_res, pending_goal=user_input, stage_label="architect"):
                 continue
@@ -1113,7 +1114,7 @@ def run_orchestrated_turn(
             owned = list(task_item.get("owned_files") or [])
             with state_lock:
                 task_item["status"] = "in_progress"
-                prior_notes = "\n".join(task_summaries[-4:])
+                prior_notes = "\n".join(task_summaries[-8:])
             pkt = build_context_packet(
                 project_root=state.project_root,
                 project_type=getattr(state, "project_type", "unknown"),
@@ -1125,24 +1126,25 @@ def run_orchestrated_turn(
                 focus_files=owned,
                 turn_digest=getattr(state, "turn_digest", None),
                 extra_notes=(
-                    f"Explorer Findings:\n{explorer_summary[:2500]}\n\n"
+                    f"Explorer Findings:\n{explorer_summary[:4500]}\n\n"
                     + (f"Completed Prior Task Results:\n{prior_notes}\n\n" if prior_notes else "")
                     + f"Assigned Task [{tid}]: {task_item['title']}\n"
                     + (f"Description: {task_item['description']}\n" if task_item.get("description") else "")
-                    + f"Owned files scope: {', '.join(owned) if owned else '(minimal files required)'}\n"
+                    + f"Owned files scope: {', '.join(owned) if owned else '(files required for this task)'}\n"
                     + f"Acceptance criteria: {task_item.get('acceptance', '')}"
                 ),
             )
             desc_text = f"Task Description:\n{task_item['description']}\n\n" if task_item.get("description") else ""
             task_guidance = (
-                "Implement any requested deliverables within the assigned scope. Read existing targets before editing "
+                "Think deeply about edge cases and dependencies before editing. Implement any requested deliverables "
+                "completely within the assigned scope. Read existing targets thoroughly before editing "
                 "and use `write_file` for new modules. For verification-only tasks, run the requested checks. "
-                "Verify the acceptance criteria and summarize the observed results."
+                "Verify the acceptance criteria thoroughly and summarize the observed results."
             )
             worker_prompt = (
                 f"Execute task `{tid}`: {task_item['title']}\n"
                 f"{desc_text}"
-                f"Overall User Request:\n{user_input[:1200]}\n\n"
+                f"Overall User Request:\n{user_input[:4000]}\n\n"
                 f"Strict Scope:\n- Owned files: {', '.join(owned) if owned else 'only files required for this task'}\n"
                 f"- Acceptance: {task_item.get('acceptance', 'Passes verification checks cleanly')}\n\n"
                 f"{task_guidance}"
@@ -1157,7 +1159,7 @@ def run_orchestrated_turn(
                 state=state,
                 client=client,
                 context_packet=pkt,
-                max_rounds=24,
+                max_rounds=48,
                 relay_id_override=relay_id,
                 session_id_override=session_override,
                 label=f"coder:{tid}",
@@ -1290,7 +1292,7 @@ def run_orchestrated_turn(
                 ver_res = _run_stage(
                     role="verifier",
                     prompt=(
-                        f"Verify all work completed for the user request:\n{user_input[:1200]}\n\n"
+                        f"Verify all work completed for the user request:\n{user_input[:4000]}\n\n"
                         f"Modified files to verify: {', '.join(written_list) if written_list else '(check workspace)'}\n"
                         "Run tests (`pytest`), syntax/compile checks, runtime checks, and inspect UI if applicable. "
                         'Conclude with a JSON block: {"verdict":"pass","checks":["test name: result"],"failures":[],"summary":"result"}. '
@@ -1300,7 +1302,7 @@ def run_orchestrated_turn(
                     state=state,
                     client=client,
                     context_packet=ver_pkt,
-                    max_rounds=12,
+                    max_rounds=24,
                     label=f"verifier#{attempt + 1}",
                 )
                 if _recover_orchestrated_stage_limit(state, client, ver_res, pending_goal=user_input, stage_label=f"verifier#{attempt + 1}"):
@@ -1370,7 +1372,7 @@ def run_orchestrated_turn(
                         state=state,
                         client=client,
                         context_packet=rep_pkt,
-                        max_rounds=16,
+                        max_rounds=32,
                         label=f"repair#{attempt + 1}",
                         owned_files=sorted({p for task in tasks for p in task.get("owned_files", [])}) or None,
                     )

@@ -523,8 +523,55 @@ async function submittedStageReportsVerifiedUploadAndTimings() {
   }
 }
 
+async function longDeepThinkingTurnDoesNotTimeoutWhileStreaming() {
+  // 20 minutes elapsed (well past old 900_000ms cap) with unchanged collapsed thinking text,
+  // but the page reports streaming:true (Stop button visible).
+  const oldStart = Date.now() - 1_200_000;
+  const h = harness({
+    activeRelayJob: {
+      ...job,
+      provider: 'claude',
+      startedAt: oldStart,
+      lastProgressAt: Date.now() - 5_000,
+      lastHeartbeatAt: 0,
+      sentThinking: 'Sleuthing',
+    },
+  });
+  const heartbeatUrls = [];
+  h.ctx.ensurePageRuntime = async () => true;
+  h.ctx.chrome.scripting = {
+    executeScript: async () => [{
+      result: {text: '', thinking: 'Sleuthing', streaming: true, done: false},
+    }],
+  };
+  h.ctx.fetch = async (url) => {
+    heartbeatUrls.push(url);
+    return {ok: true, headers: {get: () => null}, json: async () => ({})};
+  };
+  await h.run('restoreActiveRelayJob()');
+  await h.run('pollActiveRelayJob()');
+  assert.ok(h.storage.activeRelayJob, 'deep thinking turn must stay alive past 15+ minutes while streaming');
+  assert.equal(h.storage.activeRelayJob.isGenerating, true);
+  assert.ok(
+    heartbeatUrls.some(u => new URL(u).searchParams.get('generating') === '1'),
+    'heartbeat must signal generating=1 to keep server timeout dynamic'
+  );
+  // Conversely, a genuinely dead page with no streaming signal and >6m stale lastProgressAt still fails.
+  const dead = harness({
+    activeRelayJob: {
+      ...job,
+      provider: 'claude',
+      startedAt: oldStart,
+      lastProgressAt: Date.now() - 400_000,
+    },
+  });
+  dead.ctx.fetch = async () => ({ok: true, headers: {get: () => null}, json: async () => ({ok: true})});
+  await dead.run('pollActiveRelayJob()');
+  assert.equal(dead.storage.activeRelayJob, undefined, 'truly hung turn with >6m stale progress must fail');
+}
+
 (async()=>{
-  for (const test of [unavailableImageTransferFailsForEveryRuntime, unchangedProgressRetriesAfterLostPost, submittedStageReportsVerifiedUploadAndTimings, acquisitionIsSingleFlight, completionWaitsForAcknowledgement, failedDeliverySurvivesRestart,
+  for (const test of [unavailableImageTransferFailsForEveryRuntime, unchangedProgressRetriesAfterLostPost, submittedStageReportsVerifiedUploadAndTimings, longDeepThinkingTurnDoesNotTimeoutWhileStreaming, acquisitionIsSingleFlight, completionWaitsForAcknowledgement, failedDeliverySurvivesRestart,
     rejectedAndInvalidAcknowledgements, failedErrorDeliverySurvivesRestart, backgroundProvidersAndRestart,
     submissionOwnsJobBeforeAwait, restartDuringPreparationReportsFailure, longRunningJobIsNotSilentlyDropped,
     staleHeartbeatCannotEraseCompletion, alarmRecoversWithoutTabKeepalive, visibilitySwitchWakesWorker,

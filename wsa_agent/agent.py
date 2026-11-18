@@ -1520,7 +1520,7 @@ def _maybe_anti_laziness_nudge(
         return (
             "verify",
             f"[System Verification Gate]: You edited `{targets}` without running a passing check after your final edit. "
-            "Run a quick verification command (`py_compile`, `node --check`, `browser_inspect`, or targeted check) "
+            "Run a thorough verification command (`py_compile`, `node --check`, `browser_inspect`, `visual_inspect`, or targeted checks) "
             "now so all edits are confirmed working before finishing.",
         )
 
