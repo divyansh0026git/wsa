@@ -1718,6 +1718,7 @@ def dom_relay_iter(
             "browser_upload_ms": None,
             "browser_submit_ms": None,
             "has_images": bool(relay_images_payload),
+            "image_gen": bool((ctx_meta or {}).get("image_gen", False)) if isinstance(ctx_meta, dict) else False,
             "idle_polls_since_dispatch": 0,
             "new_chat": bool(new_chat),
             "progress_seq": 0,
@@ -1726,6 +1727,7 @@ def dom_relay_iter(
             "progress_model": "",
             "progress_chat_url": "",
             "last_progress_ts": 0.0,
+            "last_content_ts": 0.0,
             "last_busy_ts": 0.0,
             "last_generating_ts": 0.0,
             "is_generating": False,
@@ -1797,6 +1799,7 @@ def dom_relay_iter(
                 prog_think = cur_item.get("progress_thinking") or ""
                 prog_model = " ".join((cur_item.get("progress_model") or "").split())
                 last_prog_ts = float(cur_item.get("last_progress_ts") or 0.0)
+                last_content_ts = float(cur_item.get("last_content_ts") or 0.0)
                 last_gen_ts = float(cur_item.get("last_generating_ts") or 0.0)
                 last_busy_ts = float(cur_item.get("last_busy_ts") or 0.0)
                 is_generating_now = bool(cur_item.get("is_generating"))
@@ -1945,6 +1948,16 @@ def dom_relay_iter(
                         "(composer did not submit; account limit likely reached)",
                         limit_hit=True,
                     )
+            has_any_output = bool(prog_resp or prog_think or streamed_response or streamed_thinking)
+            stall_cap = max(float(timeout), 1500.0) if has_any_output else max(float(timeout), 360.0)
+            content_anchor = max(dispatched_at, last_content_ts) if dispatched else start
+            if dispatched and (now - content_anchor) >= stall_cap:
+                with _dom_relay_lock:
+                    _dom_relay["pending"].pop(req_id, None)
+                    _dom_relay.setdefault("cancelled_req_ids", {})[req_id] = now + 120.0
+                raise _finish_dedup_err(
+                    f"DOM relay timeout ({int(stall_cap)}s): stream stalled on {prov_label} with zero new output"
+                )
             if idle_elapsed >= timeout or (max_total_cap > 0.0 and elapsed >= max_total_cap):
                 with _dom_relay_lock:
                     _dom_relay["pending"].pop(req_id, None)
@@ -2068,7 +2081,10 @@ def dom_relay_iter(
         "chat_url": chat_url,
         "relay_id": dispatched_id,
         "timings": timings,
+        "generated_images": list(item.get("generated_images") or []),
     }
+    if res_obj["generated_images"]:
+        yield ("generated_images", list(res_obj["generated_images"]))
     if dedup_entry is not None:
         with _dom_relay_lock:
             dedup_entry["result"] = dict(res_obj)
@@ -2265,6 +2281,7 @@ def dom_relay_get_pending(client_id: Optional[str] = None) -> Optional[dict]:
                 "prompt": item["prompt"],
                 "fallback_prompt": item.get("fallback_prompt") or item["prompt"],
                 "images": list(item.get("images") or []),
+                "image_gen": bool(item.get("image_gen", False)),
                 "session_id": sess_id,
                 "chat_url": sess_url,
                 "account_email": sess_email,
@@ -2499,6 +2516,8 @@ def dom_relay_post_progress(
                     item["browser_submit_ms"] = int(round(submit_ms))
                 item["status_seq"] = int(item.get("status_seq") or 0) + 1
         if has_content_update and (not seq or seq > cur_seq):
+            prev_resp = str(item.get("progress_response") or "")
+            prev_think = str(item.get("progress_thinking") or "")
             item["progress_seq"] = int(seq) if seq > 0 else (cur_seq + 1)
             if response is not None:
                 resp_s = str(response)
@@ -2508,6 +2527,11 @@ def dom_relay_post_progress(
                 think_s = str(thinking)
                 if think_s or seq > 0:
                     item["progress_thinking"] = think_s
+            if (
+                str(item.get("progress_response") or "") != prev_resp
+                or str(item.get("progress_thinking") or "") != prev_think
+            ):
+                item["last_content_ts"] = now
         if model:
             item["progress_model"] = str(model)
         if chat_url:
@@ -2526,11 +2550,28 @@ def dom_relay_post_response(
     model: str = "",
     chat_url: str = "",
     client_id: str = "",
+    generated_images: Optional[list] = None,
 ) -> bool:
     """Complete a pending DOM relay request from the bound browser extension."""
     now = time.time()
+    clean_imgs: list = []
+    if isinstance(generated_images, list):
+        for raw_img in generated_images[:4]:
+            if not isinstance(raw_img, dict):
+                continue
+            durl = str(raw_img.get("data_url") or raw_img.get("url") or "").strip()
+            if not durl.startswith("data:image/") or len(durl) > 4_000_000:
+                continue
+            clean_imgs.append({
+                "data_url": durl,
+                "mime_type": str(raw_img.get("mime_type") or "image/png")[:64],
+                "filename": str(raw_img.get("filename") or f"concept_{len(clean_imgs) + 1}.png")[:96],
+                "alt": str(raw_img.get("alt") or "")[:200],
+                "width": int(raw_img.get("width") or 0),
+                "height": int(raw_img.get("height") or 0),
+            })
     fingerprint = hashlib.sha256(json.dumps(
-        [response, error, thinking, model, chat_url], ensure_ascii=False,
+        [response, error, thinking, model, chat_url, len(clean_imgs)], ensure_ascii=False,
     ).encode("utf-8")).hexdigest()
     with _dom_relay_lock:
         receipts = _dom_relay.setdefault("completed_responses", {})
@@ -2573,6 +2614,8 @@ def dom_relay_post_response(
                 item["model"] = model
             if chat_url:
                 item["chat_url"] = chat_url
+            if clean_imgs:
+                item["generated_images"] = clean_imgs
         # Keep only bounded hashes, not another copy of response contents. A
         # dropped HTTP acknowledgement can then be retried after the waiter has
         # already removed its completed pending entry.

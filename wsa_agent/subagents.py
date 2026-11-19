@@ -949,6 +949,7 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
             project_type=getattr(state, "project_type", "unknown"),
             ledger=ledger,
             decisions=getattr(state, "decisions", None),
+            design_concepts=getattr(state, "approved_design_concepts", None),
             extra_notes=f"Goal for planning: {clean_task}",
         )
         exp_res = _run_role_agent(
@@ -976,6 +977,7 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
             project_type=getattr(state, "project_type", "unknown"),
             ledger=ledger,
             decisions=getattr(state, "decisions", None),
+            design_concepts=getattr(state, "approved_design_concepts", None),
             extra_notes=f"Explorer Reconnaissance Findings:\n{(exp_res.get('final_text') or '')[:4500]}",
         )
         arch_res = _run_role_agent(
@@ -1039,6 +1041,7 @@ def run_verify_command(scope_text: str, state: SessionState, client: WSAClient) 
             plan_items=getattr(state, "plan_items", None),
             written_files=targets,
             verified_files=sorted(state.verified_files),
+            design_concepts=getattr(state, "approved_design_concepts", None),
             extra_notes=f"Verification scope requested: {scope_note}",
         )
         ver_res = _run_role_agent(
@@ -1105,6 +1108,7 @@ def spawn_scoped_subagent(
         written_files=sorted(state.written_files),
         verified_files=sorted(state.verified_files),
         focus_files=owned,
+        design_concepts=getattr(state, "approved_design_concepts", None),
         extra_notes=(
             (f"Assigned owned_files: {', '.join(owned)}\n" if owned else "")
             + (f"Acceptance criteria: {acceptance}\n" if acceptance else "")
@@ -1399,6 +1403,7 @@ def run_orchestrated_turn(
                 written_files=sorted(state.written_files),
                 verified_files=sorted(state.verified_files),
                 turn_digest=getattr(state, "turn_digest", None),
+                design_concepts=getattr(state, "approved_design_concepts", None),
                 extra_notes=f"Primary user objective:\n{user_input[:4000]}",
             )
             while True:
@@ -1441,6 +1446,7 @@ def run_orchestrated_turn(
                 decisions=getattr(state, "decisions", None),
                 written_files=sorted(state.written_files),
                 turn_digest=getattr(state, "turn_digest", None),
+                design_concepts=getattr(state, "approved_design_concepts", None),
                 extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:arch_exp_cap]}",
             )
             while True:
@@ -1545,6 +1551,7 @@ def run_orchestrated_turn(
                 verified_files=sorted(state.verified_files),
                 focus_files=owned,
                 turn_digest=getattr(state, "turn_digest", None),
+                design_concepts=getattr(state, "approved_design_concepts", None),
                 extra_notes=(
                     bp_section
                     + f"Explorer Findings:\n{explorer_summary[:exp_cap]}\n\n"
@@ -1779,6 +1786,7 @@ def run_orchestrated_turn(
                 written_files=sec_targets,
                 focus_files=sec_targets,
                 turn_digest=getattr(state, "turn_digest", None),
+                design_concepts=getattr(state, "approved_design_concepts", None),
                 extra_notes="Task summaries before security hardening:\n" + "\n".join(task_summaries),
             )
             sec_prompt = (
@@ -1875,6 +1883,7 @@ def run_orchestrated_turn(
                 written_files=written_list,
                 verified_files=sorted(state.verified_files),
                 turn_digest=getattr(state, "turn_digest", None),
+                design_concepts=getattr(state, "approved_design_concepts", None),
                 extra_notes=f"Task summaries:\n" + "\n".join(task_summaries),
             )
             ver_prompt = (
@@ -1950,6 +1959,7 @@ def run_orchestrated_turn(
                 written_files=written_list,
                 focus_files=written_list,
                 turn_digest=getattr(state, "turn_digest", None),
+                design_concepts=getattr(state, "approved_design_concepts", None),
                 extra_notes=f"Verifier Failure Diagnostics:\n{fail_report}",
             )
             while True:

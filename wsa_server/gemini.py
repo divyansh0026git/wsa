@@ -499,6 +499,9 @@ def gemini_stream_generate_events(
                 else:
                     yield ("reset_content", "")
                     yield ("content", text)
+            gen_imgs = relay_res.get("generated_images")
+            if isinstance(gen_imgs, list) and gen_imgs:
+                yield ("generated_images", gen_imgs)
             return
 
     with _CONFIG_LOCK:

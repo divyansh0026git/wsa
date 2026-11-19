@@ -1980,6 +1980,20 @@ def _preserve_workflow_state_and_context(
                     if cur_summary.strip()
                     else marker
                 )
+    if persist_to_state:
+        _concepts = getattr(state, "approved_design_concepts", None) or []
+        if _concepts:
+            from .visual_concept import format_approved_concepts_context
+            _vc_marker = "USER-APPROVED VISUAL UI CONCEPT"
+            cur_sum = str(getattr(state, "context_summary", "") or "")
+            if _vc_marker not in cur_sum:
+                _vc_ctx = format_approved_concepts_context(_concepts, max_chars=900)
+                if _vc_ctx:
+                    state.context_summary = (
+                        f"{cur_sum.rstrip()}\n{_vc_ctx}".strip()
+                        if cur_sum.strip()
+                        else _vc_ctx
+                    )
     if persist_to_state and hasattr(state, "save"):
         try:
             return str(state.save() or "")
@@ -2003,6 +2017,15 @@ def _reset_provider_chats_for_account_change(
         old_urls.update(str(v) for v in state.chat_urls.values() if v)
     if clear_roles and isinstance(getattr(state, "role_threads", None), dict):
         old_urls.update(str(v) for v in state.role_threads.values() if v)
+
+    if hasattr(state, "_concept_synced_keys") and isinstance(state._concept_synced_keys, set):
+        if not providers:
+            state._concept_synced_keys.clear()
+        else:
+            for _p in providers:
+                _pn = str(_p or "").strip().lower()
+                for _sk in [k for k in list(state._concept_synced_keys) if k == _pn or k.startswith(f"{_pn}:")]:
+                    state._concept_synced_keys.discard(_sk)
 
     if hasattr(state, "clear_provider_chats"):
         state.clear_provider_chats(providers, clear_roles=clear_roles)
@@ -2386,6 +2409,105 @@ def _run_visual_critic_bridge(
         return None
 
 
+def _attach_approved_concepts_if_needed(
+    msgs: List[Dict[str, Any]],
+    state: Any,
+    effective_model: str,
+    role: str,
+    effective_chat_url: Optional[str],
+    is_new_chat: bool,
+    local_synced_threads: Set[str],
+    *,
+    quiet_ui: bool = False,
+) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
+    """Attach approved concept mockup images + visual brief on fresh chats, role threads, failovers, or account changes."""
+    concepts = getattr(state, "approved_design_concepts", None) or []
+    if not concepts or not msgs:
+        return msgs, None, None
+
+    scope_tag = f"{effective_model}:{role}"
+    thread_key = f"{scope_tag}:{effective_chat_url}" if (effective_chat_url and not is_new_chat) else ""
+    synced_keys = getattr(state, "_concept_synced_keys", None)
+    if thread_key:
+        if isinstance(synced_keys, set) and thread_key in synced_keys:
+            return msgs, None, None
+    elif not is_new_chat and scope_tag in local_synced_threads:
+        return msgs, None, None
+
+    from .visual_concept import format_approved_concepts_context, load_approved_concept_image_blocks
+
+    img_parts, _loaded_paths = load_approved_concept_image_blocks(state, max_images=4)
+    concept_summary = format_approved_concepts_context(concepts, max_chars=1400)
+    if not img_parts and not concept_summary:
+        return msgs, None, None
+
+    transfer_note = (
+        f"[APPROVED VISUAL DESIGN TRANSFER -> {str(effective_model).upper()}]\n"
+        "We are building this exact user-approved website/software/UI/dashboard shown in the attached "
+        "concept mockup image(s). Keep the approved visual style, layout, palette, and component hierarchy:\n"
+        f"{concept_summary}"
+    ).strip()
+
+    outgoing_msgs = [dict(m) if isinstance(m, dict) else m for m in msgs]
+    target_idx = -1
+    for i in range(len(outgoing_msgs) - 1, -1, -1):
+        if isinstance(outgoing_msgs[i], dict) and outgoing_msgs[i].get("role") == "user":
+            target_idx = i
+            break
+
+    if target_idx < 0:
+        content_parts: List[Dict[str, Any]] = [{"type": "text", "text": transfer_note}, *img_parts]
+        outgoing_msgs.append({"role": "user", "content": content_parts})
+    else:
+        cur_content = outgoing_msgs[target_idx].get("content")
+        if isinstance(cur_content, list):
+            existing_urls = {
+                str((p.get("image_url") or {}).get("url") or "")
+                for p in cur_content
+                if isinstance(p, dict) and p.get("type") == "image_url"
+            }
+            new_imgs = [
+                p for p in img_parts
+                if str((p.get("image_url") or {}).get("url") or "") not in existing_urls
+            ]
+            has_note = any(
+                isinstance(p, dict)
+                and p.get("type") == "text"
+                and "[APPROVED VISUAL DESIGN TRANSFER" in str(p.get("text") or "")
+                for p in cur_content
+            )
+            patched = list(cur_content)
+            if not has_note and transfer_note:
+                patched.append({"type": "text", "text": transfer_note})
+            patched.extend(new_imgs)
+            outgoing_msgs[target_idx]["content"] = patched
+        else:
+            cur_text = str(cur_content or "")
+            if "[APPROVED VISUAL DESIGN TRANSFER" in cur_text:
+                combined_text = cur_text
+            elif cur_text:
+                combined_text = f"{cur_text}\n\n{transfer_note}"
+            else:
+                combined_text = transfer_note
+            if img_parts:
+                outgoing_msgs[target_idx]["content"] = [
+                    {"type": "text", "text": combined_text},
+                    *img_parts,
+                ]
+            else:
+                outgoing_msgs[target_idx]["content"] = combined_text
+
+    if img_parts and not quiet_ui:
+        try:
+            R.print_info(
+                f"Transferred {len(img_parts)} approved concept image(s) + visual brief -> "
+                f"{R.friendly_model_name(effective_model)}"
+            )
+        except Exception:
+            pass
+    return outgoing_msgs, scope_tag, (thread_key or None)
+
+
 @serialized_turn
 def execute_agent_loop(
     user_input: str,
@@ -2711,6 +2833,8 @@ def execute_agent_loop(
 
         pending_direct_visual_tracker: Optional[VisualReviewTracker] = None
         pending_direct_visual_local_clean: Optional[bool] = None
+        local_concept_synced: Set[str] = set()
+        concept_synced_scope_this_turn: Optional[str] = None
 
         for round_num in range(max_rounds):
             rounds_used = round_num + 1
@@ -2888,8 +3012,24 @@ def execute_agent_loop(
                         )
                     sr.start_thinking()
                     try:
+                        will_be_new_chat = bool(
+                            failover_new_chat is True
+                            or pending_new_chat_override is True
+                            or getattr(state, "_force_new_chat_next", False)
+                            or not effective_chat_url
+                        )
+                        outgoing_stream_messages, _concept_scope, _concept_thread_key = _attach_approved_concepts_if_needed(
+                            messages,
+                            state,
+                            effective_model,
+                            role,
+                            effective_chat_url,
+                            will_be_new_chat,
+                            local_concept_synced,
+                            quiet_ui=quiet_ui,
+                        )
                         stream_kwargs: Dict[str, Any] = dict(
-                            messages=messages,
+                            messages=outgoing_stream_messages,
                             model=effective_model,
                             on_token=sr.feed,
                             on_thinking=sr.feed_thinking,
@@ -2934,6 +3074,13 @@ def execute_agent_loop(
                         if tools_override is not None:
                             stream_kwargs["tools_override"] = tools_override
                         response = _call_client_stream(client, stream_kwargs)
+                        if _concept_scope:
+                            local_concept_synced.add(_concept_scope)
+                            concept_synced_scope_this_turn = _concept_scope
+                        if _concept_thread_key:
+                            if not isinstance(getattr(state, "_concept_synced_keys", None), set):
+                                state._concept_synced_keys = set()
+                            state._concept_synced_keys.add(_concept_thread_key)
                         failover_new_chat = None
                         if pending_new_chat_override is True:
                             pending_new_chat_override = None
@@ -3184,16 +3331,18 @@ def execute_agent_loop(
                         _stop_stream_ui(sr)
                         err_low = str(e).lower()
                         is_editor_missing = "prompt editor not found" in err_low
+                        is_stream_stalled = "stream stalled on" in err_low
                         is_unsubmitted = (
                             "prompt remained unsubmitted in composer" in err_low
                             or "did not start or produce a text response" in err_low
                             or "dom relay timeout (" in err_low
                             or "picked up the prompt in" in err_low
                             or is_editor_missing
+                            or is_stream_stalled
                         )
                         if is_unsubmitted and composer_submit_retries < 2:
                             composer_submit_retries += 1
-                            if composer_submit_retries == 1 and not is_editor_missing:
+                            if composer_submit_retries == 1 and not (is_editor_missing or is_stream_stalled):
                                 retry_cap = min(active_budget, 7_200) if active_budget < MAX_WEB_PROMPT_CHARS else min(active_budget, 24_000)
                                 _compact_messages_for_web_limit(
                                     messages,
@@ -3318,6 +3467,12 @@ def execute_agent_loop(
                         elif hasattr(state, "role_threads"):
                             state.role_threads[role] = c_url
                         effective_chat_url = c_url
+                    cur_scope = f"{effective_model}:{role}"
+                    if concept_synced_scope_this_turn == cur_scope:
+                        if not isinstance(getattr(state, "_concept_synced_keys", None), set):
+                            state._concept_synced_keys = set()
+                        state._concept_synced_keys.add(f"{cur_scope}:{c_url}")
+                        concept_synced_scope_this_turn = None
 
             usage = response.get("usage", {})
             state.total_tokens_in += usage.get("prompt_tokens", 0)
@@ -4343,17 +4498,25 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
         )
         if should_orchestrate:
             from .subagents import run_orchestrated_turn
-            R.print_info("This certain prompt Requires Long Agentic Workflow, forcing web agents in deep thinking mode...")
-            R.print_info("Deep reasoning is requested in the role prompts; website thinking settings remain controlled by the selected web agent.")
+            from .visual_concept import maybe_run_visual_concept_gate
             appointment = analyze_prompt_skills(
                 user_input,
                 ai_skills=ai_skills,
                 ai_security_pass=ai_security_pass,
             )
+            vc_gate = maybe_run_visual_concept_gate(
+                user_input,
+                state,
+                client,
+                appointment=appointment,
+            )
+            eff_input = str(vc_gate.get("enriched_prompt") or user_input)
+            R.print_info("This certain prompt Requires Long Agentic Workflow, forcing web agents in deep thinking mode...")
+            R.print_info("Deep reasoning is requested in the role prompts; website thinking settings remain controlled by the selected web agent.")
             orch_kwargs: Dict[str, Any] = {"reasons": complexity.get("reasons") or []}
             if ai_skills or ai_security_pass is not None:
                 orch_kwargs["skill_appointment"] = appointment
-            return run_orchestrated_turn(user_input, state, client, **orch_kwargs)
+            return run_orchestrated_turn(eff_input, state, client, **orch_kwargs)
 
     exec_kwargs: Dict[str, Any] = {"allow_auto_decisions": False}
     if not free_mode and (ai_skills or ai_security_pass is not None):

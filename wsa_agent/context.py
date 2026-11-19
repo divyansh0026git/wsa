@@ -535,12 +535,18 @@ def build_context_packet(
     verified_files: Optional[Iterable[str]] = None,
     focus_files: Optional[Iterable[str]] = None,
     turn_digest: Optional[List[Dict[str, Any]]] = None,
+    design_concepts: Optional[List[Dict[str, Any]]] = None,
     extra_notes: str = "",
 ) -> str:
     """Build a crisp, token-frugal engineering context transfer packet."""
     sections: List[str] = [
         f"Workspace: {project_root} ({project_type})",
     ]
+    if design_concepts:
+        from .visual_concept import format_approved_concepts_context
+        vc_txt = format_approved_concepts_context(design_concepts)
+        if vc_txt:
+            sections.append(vc_txt)
     if decisions:
         sections.append("Pinned Decisions & Constraints:\n" + "\n".join(f"  • {d}" for d in decisions[-10:]))
     if plan_items:

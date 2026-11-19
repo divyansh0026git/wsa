@@ -353,6 +353,9 @@ class SessionState:
     multiagent_queue: List[str] = field(default_factory=list)
     multiagent_index: int = 0
     last_visual_review: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    approved_design_concepts: List[Dict[str, Any]] = field(default_factory=list)
+    visual_concept_mode: str = "auto"  # "auto" | "on" | "off"
+    _concept_synced_keys: Set[str] = field(default_factory=set, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_root, Path):
@@ -517,6 +520,8 @@ class SessionState:
         if not providers:
             removed = len(self.chat_urls) + (len(self.role_threads) if clear_roles else 0)
             self.chat_urls.clear()
+            if hasattr(self, "_concept_synced_keys") and isinstance(self._concept_synced_keys, set):
+                self._concept_synced_keys.clear()
             if clear_roles:
                 self.role_threads.clear()
             return removed
@@ -526,6 +531,9 @@ class SessionState:
             if str(p or "").strip()
         }
         for pk in targets:
+            if hasattr(self, "_concept_synced_keys") and isinstance(self._concept_synced_keys, set):
+                for sk in [k for k in list(self._concept_synced_keys) if k == pk or k.startswith(f"{pk}:")]:
+                    self._concept_synced_keys.discard(sk)
             if self.chat_urls.pop(pk, None):
                 removed += 1
             for k in [key for key in list(self.chat_urls.keys()) if key.startswith(f"{pk}:role:")]:
@@ -924,6 +932,14 @@ class SessionState:
                 summary_lines.append("Recent Tool Milestones: " + ", ".join(recent_ops[-6:]))
         if self.decisions:
             summary_lines.append("Pinned Decisions: " + " | ".join(self.decisions[-8:]))
+        if getattr(self, "approved_design_concepts", None):
+            c_tags = [
+                f"{str(c.get('title') or 'UI Concept')[:40]} ({', '.join(c.get('image_paths') or []) or 'web'})"
+                for c in self.approved_design_concepts[-6:]
+                if isinstance(c, dict)
+            ]
+            if c_tags:
+                summary_lines.append("Approved UI Concept: " + " ; ".join(c_tags))
         if self.plan_items:
             p_tags = [
                 f"{str(it.get('status') or 'pending').upper()}:{str(it.get('title') or it.get('id') or '')[:48]}"
@@ -997,6 +1013,8 @@ class SessionState:
             "multiagent_index": int(self.multiagent_index),
             "role_threads": dict(self.role_threads),
             "turn_digest": [dict(d) for d in self.turn_digest[-20:]],
+            "approved_design_concepts": [dict(c) for c in (getattr(self, "approved_design_concepts", None) or [])[-8:]],
+            "visual_concept_mode": getattr(self, "visual_concept_mode", "auto"),
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         payload = json.dumps(data, indent=2)
@@ -1098,6 +1116,11 @@ class SessionState:
         raw_roles = data.get("role_threads")
         self.role_threads = {str(k): str(v) for k, v in raw_roles.items() if v} if isinstance(raw_roles, dict) else {}
         self.turn_digest = [dict(d) for d in (data.get("turn_digest") or []) if isinstance(d, dict)][-20:]
+        raw_vc = data.get("approved_design_concepts")
+        self.approved_design_concepts = [dict(c) for c in raw_vc if isinstance(c, dict)][:8] if isinstance(raw_vc, list) else []
+        vcm = str(data.get("visual_concept_mode") or "auto").lower()
+        self.visual_concept_mode = vcm if vcm in ("auto", "on", "off") else "auto"
+        self._concept_synced_keys = set()
         raw_model = str(data.get("selected_model") or data.get("custom_model") or "").strip()
         if raw_model:
             if not self.set_model(raw_model):

@@ -1982,6 +1982,7 @@ def print_help() -> None:
         ]),
         ("Orchestration & QA", [
             ("/team [mode]", "Configure subagent pipeline (auto | on | off | single-chat | role-chats | dual | single)"),
+            ("/concept [mode]", "Toggle or view pre-planning UI visual concept mockups (auto | on | off | show | clear)"),
             ("/plan [task]", "Build or view a dependency-ordered execution plan"),
             ("/verify [scope]", "Run independent verifier checks on codebase/UI"),
             ("/skills [name|scan]", "Browse 18 bundled WSA skills, read a skill, or run SkillSpector scan"),

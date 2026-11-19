@@ -214,6 +214,7 @@ class WSAClient:
         self.api_key = api_key
         self.last_upstream_model: Optional[Dict] = None
         self.last_relay_timings: Optional[Dict] = None
+        self.last_generated_images: List[Dict[str, Any]] = []
         read_timeout = max(320.0, float(timeout or 300) + 20.0)
         self._client = httpx.Client(timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=30.0, pool=10.0))
 
@@ -242,6 +243,7 @@ class WSAClient:
         new_chat: Optional[bool] = None,
         tools_override: Optional[List[Dict]] = None,
         client_request_id: Optional[str] = None,
+        image_gen: bool = False,
     ) -> dict:
         """
         Stream a completion with live token delivery.
@@ -283,6 +285,8 @@ class WSAClient:
             payload["relay_id"] = relay_id
         if new_chat is not None:
             payload["new_chat"] = bool(new_chat)
+        if image_gen:
+            payload["image_gen"] = True
         if use_tools:
             payload["tools"] = tools_override if tools_override is not None else TOOL_DEFINITIONS
             payload["tool_choice"] = "auto"
@@ -290,11 +294,13 @@ class WSAClient:
         full_content = ""
         full_thinking = ""
         tool_calls_acc: dict = {}   # index → {id, type, function: {name, arguments}}
+        generated_images: List[Dict[str, Any]] = []
         finish_reason = "stop"
         usage = {}
         last_err = None
         self.last_upstream_model = None
         self.last_relay_timings = None
+        self.last_generated_images = []
         relay_timings: Optional[Dict] = None
         
         start_time = time.time()
@@ -309,6 +315,7 @@ class WSAClient:
             full_content = ""
             full_thinking = ""
             tool_calls_acc = {}
+            generated_images = []
             relay_timings = None
             chunk_count = 0
             thinking_chunks = 0
@@ -399,6 +406,12 @@ class WSAClient:
                         if isinstance(chunk.get("x_relay_timings"), dict):
                             relay_timings = dict(chunk["x_relay_timings"])
                             self.last_relay_timings = relay_timings
+                        if isinstance(chunk.get("x_generated_images"), list):
+                            generated_images = [
+                                dict(im) for im in chunk["x_generated_images"]
+                                if isinstance(im, dict) and (im.get("data_url") or im.get("url"))
+                            ]
+                            self.last_generated_images = list(generated_images)
                         if isinstance(chunk.get("x_relay_status"), dict) and callable(on_relay_status):
                             ev = dict(chunk["x_relay_status"])
                             ev_cid = str(ev.get("client_request_id") or "").strip()
@@ -533,6 +546,7 @@ class WSAClient:
             "usage": usage,
             "upstream_model": self.last_upstream_model,
             "relay_timings": relay_timings,
+            "generated_images": generated_images,
         }
 
     def check_connection(self) -> bool:

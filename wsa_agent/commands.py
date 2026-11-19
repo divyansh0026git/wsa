@@ -106,6 +106,8 @@ def handle_command(cmd_line: str, state: SessionState, client: Optional[Any] = N
         "/acc":       _cmd_account,
         "/free":      _cmd_free,
         "/team":      _cmd_team,
+        "/concept":   _cmd_concept,
+        "/concepts":  _cmd_concept,
         "/exit":      _cmd_exit,
         "/quit":      _cmd_exit,
         "/q":         _cmd_exit,
@@ -870,6 +872,39 @@ def _cmd_team(arg: str, state: SessionState) -> HandlerResult:
         R.print_success("Single active relay sequential execution mode enabled.")
     else:
         R.print_error("Usage: /team [auto|on|off|single-chat|role-chats|dual|single|status]")
+    return True, True
+
+
+def _cmd_concept(arg: str, state: SessionState) -> HandlerResult:
+    """Configure or inspect pre-planning UI visual concept mockups (`/concept [auto|on|off|show|clear]`)."""
+    raw = str(arg or "").strip()
+    low = raw.lower()
+    if not raw or low in ("status", "show"):
+        mode = getattr(state, "visual_concept_mode", "auto")
+        concepts = list(getattr(state, "approved_design_concepts", None) or [])
+        R.print_info(f"Visual concept gate: mode={mode} | locked concepts={len(concepts)}")
+        for idx, c in enumerate(concepts, 1):
+            if not isinstance(c, dict):
+                continue
+            imgs = ", ".join(c.get("image_paths") or []) or "(web preview only)"
+            R.print_info(f"  {idx}. {c.get('title', 'UI View')} [{c.get('provider', '?')}] -> {imgs}")
+        return True, True
+    if low in ("auto", "on", "off"):
+        state.visual_concept_mode = low
+        if hasattr(state, "auto_checkpoint"):
+            state.auto_checkpoint()
+        R.print_success(f"Visual concept gate mode -> {low}")
+        return True, True
+    if low == "clear":
+        state.approved_design_concepts = []
+        synced = getattr(state, "_concept_synced_keys", None)
+        if isinstance(synced, set):
+            synced.clear()
+        if hasattr(state, "auto_checkpoint"):
+            state.auto_checkpoint()
+        R.print_success("Cleared locked UI visual concepts from session.")
+        return True, True
+    R.print_error("Usage: /concept [auto | on | off | show | clear]")
     return True, True
 
 

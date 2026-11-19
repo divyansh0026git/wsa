@@ -131,3 +131,56 @@ def test_extension_background_lifecycle_in_node():
     script = Path(__file__).with_name("background_tab_relay.test.cjs")
     result = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_dom_relay_times_out_when_stream_stalls_despite_busy_heartbeats():
+    with relay._dom_relay_lock:
+        original = dict(relay._dom_relay)
+        relay._dom_relay.update(
+            relays={},
+            pending={},
+            cancelled_req_ids={},
+            recent_requests={},
+            completed_responses={},
+            sessions={},
+            browser_cmds={},
+            active_relay_id=None,
+        )
+    try:
+        client = {"client_id": "stall-test", "browser": "chrome", "has_chatgpt": 1}
+        relay.register_or_touch_relay(client)
+        clock = {"t": 1000.0}
+
+        def _fake_time():
+            return clock["t"]
+
+        def _busy_responder():
+            for _ in range(40):
+                job, _ = relay.dom_relay_poll_for_client(client)
+                if job:
+                    with relay._dom_relay_lock:
+                        item = relay._dom_relay["pending"].get(job["id"])
+                        if item is not None:
+                            # Simulate Stop-button still active with fresh busy/gen heartbeats, but zero new output
+                            clock["t"] = 1365.0
+                            item["last_busy_ts"] = clock["t"]
+                            item["last_generating_ts"] = clock["t"]
+                            item["last_progress_ts"] = clock["t"]
+                            item["last_content_ts"] = 0.0
+                            item["is_generating"] = True
+                            if item.get("wake_event"):
+                                item["wake_event"].set()
+                    return
+
+        t = threading.Thread(target=_busy_responder, daemon=True)
+        t.start()
+        with patch.object(relay.time, "time", side_effect=_fake_time):
+            with pytest.raises(RuntimeError) as exc_info:
+                list(relay.dom_relay_iter("stalled prompt", timeout=300.0, step=0.05, provider="chatgpt"))
+        t.join(timeout=2.0)
+        assert "stream stalled on" in str(exc_info.value).lower()
+        assert relay._dom_relay["cancelled_req_ids"]
+    finally:
+        with relay._dom_relay_lock:
+            relay._dom_relay.clear()
+            relay._dom_relay.update(original)

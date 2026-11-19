@@ -342,6 +342,7 @@ class WSAHandler(BaseHTTPRequestHandler):
                     model=req.get("model", ""),
                     chat_url=req.get("chat_url", ""),
                     client_id=str(req.get("client_id") or ""),
+                    generated_images=req.get("generated_images"),
                 )
                 self.send_json({"ok": ok})
             elif req_path == "/pending-progress":
@@ -645,6 +646,7 @@ class WSAHandler(BaseHTTPRequestHandler):
             "relay_prompt": relay_prompt,
             "fallback_prompt": fallback_prompt,
             "relay_images": relay_images,
+            "image_gen": bool(req.get("image_gen", False)),
             "new_chat": relay_new_chat,
             "hint_chat_url": relay_hint_chat_url,
             "relay_used": False,
@@ -674,6 +676,18 @@ class WSAHandler(BaseHTTPRequestHandler):
                 for event_type, delta in self._iter_events(prompt, model_cfg=model_cfg, file_refs=file_refs):
                     if event_type == "keepalive":
                         self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                        continue
+                    if event_type == "generated_images":
+                        img_chunk = {
+                            "id": cid, "object": "chat.completion.chunk",
+                            "created": int(time.time()), "model": model_name,
+                            "choices": [],
+                            "x_generated_images": delta,
+                        }
+                        self.wfile.write(
+                            f"data: {json.dumps(img_chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+                        )
                         self.wfile.flush()
                         continue
                     if event_type == "relay_status":

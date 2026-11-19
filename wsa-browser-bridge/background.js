@@ -1820,13 +1820,124 @@ async function cancelActiveRelayJob(job) {
   fastBurstUntil = Date.now() + 5000;
 }
 
+async function extractGeneratedImagesFromTab(tabId, provider) {
+  try {
+    const arr = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: (prov) => {
+        const containerSels = prov === "chatgpt"
+          ? ["[data-message-author-role='assistant']", "article[data-testid^='conversation-turn-']"]
+          : ["model-response", "message-content", ".response-container", "response-container"];
+        let scope = null;
+        for (const sel of containerSels) {
+          const nodes = Array.from(document.querySelectorAll(sel));
+          if (nodes.length) {
+            scope = nodes[nodes.length - 1];
+            break;
+          }
+        }
+        const roots = scope ? [scope] : [document.body];
+        const out = [];
+        const seen = new Set();
+        for (const root of roots) {
+          if (!root) continue;
+          const imgs = Array.from(root.querySelectorAll("img"));
+          for (const img of imgs) {
+            const src = String(img.currentSrc || img.src || "").trim();
+            if (!src || seen.has(src)) continue;
+            const w = Number(img.naturalWidth || img.width || 0);
+            const h = Number(img.naturalHeight || img.height || 0);
+            if (!img.complete || w < 180 || h < 180) continue;
+            if (/(?:avatar|profile|favicon|emoji|logo)/i.test((img.alt || "") + " " + (img.className || ""))) continue;
+            seen.add(src);
+            let dataUrl = "";
+            let mimeType = "image/webp";
+            try {
+              const scale = w > 1024 ? (1024 / w) : 1;
+              const cw = Math.max(1, Math.round(w * scale));
+              const ch = Math.max(1, Math.round(h * scale));
+              const canvas = document.createElement("canvas");
+              canvas.width = cw;
+              canvas.height = ch;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(img, 0, 0, cw, ch);
+                dataUrl = canvas.toDataURL("image/webp", 0.86);
+                if (!dataUrl || !dataUrl.startsWith("data:image/")) {
+                  dataUrl = canvas.toDataURL("image/png");
+                  mimeType = "image/png";
+                }
+              }
+            } catch {
+              dataUrl = "";
+            }
+            out.push({
+              data_url: dataUrl,
+              remote_url: dataUrl ? "" : src,
+              mime_type: mimeType,
+              alt: String(img.alt || "").slice(0, 180),
+              width: w,
+              height: h,
+            });
+            if (out.length >= 4) break;
+          }
+          if (out.length) break;
+        }
+        return out;
+      },
+      args: [provider],
+    });
+    const rawItems = Array.isArray(arr?.[0]?.result) ? arr[0].result : [];
+    const finalized = [];
+    for (let i = 0; i < rawItems.length && finalized.length < 4; i++) {
+      const item = rawItems[i];
+      if (!item) continue;
+      let dataUrl = String(item.data_url || "");
+      let mimeType = String(item.mime_type || "image/png");
+      if (!dataUrl && item.remote_url && /^https?:\/\//i.test(item.remote_url)) {
+        try {
+          const resp = await fetch(item.remote_url, { signal: AbortSignal.timeout(8000) });
+          if (resp.ok) {
+            const buf = await resp.arrayBuffer();
+            if (buf.byteLength > 0 && buf.byteLength <= 2_800_000) {
+              mimeType = (resp.headers.get("content-type") || "image/png").split(";")[0].trim() || "image/png";
+              const bytes = new Uint8Array(buf);
+              let bin = "";
+              for (let k = 0; k < bytes.length; k += 8192) {
+                bin += String.fromCharCode(...bytes.subarray(k, k + 8192));
+              }
+              dataUrl = `data:${mimeType};base64,${btoa(bin)}`;
+            }
+          }
+        } catch { /* ignore remote fetch error */ }
+      }
+      if (dataUrl.startsWith("data:image/") && dataUrl.length <= 3_900_000) {
+        finalized.push({
+          filename: `concept_${finalized.length + 1}.${mimeType.includes("webp") ? "webp" : "png"}`,
+          mime_type: mimeType,
+          data_url: dataUrl,
+          alt: String(item.alt || ""),
+          width: Number(item.width || 0),
+          height: Number(item.height || 0),
+        });
+      }
+    }
+    return finalized;
+  } catch {
+    return [];
+  }
+}
+
 async function completeActiveRelayJob(job, pollRes) {
   if ((await getStoredActiveJob())?.reqId !== job.reqId) return;
   const provider = job.provider || "gemini";
-  const responseText = typeof pollRes?.text === "string" ? pollRes.text : "";
+  const rawResponseText = typeof pollRes?.text === "string" ? pollRes.text : "";
   const thinkingText = typeof pollRes?.thinking === "string" ? pollRes.thinking : "";
   const modelName = typeof pollRes?.model === "string" ? pollRes.model : (job.modelBadge || "");
   const finalUrl = (await resolveFinalChatUrl(job.tabId, pollRes?.url || "", provider)) || pollRes?.url || "";
+  const generatedImages = job.imageGen ? await extractGeneratedImagesFromTab(job.tabId, provider) : [];
+  const responseText = rawResponseText || (generatedImages.length ? "[Generated UI concept image attached]" : "");
 
   if (!responseText) {
     await failActiveRelayJob(job, `${providerDisplayLabel(provider)} tab returned empty response`);
@@ -1866,6 +1977,7 @@ async function completeActiveRelayJob(job, pollRes) {
     thinking: thinkingText,
     model: modelName,
     chat_url: finalUrl,
+    ...(generatedImages.length ? { generated_images: generatedImages } : {}),
   };
     await chrome.storage.local.set({ activeRelayJob: job });
     return true;
@@ -1950,10 +2062,16 @@ async function pollActiveRelayJob() {
       venice: _venicePollTurnFn,
     };
     const lastProgAge = Date.now() - (Number(job.lastProgressAt) || Number(job.startedAt) || Date.now());
-    // Dynamic liveness timeout: never kill an actively thinking/generating turn on wall-clock duration.
-    // Fail only if the tab produces neither text/thinking progress nor an active Stop/streaming signal for >6 minutes.
-    if (lastProgAge > 360_000) {
-      await failActiveRelayJob(job, `Timeout waiting for ${provLabel} response. Ensure an active conversation tab is open.`);
+    const noContentAge = Date.now() - (Number(job.lastContentChangeAt) || Number(job.startedAt) || Date.now());
+    const hasEmittedOutput = Boolean((job.sentText && job.sentText.length) || (job.sentThinking && job.sentThinking.length));
+    // Total silence (zero text & zero thinking) breaks at 6m even if Stop button is stuck;
+    // active collapsed deep-thinking (e.g. Claude "Sleuthing") gets a 25m ceiling while streaming.
+    const noContentLimitMs = hasEmittedOutput ? 1_500_000 : 360_000;
+    if (lastProgAge > 360_000 || noContentAge > noContentLimitMs) {
+      const stallMsg = noContentAge > noContentLimitMs
+        ? `Stream stalled on ${provLabel}: zero new output for >${Math.round(noContentLimitMs / 60_000)}m despite generating indicator.`
+        : `Timeout waiting for ${provLabel} response. Ensure an active conversation tab is open.`;
+      await failActiveRelayJob(job, stallMsg);
       return;
     }
 
@@ -2019,7 +2137,11 @@ async function pollActiveRelayJob() {
     const isActivelyGenerating = Boolean(res.streaming || res.busy);
     const changed = curText !== (job.sentText || "") || curThink !== (job.sentThinking || "");
     job.isGenerating = isActivelyGenerating;
-    if (changed || isActivelyGenerating) {
+    if (changed) {
+      const nowMs = Date.now();
+      job.lastProgressAt = nowMs;
+      job.lastContentChangeAt = nowMs;
+    } else if (isActivelyGenerating) {
       job.lastProgressAt = Date.now();
     }
 
@@ -2302,7 +2424,7 @@ async function acquireAndStartRelay() {
       target: { tabId: tab.id },
       world,
       func: startFnMap[provider] || _domStartTurnFn,
-      args: [pending.id, promptToInject, pendingImages],
+      args: [pending.id, promptToInject, pendingImages, Boolean(pending.image_gen)],
     });
     if (startResArr?.[0]?.error) {
       throw new Error(startResArr[0].error.message || JSON.stringify(startResArr[0].error));
@@ -2326,6 +2448,7 @@ async function acquireAndStartRelay() {
       world,
       tabId: tab.id,
       provider,
+      imageGen: Boolean(pending.image_gen),
       clientId: ident.clientId,
       relayIdentity: ident,
       sessionId,
@@ -3958,7 +4081,7 @@ function _domInstallPageRuntimeFn() {
   return true;
 }
 
-async function _domStartTurnFn(reqId, prompt, images = []) {
+async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
   const rt = globalThis.__wsaRuntime;
   if (!rt || rt.version !== 2) {
     return { ok: false, error: "Page relay runtime missing" };
@@ -4001,6 +4124,42 @@ async function _domStartTurnFn(reqId, prompt, images = []) {
       ok: false,
       error: "Gemini prompt editor not found after 20s. Make sure gemini.google.com/app is open and signed in.",
     };
+  }
+
+  if (imageGen === true) {
+    try {
+      const isVis = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return (r.width > 0 || r.height > 0) && cs.display !== "none" && cs.visibility !== "hidden";
+      };
+      const clickToolOption = (re) => {
+        for (const el of document.querySelectorAll("button, [role='menuitem'], [role='menuitemradio'], [role='option']")) {
+          if (!isVis(el)) continue;
+          const lbl = `${el.innerText || el.textContent || ""} ${el.getAttribute("aria-label") || ""}`.replace(/\s+/g, " ").trim();
+          if (re.test(lbl)) {
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      };
+      const imgChipAlready = Array.from(document.querySelectorAll("button[aria-pressed='true'], chip, [class*='tool' i] button")).some((el) => {
+        const t = `${el.innerText || el.textContent || ""} ${el.getAttribute("aria-label") || ""}`;
+        return isVis(el) && /\b(?:create\s+images?|imagen|deselect\s+create\s+image)\b/i.test(t);
+      });
+      if (!imgChipAlready) {
+        if (!clickToolOption(/\b(?:create\s+images?|generate\s+images?|imagen)\b/i)) {
+          if (clickToolOption(/^\s*tools\s*$/i) || clickToolOption(/\btools\b/i)) {
+            await sleepMs(260);
+            clickToolOption(/\b(?:create\s+images?|generate\s+images?|imagen)\b/i);
+          }
+        }
+        await sleepMs(300);
+        inputEl = rt.findEditor() || inputEl;
+      }
+    } catch { /* best-effort Gemini Create image mode selection */ }
   }
 
   const selectedBadge = rt.readModePickerBadge() || initialBadge;
@@ -8044,7 +8203,7 @@ function _chatgptInstallPageRuntimeFn() {
   return true;
 }
 
-async function _chatgptStartTurnFn(reqId, prompt, images = []) {
+async function _chatgptStartTurnFn(reqId, prompt, images = [], _imageGen = false) {
   const u = globalThis.__wsaDomUtils;
   const rt = globalThis.__wsaChatgptRuntime;
   if (!u || u.version !== 3 || !rt || rt.version !== 3) {
