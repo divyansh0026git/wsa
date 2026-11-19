@@ -691,6 +691,67 @@ def test_agent_loop_fails_over_on_dom_relay_pickup_timeout(tmp_path):
     assert any("claude" in m for m in seen_models)
 
 
+def test_agent_loop_resets_to_fresh_chat_and_fails_over_on_editor_not_found(tmp_path):
+    from wsa_agent import agent
+    from wsa_agent.session import SessionState
+
+    # 1) First retry on missing prompt editor immediately resets to fresh chat (new_chat=True)
+    state1 = SessionState(project_root=tmp_path, selected_model="claude", permission_mode="auto", auto_approve=True)
+    state1.chat_urls["claude"] = "https://claude.ai/chat/stale-123"
+    seen_calls_1 = []
+
+    class FreshResetClient:
+        api_base = "http://127.0.0.1:8081/v1"
+        api_key = "sk-wsa"
+
+        def stream(self, **kwargs):
+            seen_calls_1.append(dict(kwargs))
+            if len(seen_calls_1) == 1:
+                raise ConnectionError(
+                    "API error: upstream error: DOM relay error: Claude prompt editor not found after 20s. "
+                    "Make sure claude.ai is open and signed in."
+                )
+            return {"content": "Recovered in fresh chat.", "tool_calls": []}
+
+    with mock.patch("time.sleep"):
+        res1 = agent.execute_agent_loop(
+            "Verify Task 4 build",
+            state1,
+            FreshResetClient(),
+            chat_url_override="https://claude.ai/chat/stale-123",
+            quiet_ui=True,
+        )
+    assert res1["ok"] is True
+    assert len(seen_calls_1) == 2
+    assert seen_calls_1[1].get("new_chat") is True
+
+    # 2) Repeated missing prompt editor on claude fails over across multiagent_queue to chatgpt
+    state2 = SessionState(project_root=tmp_path, selected_model="claude", permission_mode="auto", auto_approve=True)
+    state2.configure_multiagent(["claude", "chatgpt"])
+    seen_models_2 = []
+
+    class MultiagentEditorFailoverClient:
+        api_base = "http://127.0.0.1:8081/v1"
+        api_key = "sk-wsa"
+
+        def stream(self, **kwargs):
+            model = str(kwargs.get("model") or "")
+            seen_models_2.append(model)
+            if "claude" in model:
+                raise ConnectionError(
+                    "API error: upstream error: DOM relay error: Claude prompt editor not found after 20s. "
+                    "Make sure claude.ai is open and signed in."
+                )
+            return {"content": "Recovered on ChatGPT after Claude editor unavailable.", "tool_calls": []}
+
+    with mock.patch("time.sleep"):
+        res2 = agent.execute_agent_loop("Run Task 5 polish", state2, MultiagentEditorFailoverClient(), quiet_ui=True)
+    assert res2["ok"] is True
+    assert state2.model == "chatgpt"
+    assert any("chatgpt" in m for m in seen_models_2)
+
+
+
 
 
 

@@ -3183,15 +3183,17 @@ def execute_agent_loop(
                     except ConnectionError as e:
                         _stop_stream_ui(sr)
                         err_low = str(e).lower()
+                        is_editor_missing = "prompt editor not found" in err_low
                         is_unsubmitted = (
                             "prompt remained unsubmitted in composer" in err_low
                             or "did not start or produce a text response" in err_low
                             or "dom relay timeout (" in err_low
                             or "picked up the prompt in" in err_low
+                            or is_editor_missing
                         )
                         if is_unsubmitted and composer_submit_retries < 2:
                             composer_submit_retries += 1
-                            if composer_submit_retries == 1:
+                            if composer_submit_retries == 1 and not is_editor_missing:
                                 retry_cap = min(active_budget, 7_200) if active_budget < MAX_WEB_PROMPT_CHARS else min(active_budget, 24_000)
                                 _compact_messages_for_web_limit(
                                     messages,
@@ -3209,6 +3211,8 @@ def execute_agent_loop(
                                     )
                             else:
                                 effective_chat_url = None
+                                if isinstance(getattr(state, "chat_urls", None), dict):
+                                    state.chat_urls.pop(effective_model, None)
                                 failover_new_chat = True
                                 is_delta_continuation = False
                                 fresh_cap = min(active_budget, 5_000) if active_budget < MAX_WEB_PROMPT_CHARS else min(active_budget, 20_000)
