@@ -14,7 +14,7 @@ import re
 import threading
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .task_skills import (
     SkillAppointment,
@@ -190,7 +190,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "Guidelines:\n"
         "1. Review the Explorer Research & Context Packet carefully and inspect any remaining files, contracts, or edge cases before finalizing the architecture.\n"
         "2. Perform deep architectural thinking FIRST: before outputting the task JSON, write a concise, high-density `### Deep Architecture & File Blueprint` section covering:\n"
-        "   - File-by-File Topology & Contracts: every file's responsibility, exact exports/imports, schemas/types, DOM/API hooks, and shared state invariants.\n"
+        "   - File-by-File Topology & Shared Contract Matrix: every file's responsibility, exact exports/imports, schemas/types, DOM/API hooks, GLSL attributes/uniforms, and exact shared `--bg` = `scene.background` = `FogExp2` hex values.\n"
         "   - Backend, Debugging & Security Invariants: root-cause fix locations (plus sibling call sites), input/schema validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and lifecycle cleanup.\n"
         "   - Visual & UI Architecture: for normal (non-3D) websites, specify the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` text, intentional display+sans+mono typography, exposed hairline bento layout, and real interactive state transitions with zero AI slop). For 3D websites, specify unified `scene.background` + `FogExp2` + CSS `--bg` tonal continuity, anti-primitive multi-part sculptural/shader 3D architecture (never crude 'Saturn-ring + sphere' primitives), asymmetric 3D vs text safe-zones, and frosted surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
         "3. Decompose the build into a dependency-ordered DAG of well-scoped coding tasks with disjoint `owned_files` across parallelizable siblings. For UI/website builds, include a final visual art-direction critique & polish task (`\"ui\": true`) that runs `visual_inspect` and refines contrast/layout/shaders.\n"
@@ -203,7 +203,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "Role: WSA Coder — surgical, high-precision software, backend & UI implementation specialist.\n"
         "Guidelines:\n"
         "1. Strictly edit ONLY files in your assigned `owned_files` scope (and any designated test file), following the `Architecture & File Blueprint`.\n"
-        "2. Before modifying any existing file, run `get_file_outline` / `read_file(start_line, end_line)` first.\n"
+        "2. Mandatory Read-Before-Write Contract Check: BEFORE modifying or writing code, call `get_file_outline` / `read_file(start_line, end_line)` on target files AND upstream contract/dependency files (exports/imports, CSS `--bg`/tokens, and GLSL `attribute`/`uniform` names) so every integration matches verbatim.\n"
         "3. Use surgical `patch_file` with exact surrounding anchors/hunks for existing files — never leave `TODO`/`...` stubs. When fixing bugs, patch the root cause and all sibling call sites in scope. Write secure code by default (validated inputs, parameterized queries, `textContent` over `innerHTML`, `rel=\"noopener noreferrer\"`).\n"
         "4. Preserve existing imports, comments, style, and unrelated callers.\n"
         "5. After edits, run targeted verification (`pytest`, `py_compile`, `node --check`, `run_python`, or `visual_inspect` for UI) and fix any failure or visual/contrast defect before concluding.\n"
@@ -213,10 +213,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "Role: WSA Verifier — independent QA, runtime, and regression verification specialist.\n"
         "Guidelines:\n"
         "1. Do NOT modify code files (no `write_file`, `patch_file`, or `delete_file`).\n"
-        "2. Inspect modified files and execute real verification: test suites (`pytest`), syntax/compile checks "
-        "(`py_compile`, `node --check`), functional checks (`run_python`), and UI layout/interaction checks "
-        "(`visual_inspect` for zero-focus headless multi-viewport + Set-of-Mark visual verification, or "
-        "`browser_inspect` / `browser_interact` when an authenticated live tab is required).\n"
+        "2. Inspect modified files and execute real verification: **Cross-File Contract Audit** (`import`/export parity, GLSL `attribute`/`uniform` names vs JS callers, and CSS `--bg` vs WebGL `scene.background`/`fog`), test suites (`pytest`), syntax/compile checks (`py_compile`, `node --check`), functional checks (`run_python`), and UI layout/contrast/header-bleed checks (`visual_inspect` for zero-focus headless verification, or `browser_inspect` / `browser_interact` when an authenticated live tab is required).\n"
         "3. Check real test pass counts and observed command outputs (not merely exit code 0) and report exact file/line defects.\n"
         "4. End your response with a strict JSON verdict block:\n"
         '   ```json\n   {"verdict": "pass", "checks": ["pytest: 12 passed"], "failures": [], "summary": "..."}\n   ```\n'
@@ -379,6 +376,8 @@ def _clear_poisoned_thread_for_fresh_chat(state: SessionState, client: WSAClient
     )
     if hasattr(state, "active_chat_url"):
         state.active_chat_url = ""
+    if hasattr(state, "loaded_skills") and isinstance(state.loaded_skills, set):
+        state.loaded_skills.clear()
 
 
 def _has_budget_poison(res: Optional[Dict[str, Any]]) -> bool:
@@ -490,6 +489,115 @@ def _extract_architect_blueprint(raw_text: str) -> str:
         return ""
     lines = [ln.rstrip() for ln in without_json.splitlines() if ln.strip()]
     return "\n".join(lines)[:3200].strip()
+
+
+_SLICE_3D_RE = re.compile(r"(?:shader|hero|stage|scene|three|scroll|anim|canvas|webgl|\.glsl)", re.I)
+_SLICE_UI_RE = re.compile(r"(?:\.(?:html?|css|scss|tsx|jsx|vue|svelte)$|ui|style|token|layout|page|component)", re.I)
+_SLICE_BACKEND_RE = re.compile(r"(?:\.(?:py|go|rs|java|sql|rb|php)$|api|server|backend|db|auth|route|worker)", re.I)
+_CONTRACT_FILE_RE = re.compile(
+    r"(?:^|/)(?:design-spec[^/]*|tokens\.[^/]+|shaders?\.[^/]+|types?\.[^/]+|schemas?\.[^/]+|models?\.[^/]+|config\.[^/]+)$",
+    re.I,
+)
+
+
+def _select_stage_skills(
+    stage_role: str,
+    owned_files: Sequence[str],
+    appointment: SkillAppointment,
+    stage_label: str = "",
+) -> Tuple[str, ...]:
+    """Filter `appointment.skills` to the 2-4 skills directly relevant to `stage_role` and `owned_files`."""
+    pool = tuple(appointment.skills or ())
+    if not pool:
+        return ()
+    role_low = str(stage_role or "").strip().lower()
+    lbl_low = str(stage_label or "").strip().lower()
+    if role_low == "security":
+        sec = [s for s in (appointment.security_skills or ("security-audit", "semgrep-guardrails")) if s]
+        return tuple(dict.fromkeys(sec))[:4]
+    if role_low in ("explorer", "architect"):
+        pref = (
+            "frontend-design",
+            "unslop",
+            "impeccable",
+            "dream-loop",
+            "karpathy-skills",
+            "systematic-debugging",
+            "context7-docs",
+            "grill-and-git-guardrails",
+        )
+        picked = [s for s in pref if s in pool]
+        return tuple((picked or list(pool))[:4])
+    if role_low == "verifier":
+        picked = [s for s in ("verification-before-completion", "chrome-devtools-qa") if s in pool]
+        if "dream-loop" in pool:
+            picked.append("dream-loop")
+        return tuple((picked or list(pool))[:4])
+
+    # Coder slice scoping: narrow to relevant 3D, UI/CSS, and/or backend/debug buckets
+    paths = [str(p or "") for p in (owned_files or ())]
+    is_repair = lbl_low.startswith("repair#")
+    is_3d = any(_SLICE_3D_RE.search(p) for p in paths)
+    is_ui = any(_SLICE_UI_RE.search(p) for p in paths)
+    is_backend = any(_SLICE_BACKEND_RE.search(p) for p in paths)
+
+    buckets: List[List[str]] = []
+    if is_3d:
+        buckets.append([s for s in ("threejs-skills", "img2threejs", "dream-loop", "gsap-skills") if s in pool])
+    if is_ui:
+        buckets.append([s for s in ("impeccable", "unslop", "frontend-design", "web-design-guidelines") if s in pool])
+    if is_repair or is_backend or (not is_3d and not is_ui):
+        bk = [
+            s for s in (
+                "systematic-debugging",
+                "karpathy-skills",
+                "semgrep-guardrails",
+                "test-driven-development",
+                "verification-before-completion",
+                "context7-docs",
+            )
+            if s in pool
+        ]
+        if bk:
+            buckets.append(bk)
+
+    picked: List[str] = []
+    non_empty = [b for b in buckets if b]
+    if non_empty:
+        max_len = max(len(b) for b in non_empty)
+        for idx in range(max_len):
+            for b in non_empty:
+                if idx < len(b) and b[idx] not in picked:
+                    picked.append(b[idx])
+                    if len(picked) >= 4:
+                        return tuple(picked)
+    return tuple(picked[:4]) if picked else tuple(pool[:4])
+
+
+def _collect_upstream_contract_files(
+    task_item: Dict[str, Any],
+    all_tasks: Sequence[Dict[str, Any]],
+    all_written: Set[str],
+    owned: Sequence[str],
+) -> List[str]:
+    """Return sorted upstream dependency & shared contract files (tokens/shaders/schemas) not owned by this task."""
+    owned_set = {str(p).strip() for p in (owned or ()) if str(p).strip()}
+    dep_ids = set(task_item.get("depends_on") or ())
+    upstream: List[str] = []
+    seen: Set[str] = set()
+    for t in all_tasks:
+        if t.get("id") in dep_ids:
+            for p in t.get("owned_files") or ():
+                norm = str(p).strip()
+                if norm and norm not in owned_set and norm not in seen:
+                    seen.add(norm)
+                    upstream.append(norm)
+    for p in sorted(all_written):
+        norm = str(p).strip().replace("\\", "/")
+        if norm and norm not in owned_set and norm not in seen and _CONTRACT_FILE_RE.search(norm):
+            seen.add(norm)
+            upstream.append(norm)
+    return upstream[:8]
 
 
 _VERIFIER_FAIL_TRAIL_RE = re.compile(r"(?i)\b(fail(?:ed|ures?|s|ing)?|error(?:s|ed)?|broken|contradict\w*)\b")
@@ -611,28 +719,33 @@ def _make_role_event_cb(stage_label: str) -> Callable[[str, Dict[str, Any]], Non
 
 CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
     "explorer": (
-        "Workflow Phase — Explorer: For this stage of our task, focus strictly on thorough read-only codebase reconnaissance.\n"
-        "Stick to the read/search JSON shapes listed below (`read_file`, `get_file_outline`, `get_file_info`, `search_files`, `glob_files`, `list_dir`) rather than proposing edits.\n"
-        "Take the time to trace full call paths, shared state, interfaces, and edge cases across relevant files; state what you're inspecting, emit the ```tool_call JSON block(s), wait for real output, and once you have exact facts and line ranges, summarize your findings clearly."
+        "Workflow Phase — Explorer: For this stage of our task, perform deep upfront research and strictly read-only reconnaissance.\n"
+        "Start with `read_skill` (if skills are appointed), then stick to read/search JSON blocks (`read_file`, `get_file_outline`, `get_file_info`, `search_files`, `glob_files`, `list_dir`) rather than proposing edits.\n"
+        "Trace full call paths, schemas, input->state->failure bug dataflow + sibling call sites (`search_files`), shared state, and edge cases across relevant files. For normal (non-3D) websites lock an Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` surfaces, `1px rgba(255,255,255,0.08)` hairlines, `#F5F6F8` ink/CTA); for 3D sites lock seamless unified `scene.background` + `FogExp2` + CSS `--bg` continuity and sculptural non-primitive 3D forms (`#` ban 'Saturn-ring + sphere' clichés), then summarize your Deep Research & Reconnaissance Report clearly."
     ),
     "architect": (
-        "Workflow Phase — Architect: For this stage, think deeply and design a concrete, file-exact editing plan before writing code.\n"
-        "Inspect any files, contracts, or edge cases that are unclear using read-only ```tool_call blocks.\n"
-        "Decompose the request into a clear, dependency-ordered DAG of thorough, well-scoped tasks and output your final plan inside a ```json block containing a JSON array of objects:\n"
-        '   [{"id": "t1", "title": "...", "owned_files": ["path/a.py"], "depends_on": [], "acceptance": "Exact checkable outcome", "ui": false}]\n'
+        "Workflow Phase — Architect: For this stage, think deeply and write a concrete `### Deep Architecture & File Blueprint` FIRST before emitting the ```json task DAG.\n"
+        "Inspect any unclear files or contracts via read-only ```tool_call blocks, then in your `### Deep Architecture & File Blueprint` lock a **`Shared Contract Matrix`** covering: exact file-by-file responsibilities, exported/imported symbols, API/data schemas, GLSL `attribute`/`uniform` names vs JS callers, shared `--bg` = `scene.background` = `FogExp2` hex values, backend/root-cause + sibling-callsite bug targets, OWASP security boundaries, and Obsidian-Black/Crisp-White (`#090A0D`/`#F5F6F8`) or unified-fog frosted-overlay (`backdrop-filter: blur(16px)`, `alpha>=0.78`) UI rules.\n"
+        "Decompose the build into a dependency-ordered DAG of thorough, well-scoped tasks and output the JSON array inside ```json:\n"
+        '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], "acceptance": "Exact checkable outcome", "ui": false}]\n'
         "Guidelines:\n"
         "1. Every coding task must declare explicit `owned_files` (relative workspace paths to create or edit).\n"
-        "2. For full-suite verification or packaging tasks, list the key test files or modules being validated in `owned_files`.\n"
-        "3. Keep `owned_files` disjoint across sibling independent tasks whenever possible.\n"
-        "4. Ground every task in real workspace paths and do not emit code edits in this phase."
+        "2. Keep `owned_files` disjoint across sibling independent tasks whenever possible, and include a final visual art-direction polish task (`\"ui\": true`) for UI/website builds.\n"
+        "3. Ground every task in real workspace paths and do not emit code edits in this phase."
     ),
     "coder": (
-        "Workflow Phase — Coder: For this stage, think deeply through dependencies and edge cases before applying exact surgical code changes via my local `wsa` CLI.\n"
-        "Inspect every target region not yet read together before patching, lead with a clear diagnosis + ```tool_call block (`patch_file` for existing files; `write_file` for new/small files) preserving unrelated comments/behavior, and follow up with `run_command` / `run_python` / `visual_inspect` blocks until thoroughly verified."
+        "Workflow Phase — Coder: Follow the `Architecture & File Blueprint` and perform a mandatory Read-Before-Write Contract Check BEFORE editing via ```tool_call JSON blocks for my local `wsa` CLI.\n"
+        "Always `read_file` upstream dependency files (exports/imports, CSS `--bg`/tokens, and GLSL `attribute`/`uniform` interfaces) plus every target region before writing code; use `patch_file` (`old_string`/`new_string` or `hunks`) for existing files and `write_file` for new/small files without `TODO`/`...` stubs. Fix root causes AND sibling call sites sharing the same bug, write secure-by-default code (`textContent`, validated inputs, parameterized SQL, `rel=\"noopener noreferrer\"`), and run `pytest`/`node --check`/`visual_inspect` until verified cleanly."
+    ),
+    "security": (
+        "Workflow Phase — Security Fixer: Perform adversarial web & application security auditing and surgical remediation.\n"
+        "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first before auditing or patching.\n"
+        "2. Inspect all newly created/modified HTML, CSS, JS, TS, Python, API, and server files for real exploit paths: XSS (`innerHTML`/`dangerouslySetInnerHTML`), unsafe `href`/`src` schemes, missing `rel=\"noopener noreferrer\"`, CSRF/CORS/CSP/headers, auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"
+        "3. Disprove false positives adversarially, patch confirmed vulnerabilities surgically via `patch_file` preserving UI craft, and re-verify cleanly."
     ),
     "verifier": (
-        "Workflow Phase — Verifier: For this stage, independently and thoroughly check our implemented changes and look for subtle bugs, edge cases, or regressions.\n"
-        "Avoid source-modification blocks (`patch_file`/`write_file`) here; explain what you're checking followed by read/search, `run_command`/`run_python`, or `visual_inspect` ```tool_call JSON block(s) — wait for real output, and report an honest pass/fail verdict citing only directly observed results."
+        "Workflow Phase — Verifier: Independently and thoroughly audit our implemented changes — run real tests, cross-file contract checks, and UI/runtime inspections.\n"
+        "Avoid source-modification blocks (`patch_file`/`write_file`) here; execute read/search **Cross-File Contract Audit** (verifying `import`/export parity, GLSL `attribute`/`uniform` names vs JS callers, and CSS `--bg` vs WebGL `scene.background`/`fog`), `run_command`/`run_python` tests, and `visual_inspect` (hero + mid-scroll contrast/header-bleed/layout checks), wait for real outputs, and report an honest JSON pass/fail verdict citing only directly observed results."
     ),
 }
 
@@ -1101,9 +1214,21 @@ def run_orchestrated_turn(
     if appointment.skills or appointment.requires_security_pass:
         R.print_skill_appointment(appointment)
 
+    loaded_by_chat: Dict[Tuple[str, str], Set[str]] = {}
+
+    def _stage_chat_key(stage_role: str, sess_ov: Optional[str], prov: str) -> str:
+        c_url = state.get_role_chat_url(stage_role, model=prov) if hasattr(state, "get_role_chat_url") else ""
+        return str(c_url or sess_ov or stage_role)
+
     def _run_stage(**kwargs):
         stage_role = str(kwargs.get("role") or "")
         stage_label = str(kwargs.get("label") or "")
+        owned_arg = list(kwargs.get("owned_files") or ())
+        sess_ov = kwargs.get("session_id_override")
+        is_fresh = bool(kwargs.get("new_chat_override") is True or getattr(state, "_force_new_chat_next", False))
+        cur_prov = str(getattr(state, "model", None) or getattr(state, "selected_model", "gemini") or "gemini")
+        cur_key = (cur_prov, _stage_chat_key(stage_role, sess_ov, cur_prov))
+        already_in_chat = set() if is_fresh else set(loaded_by_chat.get(cur_key, set()))
         if stage_role == "security":
             sec_appt = SkillAppointment(
                 skills=appointment.security_skills or ("security-audit", "semgrep-guardrails"),
@@ -1113,35 +1238,41 @@ def run_orchestrated_turn(
             )
             directive = skill_read_directive(
                 sec_appt,
-                already_loaded=getattr(state, "loaded_skills", ()),
+                already_loaded=already_in_chat,
                 include_security_note=False,
             )
             if directive:
                 kwargs["prompt"] += "\n\n" + directive
-            return _run_role_agent(**kwargs)
-
-        stage_skills = appointment.skills
-        if stage_label.startswith("repair#"):
-            extras = [s for s in ("systematic-debugging", "verification-before-completion") if s not in stage_skills]
-            if extras:
-                stage_skills = (*stage_skills, *extras)
-        stage_appt = SkillAppointment(
-            skills=stage_skills,
-            categories=appointment.categories,
-            matched_cues=appointment.matched_cues,
-            requires_security_pass=appointment.requires_security_pass,
-            security_skills=appointment.security_skills,
-            ai_recommended=appointment.ai_recommended,
-            is_website_build=appointment.is_website_build,
-        )
-        directive = skill_read_directive(
-            stage_appt,
-            already_loaded=getattr(state, "loaded_skills", ()),
-            include_security_note=stage_role in ("architect", "coder"),
-        )
-        if directive:
-            kwargs["prompt"] += "\n\n" + directive
-        return _run_role_agent(**kwargs)
+            stage_res = _run_role_agent(**kwargs)
+        else:
+            stage_skills = _select_stage_skills(stage_role, owned_arg, appointment, stage_label=stage_label)
+            if stage_label.startswith("repair#"):
+                extras = [s for s in ("systematic-debugging", "verification-before-completion") if s not in stage_skills]
+                if extras:
+                    stage_skills = (*stage_skills, *extras)[:4]
+            stage_appt = SkillAppointment(
+                skills=stage_skills,
+                categories=appointment.categories,
+                matched_cues=appointment.matched_cues,
+                requires_security_pass=appointment.requires_security_pass,
+                security_skills=appointment.security_skills,
+                ai_recommended=appointment.ai_recommended,
+                is_website_build=appointment.is_website_build,
+            )
+            directive = skill_read_directive(
+                stage_appt,
+                already_loaded=already_in_chat,
+                include_security_note=stage_role in ("architect", "coder"),
+            )
+            if directive:
+                kwargs["prompt"] += "\n\n" + directive
+            stage_res = _run_role_agent(**kwargs)
+        res_prov = str((stage_res or {}).get("model") or getattr(state, "model", cur_prov) or cur_prov)
+        res_chat = str((stage_res or {}).get("chat_url") or _stage_chat_key(stage_role, sess_ov, res_prov))
+        skills_read = (stage_res or {}).get("skills_read") or ()
+        if skills_read:
+            loaded_by_chat.setdefault((res_prov, res_chat), set()).update(skills_read)
+        return stage_res
 
     def _run_stage_with_recovery(
         stage_args: Dict[str, Any],
@@ -1353,6 +1484,15 @@ def run_orchestrated_turn(
                     + f"Acceptance criteria: {task_item.get('acceptance', '')}"
                 ),
             )
+            upstream_files = _collect_upstream_contract_files(task_item, tasks, all_written, owned)
+            upstream_line = (
+                "- Upstream Contract Files (MANDATORY: read_file their exports, CSS tokens like --bg, GLSL attributes/uniforms, "
+                "and option signatures BEFORE writing code so everything matches 100% verbatim): "
+                + ", ".join(upstream_files)
+                + "\n"
+                if upstream_files
+                else ""
+            )
             desc_text = f"Task Description:\n{task_item['description']}\n\n" if task_item.get("description") else ""
             task_guidance = (
                 "Think deeply about edge cases and dependencies before editing. Implement any requested deliverables "
@@ -1366,6 +1506,7 @@ def run_orchestrated_turn(
                 f"{desc_text}"
                 f"Overall User Request:\n{user_input[:req_cap]}\n\n"
                 f"Strict Scope:\n- Owned files: {', '.join(owned) if owned else 'only files required for this task'}\n"
+                f"{upstream_line}"
                 f"- Acceptance: {task_item.get('acceptance', 'Passes verification checks cleanly')}\n\n"
                 f"{task_guidance}"
             )
@@ -1632,6 +1773,7 @@ def run_orchestrated_turn(
                 f"Verify all work completed for the user request:\n{user_input[:4000]}\n\n"
                 f"Modified files to verify: {', '.join(written_list) if written_list else '(check workspace)'}\n"
                 "Run tests (`pytest`), syntax/compile checks, runtime checks, and inspect UI if applicable. "
+                "Also check cross-file contract parity (matching exports/imports, GLSL attribute/uniform names vs JS callers, and CSS --bg vs WebGL scene.background/fog if 3D). "
                 'Conclude with a JSON block: {"verdict":"pass","checks":["test name: result"],"failures":[],"summary":"result"}. '
                 'checks must be an array of non-empty strings; failures must be an array of objects with an issue string. '
                 'Use verdict "fail" and describe any failures honestly. ' + format_feedback

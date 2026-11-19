@@ -224,11 +224,36 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
         var cBf = ccs.backdropFilter || ccs.webkitBackdropFilter || 'none';
         if (cBf && cBf !== 'none') hasHBlur = true;
       }
-      if (maxA < 0.70 && !hasHBlur) {
+      if (maxA < 0.78 || (maxA < 0.90 && !hasHBlur)) {
         headerBleeds.push(cssLabel(hdr) + ' (transparent sticky header bleeds scrolled content)');
       }
     });
   }
+
+  var textBoxes = [];
+  document.querySelectorAll('h1,h2,h3,p,a,dt,dd,th,td').forEach(function(el) {
+    if (textBoxes.length >= 24) return;
+    var cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.1) return;
+    var cls = typeof el.className === 'string' ? el.className : '';
+    if (/(?:^|\s)(?:sr-only|visually-hidden|screen-reader-text)(?:\s|$)/i.test(cls)) return;
+    var r = el.getBoundingClientRect();
+    if (r.width < 16 || r.height < 10 || r.bottom <= 4 || r.top >= vh - 4) return;
+    var txt = String(el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (txt.length < 3) return;
+    var fg = parseRgba(cs.color);
+    if (fg[3] < 0.2) return;
+    textBoxes.push({
+      selector: cssLabel(el),
+      text: txt.slice(0, 28),
+      fg: [Math.round(fg[0]), Math.round(fg[1]), Math.round(fg[2])],
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      fontSize: Math.round(parseFloat(cs.fontSize) || 16)
+    });
+  });
 
   var marks = [];
   var occludedControls = [];
@@ -308,6 +333,7 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
     clipped_texts: clippedTexts.slice(0, 8),
     low_contrast_texts: lowContrastTexts.slice(0, 6),
     header_bleeds: headerBleeds.slice(0, 3),
+    text_boxes: textBoxes.slice(0, 24),
     occluded_controls: occludedControls.slice(0, 8),
     marks: marks
   };
@@ -942,6 +968,159 @@ def analyze_screenshot_pixels(png_bytes: bytes) -> Dict[str, Any]:
         return {"ok": False, "blank": False, "unique_buckets": -1, "std_luma": -1.0}
 
 
+def _audit_rendered_pixels_for_contrast(
+    png_bytes: bytes,
+    audit: Dict[str, Any],
+    *,
+    tile_tag: str = "",
+) -> None:
+    """Measure true WCAG contrast and canvas dark/light splits from rendered PNG pixels behind DOM text boxes."""
+    if not png_bytes or not isinstance(audit, dict):
+        return
+    try:
+        from PIL import Image  # type: ignore
+
+        def _ch(v: float) -> float:
+            s = max(0.0, min(255.0, float(v))) / 255.0
+            return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+
+        def _rel_luma(rgb: Tuple[int, int, int]) -> float:
+            return 0.2126 * _ch(rgb[0]) + 0.7152 * _ch(rgb[1]) + 0.0722 * _ch(rgb[2])
+
+        def _wcag_contrast(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> float:
+            la, lb = _rel_luma(a), _rel_luma(b)
+            hi, lo = (la, lb) if la >= lb else (lb, la)
+            return (hi + 0.05) / (lo + 0.05)
+
+        with Image.open(io.BytesIO(png_bytes)) as raw_im:
+            im = raw_im.convert("RGB")
+            img_w, img_h = im.size
+            if img_w < 8 or img_h < 8:
+                return
+            px = im.load()
+
+            vp = audit.get("viewport") or {}
+            vw = float(vp.get("width") or img_w)
+            vh = float(vp.get("height") or img_h)
+            if vw <= 0 or vh <= 0:
+                return
+            scale = img_w / vw
+
+            canvases = audit.get("canvases") or ()
+            has_large_canvas = any(
+                isinstance(c, dict)
+                and float(c.get("width") or 0) >= vw * 0.55
+                and float(c.get("height") or 0) >= vh * 0.55
+                for c in canvases
+            )
+
+            existing_lc: List[str] = list(audit.get("low_contrast_texts") or [])
+            text_boxes = audit.get("text_boxes") or ()
+            for tb in text_boxes:
+                if len(existing_lc) >= 6:
+                    break
+                if not isinstance(tb, dict):
+                    continue
+                fg_raw = tb.get("fg")
+                if not isinstance(fg_raw, (list, tuple)) or len(fg_raw) < 3:
+                    continue
+                fg_rgb = (int(fg_raw[0]), int(fg_raw[1]), int(fg_raw[2]))
+                x0 = max(0, int(float(tb.get("x") or 0) * scale))
+                y0 = max(0, int(float(tb.get("y") or 0) * scale))
+                x1 = min(img_w - 1, int((float(tb.get("x") or 0) + float(tb.get("w") or 0)) * scale))
+                y1 = min(img_h - 1, int((float(tb.get("y") or 0) + float(tb.get("h") or 0)) * scale))
+                if x1 - x0 < 4 or y1 - y0 < 4:
+                    continue
+
+                raw_samples: List[Tuple[int, int, int]] = []
+                samples: List[Tuple[int, int, int]] = []
+                for gy in range(5):
+                    py = min(img_h - 1, max(0, y0 + 1 + ((y1 - y0 - 2) * gy) // 4))
+                    for gx in range(8):
+                        pix_x = min(img_w - 1, max(0, x0 + 1 + ((x1 - x0 - 2) * gx) // 7))
+                        r, g, b = px[pix_x, py][:3]
+                        raw_samples.append((r, g, b))
+                        if abs(r - fg_rgb[0]) + abs(g - fg_rgb[1]) + abs(b - fg_rgb[2]) >= 45:
+                            samples.append((r, g, b))
+                # If nearly every pixel matches `fg`, text and background are virtually indistinguishable (~1:1).
+                chosen_samples = samples if len(samples) >= max(3, len(raw_samples) // 3) else raw_samples
+                if len(chosen_samples) < 3:
+                    continue
+
+                ratios = sorted(((_wcag_contrast(fg_rgb, bg), bg) for bg in chosen_samples), key=lambda item: item[0])
+                median_ratio, median_bg = ratios[len(ratios) // 2]
+                q20_ratio, q20_bg = ratios[max(0, min(len(ratios) - 1, int(len(ratios) * 0.20)))]
+                font_sz = int(tb.get("fontSize") or 16)
+                med_thresh = 2.5 if font_sz >= 28 else 3.0
+
+                rep_ratio: Optional[float] = None
+                rep_bg: Tuple[int, int, int] = median_bg
+                if median_ratio < med_thresh:
+                    rep_ratio, rep_bg = median_ratio, median_bg
+                elif has_large_canvas and q20_ratio < 2.2:
+                    rep_ratio, rep_bg = q20_ratio, q20_bg
+
+                if rep_ratio is not None:
+                    bg_hex = f"{rep_bg[0]:02x}{rep_bg[1]:02x}{rep_bg[2]:02x}"
+                    txt_prev = str(tb.get("text") or "")[:24]
+                    msg = f'{tile_tag}{tb.get("selector", "el")} (rendered contrast {rep_ratio:.1f}:1 on #{bg_hex} "{txt_prev}")'
+                    if msg not in existing_lc:
+                        existing_lc.append(msg)
+
+            if existing_lc:
+                audit["low_contrast_texts"] = existing_lc[:6]
+
+            if has_large_canvas and text_boxes:
+                def _band_median_luma(y_lo_frac: float, y_hi_frac: float) -> float:
+                    vals: List[float] = []
+                    y_a = max(0, int(img_h * y_lo_frac))
+                    y_b = min(img_h - 1, max(y_a + 1, int(img_h * y_hi_frac)))
+                    x_a = max(0, int(img_w * 0.10))
+                    x_b = min(img_w - 1, max(x_a + 1, int(img_w * 0.90)))
+                    for ry in range(4):
+                        py = y_a + ((y_b - y_a) * ry) // 3
+                        for rx in range(12):
+                            pix_x = x_a + ((x_b - x_a) * rx) // 11
+                            r, g, b = px[pix_x, py][:3]
+                            vals.append(0.2126 * r + 0.7152 * g + 0.0722 * b)
+                    vals.sort()
+                    return vals[len(vals) // 2] if vals else 128.0
+
+                upper_med = _band_median_luma(0.12, 0.24)
+                lower_med = _band_median_luma(0.65, 0.82)
+                dark_band = ""
+                if upper_med < 28.0 and lower_med > 165.0:
+                    dark_band = "upper"
+                elif lower_med < 28.0 and upper_med > 165.0:
+                    dark_band = "lower"
+
+                if dark_band:
+                    has_dark_text_conflict = False
+                    for tb in text_boxes:
+                        if not isinstance(tb, dict):
+                            continue
+                        fg_raw = tb.get("fg")
+                        if not isinstance(fg_raw, (list, tuple)) or len(fg_raw) < 3:
+                            continue
+                        tb_y = float(tb.get("y") or 0)
+                        tb_h = float(tb.get("h") or 0)
+                        in_band = (tb_y < vh * 0.35) if dark_band == "upper" else (tb_y + tb_h > vh * 0.55)
+                        if in_band and _rel_luma((int(fg_raw[0]), int(fg_raw[1]), int(fg_raw[2]))) < 0.20:
+                            has_dark_text_conflict = True
+                            break
+                    if has_dark_text_conflict:
+                        warnings = list(audit.get("canvas_palette_warnings") or [])
+                        warn = (
+                            f"{tile_tag}Harsh dark/light canvas split (upper luma={upper_med:.0f} vs "
+                            f"lower luma={lower_med:.0f}) conflicts with dark text — match scene.background, FogExp2, and CSS --bg"
+                        )
+                        if warn not in warnings:
+                            warnings.append(warn)
+                        audit["canvas_palette_warnings"] = warnings[:3]
+    except Exception:
+        return
+
+
 def build_pixel_diff_tile(prev_png: bytes, curr_png: bytes) -> Tuple[Optional[bytes], float]:
     """Return `(diff_png_bytes, changed_pct)` highlighting pixels whose RGB delta exceeds threshold."""
     if not prev_png or not curr_png:
@@ -1127,6 +1306,7 @@ def capture_visual_inspection(
                     clean_png = cdp.screenshot_png(full_page=bool(full_page))
                 else:
                     clean_png = display_png
+                _audit_rendered_pixels_for_contrast(clean_png, audit)
                 pix = analyze_screenshot_pixels(clean_png)
                 if idx == 0:
                     primary_png = clean_png
@@ -1138,17 +1318,19 @@ def capture_visual_inspection(
                     cdp.evaluate(f"(function(){{ window.scrollTo(0, {mid_y}); return window.scrollY; }})()")
                     cdp.drain_events(200)
                     mid_audit = cdp.evaluate(f"{_AUDIT_AND_SOM_JS}(false, 12, {int(vw)})") or {}
+                    mid_png = cdp.screenshot_png(full_page=False)
+                    _audit_rendered_pixels_for_contrast(mid_png, mid_audit, tile_tag="mid-scroll: ")
                     if isinstance(audit, dict) and isinstance(mid_audit, dict):
                         for a_key, cap_n in (
                             ("low_contrast_texts", 6),
                             ("header_bleeds", 3),
+                            ("canvas_palette_warnings", 3),
                             ("clipped_texts", 8),
                             ("occluded_controls", 8),
                         ):
                             merged = list(dict.fromkeys([*(audit.get(a_key) or []), *(mid_audit.get(a_key) or [])]))
                             if merged:
                                 audit[a_key] = merged[:cap_n]
-                    mid_png = cdp.screenshot_png(full_page=False)
                     tiles.append((f"{vname.upper()} MID-SCROLL {vw}x{vh}", mid_png))
                     cdp.evaluate("(function(){ window.scrollTo(0, 0); return true; })()")
                     cdp.drain_events(80)
@@ -1250,6 +1432,8 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
             status_flags.append(f"LOW_CONTRAST={len(audit['low_contrast_texts'])}")
         if audit.get("header_bleeds"):
             status_flags.append(f"HEADER_BLEED={len(audit['header_bleeds'])}")
+        if audit.get("canvas_palette_warnings"):
+            status_flags.append("CANVAS_PALETTE_MISMATCH")
         if status_flags:
             passed = False
         flag_str = " | ".join(status_flags) if status_flags else "layout clean"
@@ -1272,6 +1456,8 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
             lines.append(f"  Low contrast / canvas overlay: {'; '.join(audit['low_contrast_texts'][:4])}")
         if audit.get("header_bleeds"):
             lines.append(f"  Header bleed: {'; '.join(audit['header_bleeds'][:3])}")
+        if audit.get("canvas_palette_warnings"):
+            lines.append(f"  Canvas/palette mismatch: {'; '.join(audit['canvas_palette_warnings'][:2])}")
         marks = audit.get("marks") or []
         if marks:
             lines.append("  Set-of-Mark legend:")

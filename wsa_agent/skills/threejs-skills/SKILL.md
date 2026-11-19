@@ -15,7 +15,7 @@ Inspired by `CloudAI-X/threejs-skills`. Prevents outdated Three.js APIs, washed-
 - **Color Management**: Use `renderer.outputColorSpace = THREE.SRGBColorSpace` (NEVER legacy `outputEncoding` / `sRGBEncoding`) and set `texture.colorSpace = THREE.SRGBColorSpace` on color/albedo maps (keep normal/roughness/metalness maps linear).
 - **Tone Mapping & Exposure**: Set `renderer.toneMapping = THREE.ACESFilmicToneMapping` and calibrate `renderer.toneMappingExposure` (`0.95`–`1.25`) so highlights roll off smoothly without blowing out whites.
 - **Physical Lighting**: Modern Three.js uses physically based intensities — pair `RoomEnvironment` / `PMREMGenerator` environment map (`scene.environment`) with directional key light (`intensity: 2.0–3.5`, `castShadow: true`, tuned shadow camera frustum + `shadow.bias = -0.0004`, `shadow.normalBias = 0.02`) and subtle hemisphere/rim light.
-- **Atmospheric & Horizon Continuity**: Never leave a raw horizon seam where a bright floor mesh abruptly meets a black sky behind UI text. Bind `scene.background`, `scene.fog = new THREE.FogExp2(bgHex, density)`, radial edge falloff on any terrain/floor shader, and CSS `--bg` to the same cohesive tonal family.
+- **Atmospheric Continuity (`FogExp2`)**: Always match `scene.background`, `scene.fog = new THREE.FogExp2(bgHex, density)`, terrain edge fade, and CSS `--bg` — never leave a harsh black-sky/bright-floor split behind UI copy.
 - **Pixel Ratio & Sizing**: Always clamp `renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))` and size from the container's `ResizeObserver` (`clientWidth` / `clientHeight`) with fallback non-zero dimensions so the canvas never collapses to 0x0.
 
 ## Custom GLSL Shaders & Post-Processing

@@ -603,8 +603,80 @@ def _parse_sections(body: str) -> List[Tuple[str, str]]:
     return sections
 
 
+_PRIORITY_SECTION_RE = re.compile(
+    r"(?:guardrail|anti[- ]?slop|do\s+not|iron\s+law|checklist|architecture|colorize|critical|security|"
+    r"phase|pass|rule|principle|critique|core|workflow)",
+    re.I,
+)
+
+
+def _compact_section_lines(raw_text: str) -> List[str]:
+    """Keep structural lines, bullets/steps, fenced blocks, and the first prose line per section."""
+    kept: List[str] = []
+    in_fence = False
+    prose_count = 0
+    for ln in raw_text.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("```"):
+            in_fence = not in_fence
+            kept.append(ln.rstrip())
+            continue
+        if in_fence or s.startswith("#") or re.match(r"^(?:[-*+]|\d+\.|\[[ xX]\])\s+", s):
+            kept.append(ln.rstrip())
+        elif prose_count < 1:
+            kept.append(ln.rstrip())
+            prose_count += 1
+    return kept
+
+
+def _fit_section_to_budget(heading: str, lines: List[str], budget: int) -> Tuple[str, bool]:
+    """Fit one section into `budget` chars, balancing rules proportionally so trailing items survive."""
+    body_lines = list(lines)
+    if heading and body_lines and heading != "Overview":
+        sec_text = f"## {heading}\n" + "\n".join(body_lines)
+    else:
+        sec_text = "\n".join(body_lines)
+    if len(sec_text) <= budget:
+        return sec_text, False
+
+    prefix = f"## {heading}\n" if (heading and heading != "Overview") else ""
+    avail = max(64, budget - len(prefix))
+    if not body_lines:
+        return prefix.rstrip(), True
+
+    sep_cost = max(0, len(body_lines) - 1)
+    per_line_cap = max(28, int((avail - sep_cost) / len(body_lines)))
+    condensed: List[str] = []
+    for ln in body_lines:
+        if len(ln) <= per_line_cap:
+            condensed.append(ln)
+        elif per_line_cap >= 72:
+            head_n = int((per_line_cap - 3) * 0.62)
+            tail_n = max(16, per_line_cap - 3 - head_n)
+            condensed.append(ln[:head_n].rstrip() + " … " + ln[-tail_n:].lstrip())
+        else:
+            condensed.append(ln[: per_line_cap - 1].rstrip() + "…")
+
+    out_lines: List[str] = []
+    used = 0
+    for ln in condensed:
+        need = len(ln) + (1 if out_lines else 0)
+        if used + need > avail:
+            rem = avail - used - (1 if out_lines else 0)
+            if rem >= 32:
+                out_lines.append(ln[: rem - 1].rstrip() + "…")
+            elif not out_lines:
+                out_lines.append(ln[: max(24, avail - 1)].rstrip() + "…")
+            break
+        out_lines.append(ln)
+        used += need
+    return (prefix + "\n".join(out_lines)).strip(), True
+
+
 def _compress_markdown_losslessly(text: str, max_chars: int = 2400) -> str:
-    """Compress markdown skill text without dropping rules, headings, phases, or checklists."""
+    """Compress markdown skill text with section-balanced budgets so Guardrails/Anti-Slop survive."""
     cleaned_lines: List[str] = []
     prev_blank = False
     for raw in text.splitlines():
@@ -620,41 +692,75 @@ def _compress_markdown_losslessly(text: str, max_chars: int = 2400) -> str:
     if len(compact) <= max_chars:
         return compact
 
-    # Preserve headings, bullets, numbered steps, code-fenced Iron Laws, and first prose line per section
-    kept: List[str] = []
-    in_fence = False
-    section_prose = 0
-    for ln in cleaned_lines:
-        s = ln.strip()
-        if s.startswith("```"):
-            in_fence = not in_fence
-            kept.append(ln)
+    raw_sections = _parse_sections(compact)
+    prepared: List[Tuple[str, List[str], float, int]] = []
+    drop_overview = max_chars < 1400 and len(raw_sections) > 1
+    drop_prose_for_budget = max_chars < 1400
+    for heading, body in raw_sections:
+        if drop_overview and heading == "Overview":
             continue
-        if in_fence:
-            kept.append(ln)
+        lines = _compact_section_lines(body)
+        if drop_prose_for_budget:
+            rule_lines = [ln for ln in lines if ln.strip().startswith("#") or re.match(r"^(?:[-*+]|\d+\.|\[[ xX]\])\s+", ln.strip())]
+            if rule_lines:
+                lines = rule_lines
+        if not lines:
             continue
-        if s.startswith("#"):
-            section_prose = 0
-            kept.append(ln)
-        elif re.match(r"^(?:[-*+]|\d+\.|\[[ xX]\])\s+", s):
-            kept.append(ln)
-        elif s and section_prose < 1:
-            kept.append(ln)
-            section_prose += 1
+        rendered = (f"## {heading}\n" if heading != "Overview" else "") + "\n".join(lines)
+        if heading == "Overview":
+            weight = 0.55
+        elif _PRIORITY_SECTION_RE.search(heading):
+            weight = 1.55
+        else:
+            weight = 1.0
+        prepared.append((heading, lines, weight, len(rendered)))
 
-    result = "\n".join(kept).strip()
-    if len(result) <= max_chars:
-        return result
-    # Graceful line-boundary trim with explicit section hint
-    out_lines: List[str] = []
-    total = 0
-    for ln in result.splitlines():
-        if total + len(ln) + 1 > max_chars - 90:
+    if not prepared:
+        return compact[: max_chars - 1].rstrip() + "…"
+
+    total_compacted = sum(p[3] for p in prepared) + max(0, len(prepared) - 1) * 2
+    if total_compacted <= max_chars:
+        out_secs = [
+            (f"## {h}\n" if h != "Overview" else "") + "\n".join(lns)
+            for h, lns, _, _ in prepared
+        ]
+        return "\n\n".join(out_secs).strip()
+
+    footer = "... [More details available via read_skill(name=..., section=...)]"
+    budget_left = max(240, max_chars - len(footer) - max(0, len(prepared) - 1) * 2 - 4)
+
+    # Water-fill unused budget from short sections to longer/priority sections
+    allocs: Dict[int, int] = {}
+    remaining_idxs = list(range(len(prepared)))
+    while remaining_idxs:
+        w_sum = sum(prepared[i][2] for i in remaining_idxs) or 1.0
+        settled = False
+        for i in list(remaining_idxs):
+            share = max(90, int(budget_left * (prepared[i][2] / w_sum)))
+            if prepared[i][3] <= share:
+                allocs[i] = prepared[i][3]
+                budget_left = max(0, budget_left - prepared[i][3])
+                remaining_idxs.remove(i)
+                settled = True
+        if not settled:
+            w_sum = sum(prepared[i][2] for i in remaining_idxs) or 1.0
+            for i in remaining_idxs:
+                allocs[i] = max(90, int(budget_left * (prepared[i][2] / w_sum)))
             break
-        out_lines.append(ln)
-        total += len(ln) + 1
-    out_lines.append("... [More details available via read_skill(name=..., section=...)]")
-    return "\n".join(out_lines)
+
+    fitted_parts: List[str] = []
+    any_trimmed = False
+    for i, (h, lns, _, _) in enumerate(prepared):
+        sec_str, was_trimmed = _fit_section_to_budget(h, lns, allocs.get(i, 160))
+        if sec_str:
+            fitted_parts.append(sec_str)
+        if was_trimmed:
+            any_trimmed = True
+
+    result = "\n\n".join(fitted_parts).strip()
+    if any_trimmed and footer not in result:
+        result = f"{result}\n{footer}"
+    return result
 
 
 @lru_cache(maxsize=len(SKILL_SPECS) + 4)
@@ -775,7 +881,7 @@ def read_skill_content(
     *,
     mode: str = "brief",
     section: str = "",
-    max_chars: int = 10500,
+    max_chars: int = 8600,
 ) -> Tuple[str, List[str]]:
     """Read one or more bundled WSA skills in compressed (`brief`) or `full` mode.
 
@@ -805,7 +911,8 @@ def read_skill_content(
 
     eff_mode = "full" if str(mode or "brief").strip().lower() == "full" else "brief"
     sec_query = str(section or "").strip().lower()
-    per_skill_budget = max(1450, int((max_chars - 240) / max(1, len(resolved))))
+    header_overhead = 260 + 165 * len(resolved)
+    per_skill_budget = max(720, int((max_chars - header_overhead) / max(1, len(resolved))))
 
     blocks: List[str] = []
     for slug in resolved:

@@ -2694,6 +2694,8 @@ def execute_agent_loop(
                 is_delta_continuation = False
                 prompt_too_long_retries = 0
                 composer_submit_retries = 0
+                if hasattr(state, "loaded_skills") and isinstance(state.loaded_skills, set):
+                    state.loaded_skills.clear()
                 if hasattr(state, "clear_provider_chats"):
                     state.clear_provider_chats([next_model], clear_roles=(role != "main"))
                 elif hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
@@ -4159,6 +4161,8 @@ def execute_agent_loop(
         "messages": new_messages,
         "verification_evidence": list(verification_evidence.values()),
         "skills_read": sorted(skills_read_this_turn),
+        "model": effective_model,
+        "chat_url": str(effective_chat_url or ""),
     }
 
 

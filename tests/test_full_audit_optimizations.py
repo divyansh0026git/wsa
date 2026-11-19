@@ -846,6 +846,138 @@ def test_orchestrator_deep_architecture_blueprint_and_visual_contrast_audit():
     assert "Visual checks: fail" in report
 
 
+def test_section_balanced_skill_compression_preserves_guardrails_in_8_skill_batch() -> None:
+    """Verify batched 8-skill read stays compact and preserves critical bottom Guardrails/Anti-Slop rules."""
+    from wsa_agent import task_skills as ts
+
+    batch, loaded = ts.read_skill_content(
+        "frontend-design,unslop,impeccable,web-design-guidelines,threejs-skills,dream-loop,img2threejs,gsap-skills"
+    )
+    assert len(loaded) == 8
+    assert len(batch) <= 9400
+
+    def _chunk(slug: str) -> str:
+        start = batch.find(f"=== [{slug}]")
+        assert start != -1, f"Missing {slug} in batch"
+        nxt = batch.find("=== [", start + 10)
+        return batch[start : nxt if nxt != -1 else len(batch)]
+
+    imp = _chunk("impeccable")
+    assert "#090A0D" in imp
+    assert "backdrop-filter" in imp
+    assert "FogExp2" in _chunk("threejs-skills")
+    dream = _chunk("dream-loop")
+    assert "Saturn" in dream
+    assert "FogExp2" in dream
+    assert "Saturn" in _chunk("img2threejs")
+
+    kar_brief, _ = ts.read_skill_content("karpathy-skills", mode="brief")
+    assert len(kar_brief) <= 3400
+    assert "System, Backend & File Architecture Blueprint" in kar_brief
+
+
+def test_claude_stage_directives_synced_with_security_and_role_scoped_skills() -> None:
+    """Verify Claude stage directives stay synced with security role and role/slice skill scoping."""
+    from wsa_agent import subagents, task_skills
+
+    cd = subagents.CLAUDE_STAGE_DIRECTIVES
+    assert set(cd.keys()) >= {"explorer", "architect", "coder", "security", "verifier"}
+    assert "#090A0D" in cd["explorer"]
+    assert "Deep Architecture & File Blueprint" in cd["architect"]
+    assert "Shared Contract Matrix" in cd["architect"]
+    assert "Read-Before-Write Contract Check" in cd["coder"]
+    assert "security-audit,semgrep-guardrails" in cd["security"]
+    assert "Cross-File Contract Audit" in cd["verifier"]
+
+    appt = task_skills.analyze_prompt_skills(
+        "Build a premium 3D igloo.inc website with Three.js shaders and GSAP scroll storytelling"
+    )
+    exp_skills = subagents._select_stage_skills("explorer", [], appt)
+    arch_skills = subagents._select_stage_skills("architect", [], appt)
+    c3d = subagents._select_stage_skills("coder", ["js/shaders.js", "js/heroasset.js", "js/stagecontroller.js"], appt)
+    cui = subagents._select_stage_skills("coder", ["index.html", "styles/tokens.css", "styles/main.css"], appt)
+    sec = subagents._select_stage_skills("security", ["index.html"], appt)
+    ver = subagents._select_stage_skills("verifier", [], appt)
+
+    assert 1 <= len(exp_skills) <= 4
+    assert 1 <= len(arch_skills) <= 4
+    assert set(c3d).issubset({"threejs-skills", "img2threejs", "dream-loop", "gsap-skills"})
+    assert set(cui).issubset({"impeccable", "unslop", "frontend-design", "web-design-guidelines"})
+    assert sec == ("security-audit", "semgrep-guardrails")
+    assert ver
+
+    all_tasks = [
+        {"id": "t1", "owned_files": ["styles/tokens.css", "js/shaders.js"], "depends_on": []},
+        {"id": "t2", "owned_files": ["js/stagecontroller.js"], "depends_on": ["t1"]},
+    ]
+    up = subagents._collect_upstream_contract_files(
+        all_tasks[1], all_tasks, {"design-spec.md", "styles/tokens.css", "js/shaders.js"}, ["js/stagecontroller.js"]
+    )
+    assert "styles/tokens.css" in up
+    assert "js/shaders.js" in up
+    assert "design-spec.md" in up
+    assert "js/stagecontroller.js" not in up
+
+
+def test_rendered_pixel_contrast_audit_catches_dark_text_over_dark_canvas_and_passes_clean_ui() -> None:
+    """Verify pixel contrast audit catches dark-text-on-dark-canvas splits while passing clean obsidian UI."""
+    from PIL import Image, ImageDraw
+    from wsa_agent import visual
+
+    def _to_png(im: Image.Image) -> bytes:
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+
+    # 1. Harsh split canvas (pitch-dark sky + bright floor) with dark text in upper sky
+    split_im = Image.new("RGB", (1440, 900), (10, 15, 20))
+    ImageDraw.Draw(split_im).rectangle([(0, 480), (1440, 900)], fill=(220, 226, 232))
+    split_audit = {
+        "viewport": {"width": 1440, "height": 900},
+        "canvases": [{"selector": "canvas.stage", "width": 1440, "height": 900}],
+        "overflow_x": 0,
+        "text_boxes": [
+            {"selector": "p.eyebrow", "text": "01 / Instrument", "fg": [19, 26, 34], "x": 60, "y": 140, "w": 220, "h": 24, "fontSize": 14}
+        ],
+    }
+    visual._audit_rendered_pixels_for_contrast(_to_png(split_im), split_audit)
+    assert split_audit.get("low_contrast_texts")
+    assert split_audit.get("canvas_palette_warnings")
+    report = visual.format_visual_report({
+        "ok": True,
+        "tiles": ["DESKTOP 1440x900"],
+        "viewports": [{
+            "name": "desktop",
+            "width": 1440,
+            "height": 900,
+            "pixels": {"ok": True, "std_luma": 65.0, "unique_buckets": 24, "blank": False},
+            "audit": split_audit,
+        }],
+        "console_errors": [],
+        "page_exceptions": [],
+        "failed_requests": [],
+    })
+    assert "LOW_CONTRAST=1" in report
+    assert "CANVAS_PALETTE_MISMATCH" in report
+    assert "Visual checks: fail" in report
+
+    # 2. Clean obsidian-black (#090A0D) UI with crisp off-white text (#F5F6F8)
+    obsidian_im = Image.new("RGB", (1440, 900), (9, 10, 13))
+    clean_audit = {
+        "viewport": {"width": 1440, "height": 900},
+        "canvases": [{"selector": "canvas.stage", "width": 1440, "height": 900}],
+        "overflow_x": 0,
+        "text_boxes": [
+            {"selector": "h1.hero", "text": "Precision Spatial", "fg": [245, 246, 248], "x": 60, "y": 180, "w": 400, "h": 60, "fontSize": 48},
+            {"selector": "p.lead", "text": "Architectural obsidian UI", "fg": [142, 149, 165], "x": 60, "y": 260, "w": 420, "h": 24, "fontSize": 16},
+        ],
+    }
+    visual._audit_rendered_pixels_for_contrast(_to_png(obsidian_im), clean_audit)
+    assert not clean_audit.get("low_contrast_texts")
+    assert not clean_audit.get("canvas_palette_warnings")
+
+
+
 
 
 
