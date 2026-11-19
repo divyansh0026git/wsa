@@ -89,8 +89,8 @@ _ZW_RE = "\u200b\u200c\u200d\ufeff"
 MAX_TOOL_ROUNDS = 500   # safety cap per user turn
 
 MAX_WEB_PROMPT_CHARS = 96_000  # Safe ceiling for Gemini/Claude web bridge multi-round tool loops
-CHATGPT_WEB_PROMPT_CHARS = 21_500  # Tighter budget for ChatGPT Web's composer ceiling
-DEEPSEEK_WEB_PROMPT_CHARS = 18_000  # Keep full ~10.6KB system prompt + ~7.4KB user/tool carryover within 26KB server budget
+CHATGPT_WEB_PROMPT_CHARS = 60_000  # ChatGPT handles large payloads via native pasted-text attachment (verified)
+DEEPSEEK_WEB_PROMPT_CHARS = 32_000  # DeepSeek web composer budget
 
 
 def _max_web_prompt_chars_for_model(model: Optional[str]) -> int:
@@ -333,18 +333,15 @@ def _compact_messages_for_web_limit(
         )
         if last_asst_idx is not None and last_asst_idx + 1 < len(messages):
             delta_start = last_asst_idx + 1
+            # Only compact the historical slice (pre-delta) for failover hygiene.
+            # Do NOT compact the fresh delta slice itself — the server relay
+            # (multimodal.py _compact_delta_parts_to_limit) handles budget enforcement
+            # after proper delta formatting, with a 26KB budget for ChatGPT.
+            # Double-compacting here (agent-side 21.5KB) was destroying tool outputs
+            # before they ever reached the web browser bridge.
             compacted = _compact_historical_slice(
                 messages, delta_start, head_n=head_n, tail_n=tail_n, old_thresh=old_thresh
             )
-            delta_slice = messages[delta_start:]
-            if _messages_total_chars(delta_slice) > limit:
-                compacted += _compact_tool_messages_proportionally(
-                    [{"role": "system", "content": ""}, *delta_slice],
-                    limit,
-                    min_floor=min_floor,
-                    skip_floor=skip_floor,
-                    notice_verb=notice_verb,
-                )
             return compacted
 
     cutoff = max(1, len(messages) - (keep_recent_tools * 2 + 1))

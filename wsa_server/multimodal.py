@@ -200,8 +200,8 @@ def upload_images(images: list) -> list:
 
 
 PROMPT_MAX_BYTES = 140_000
-CHATGPT_PROMPT_MAX_BYTES = 26_000
-DEEPSEEK_PROMPT_MAX_BYTES = 26_000
+CHATGPT_PROMPT_MAX_BYTES = 60_000  # ChatGPT handles large payloads via native pasted-text attachment
+DEEPSEEK_PROMPT_MAX_BYTES = 32_000
 _NUMBERED_LINE_PREFIX_RE = re.compile(r"^\s*(\d+)\s*\|")
 
 

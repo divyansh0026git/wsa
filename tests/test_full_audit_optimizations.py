@@ -457,9 +457,16 @@ def test_ui_verify_gate_skips_intermediate_js_slice_without_index_html(tmp_path)
 
 
 def test_delta_mode_compaction_preserves_unread_tool_output_on_chatgpt():
-    """Active-thread delta compaction trims historical tools while keeping fresh unread reads intact."""
-    old_chunk = "\n".join(f"{i:4d} | old_line {'x' * 90}" for i in range(1, 140))
-    unread_chunk = "\n".join(f"{i:4d} | fresh_line {'y' * 75}" for i in range(1, 75))
+    """Delta compaction: historical tools are compacted for failover hygiene; fresh delta is NEVER touched.
+
+    After the fix (remove agent-side delta compaction):
+    - When total < 60KB new limit: NO compaction at all — server relay handles budget.
+    - When total >= 60KB: only the historical slice is compacted; the fresh delta is left intact.
+    - The 'Output trimmed for 21KB limit' notice must NEVER appear in fresh tool outputs.
+    """
+    # Build a scenario that exceeds the NEW 60KB limit so historical compaction fires
+    old_chunk = "\n".join(f"{i:4d} | old_line {'x' * 90}" for i in range(1, 500))   # ~43KB
+    unread_chunk = "\n".join(f"{i:4d} | fresh_line {'y' * 75}" for i in range(1, 75))  # ~5KB
     msgs = [
         {"role": "system", "content": "S" * 10_000},
         {"role": "user", "content": "Inspect and wire main.js"},
@@ -468,26 +475,39 @@ def test_delta_mode_compaction_preserves_unread_tool_output_on_chatgpt():
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "function": {"name": "read_file", "arguments": '{"path":"fresh.js"}'}}]},
         {"role": "tool", "name": "read_file", "content": unread_chunk},
     ]
-    assert agent._messages_total_chars(msgs) > agent.CHATGPT_WEB_PROMPT_CHARS
+    total_chars = agent._messages_total_chars(msgs)
+    assert total_chars > agent.CHATGPT_WEB_PROMPT_CHARS, (
+        f"Test setup error: expected > {agent.CHATGPT_WEB_PROMPT_CHARS} chars, got {total_chars}"
+    )
     compacted_n = agent._compact_messages_for_web_limit(
         msgs,
         max_chars=agent.CHATGPT_WEB_PROMPT_CHARS,
         delta_mode=True,
     )
-    assert compacted_n >= 1
-    assert "[Compacted" in msgs[3]["content"]
-    assert msgs[5]["content"] == unread_chunk
+    # Historical slice (old_chunk at index 3) must be compacted for failover hygiene
+    assert compacted_n >= 1, "Expected historical slice to be compacted when total > 60KB"
+    assert "[Compacted" in msgs[3]["content"], "Historical tool output should be compacted"
+    # Fresh unread delta (index 5) must NEVER be touched — server relay handles its budget
+    assert msgs[5]["content"] == unread_chunk, (
+        "REGRESSION: fresh delta tool output was trimmed by agent-side compaction"
+    )
+    # Crucially: 'trimmed for' notice must not appear in the fresh delta
+    assert "trimmed for" not in msgs[5]["content"]
 
-    # An oversized unread delta (> 21.5KB on its own) still gets bounded cleanly
-    huge_unread = "\n".join(f"{i:4d} | huge_line {'z' * 110}" for i in range(1, 240))
-    msgs.append({"role": "tool", "name": "read_file", "content": huge_unread})
-    compacted_over = agent._compact_messages_for_web_limit(
-        msgs,
+    # Verify small deltas (under 60KB) produce ZERO compaction — no double-compaction possible
+    small_msgs = [
+        {"role": "system", "content": "S" * 1_000},
+        {"role": "user", "content": "Read a file"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "d1", "function": {"name": "read_file", "arguments": '{"path":"x.ts"}'}}]},
+        {"role": "tool", "name": "read_file", "content": "x" * 3_638},   # typical file read
+    ]
+    small_compacted = agent._compact_messages_for_web_limit(
+        small_msgs,
         max_chars=agent.CHATGPT_WEB_PROMPT_CHARS,
         delta_mode=True,
     )
-    assert compacted_over >= 1
-    assert agent._messages_total_chars(msgs[5:]) <= agent.CHATGPT_WEB_PROMPT_CHARS + 300
+    assert small_compacted == 0, "Small delta under 60KB must NOT be compacted at all"
+    assert small_msgs[3]["content"] == "x" * 3_638, "Small delta content must be fully intact"
 
 
 def test_repeated_unmutated_read_hint_fires_on_third_repeat(tmp_path):
