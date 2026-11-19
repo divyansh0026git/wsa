@@ -13,6 +13,7 @@ import json
 import re
 import threading
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .task_skills import (
@@ -25,6 +26,9 @@ from .task_skills import (
 from . import renderer as R
 from .agent import (
     ACCOUNT_SWITCH_WAIT_SECS,
+    MAX_WEB_PROMPT_CHARS,
+    _looks_like_budget_hallucination,
+    _max_web_prompt_chars_for_model,
     _preserve_workflow_state_and_context,
     _offer_limit_multiagent,
     _prompt_all_agents_exhausted,
@@ -341,6 +345,43 @@ def _is_verification_task(item: Dict[str, Any]) -> bool:
     ))
 
 
+def _missing_required_owned_files(project_root: Path, task_item: Dict[str, Any]) -> List[str]:
+    """Return declared non-glob owned_files missing on disk for non-verification tasks."""
+    if _is_verification_task(task_item):
+        return []
+    root = Path(project_root)
+    missing: List[str] = []
+    for raw in (task_item.get("owned_files") or []):
+        norm = _normalize_rel_path(str(raw or ""))
+        if not norm or norm.endswith("/") or any(ch in norm for ch in ("*", "?", "[")):
+            continue
+        if not (root / norm).exists():
+            missing.append(norm)
+    return missing
+
+
+def _clear_poisoned_thread_for_fresh_chat(state: SessionState, client: WSAClient) -> None:
+    """Clear active/role web-chat bindings for the current provider so the next turn starts clean."""
+    active_model = str(getattr(state, "model", None) or getattr(state, "selected_model", "gemini") or "gemini")
+    _reset_provider_chats_for_account_change(
+        state,
+        client,
+        getattr(state, "session_id", None),
+        [active_model],
+        clear_roles=True,
+        refresh_health=False,
+    )
+    if hasattr(state, "active_chat_url"):
+        state.active_chat_url = ""
+
+
+def _has_budget_poison(res: Optional[Dict[str, Any]]) -> bool:
+    """True if a stage result shows hallucinated 0-call tool-budget exhaustion."""
+    if not isinstance(res, dict):
+        return False
+    return bool(res.get("budget_hallucinated")) or _looks_like_budget_hallucination(res.get("final_text"))
+
+
 def _parse_architect_plan(raw_text: str, user_input: str) -> List[Dict[str, Any]]:
     """Parse Architect JSON DAG output into normalized task dictionaries with a clean fallback."""
     parsed = _extract_json_block(raw_text, list)
@@ -621,6 +662,7 @@ def _run_role_agent(
     session_id_override: Optional[str] = None,
     label: str = "",
     owned_files: Optional[List[str]] = None,
+    new_chat_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Execute one scoped subagent call under strict tool allowlist and thread-mode continuity policy."""
     stage_label = label or role
@@ -634,7 +676,9 @@ def _run_role_agent(
     else:
         eff_session = state.role_session_id(role)
     uses_main_thread = eff_session == getattr(state, "session_id", None)
-    if uses_main_thread:
+    if new_chat_override is True:
+        chat_url = ""
+    elif uses_main_thread:
         chat_url = (
             getattr(state, "active_chat_url", "")
             or (getattr(state, "chat_urls", {}) or {}).get(model_id)
@@ -652,10 +696,7 @@ def _run_role_agent(
     _ws_digest = _ledger_ref.render_working_set_digest(max_chars=1200) if isinstance(_ledger_ref, FileContextLedger) else ""
     extra_ctx = f"Working-set file map:\n{_ws_digest}" if _ws_digest else ""
 
-    return execute_agent_loop(
-        stage_prompt,
-        state,
-        client,
+    loop_kwargs: Dict[str, Any] = dict(
         role=role,
         tools_override=tools,
         system_prompt_override=sys_prompt,
@@ -676,6 +717,9 @@ def _run_role_agent(
         event_callback=_make_role_event_cb(stage_label),
         allowed_write_paths=owned_files,
     )
+    if new_chat_override is not None:
+        loop_kwargs["new_chat_override"] = new_chat_override
+    return execute_agent_loop(stage_prompt, state, client, **loop_kwargs)
 
 
 # ── Public Orchestration Entry Points ───────────────────────────────────────
@@ -1081,6 +1125,45 @@ def run_orchestrated_turn(
             kwargs["prompt"] += "\n\n" + directive
         return _run_role_agent(**kwargs)
 
+    def _run_stage_with_recovery(
+        stage_args: Dict[str, Any],
+        *,
+        stage_label: str,
+        recovery_action: str,
+        lock: Optional[threading.Lock] = None,
+    ) -> Dict[str, Any]:
+        """Run a stage with provider-limit recovery and 1-time fresh-chat budget-poison recovery."""
+        cur_args = dict(stage_args)
+        base_prompt = str(cur_args.get("prompt") or "")
+        poison_retried = False
+        while True:
+            if lock is not None:
+                with lock:
+                    stage_res = _run_stage(**cur_args)
+            else:
+                stage_res = _run_stage(**cur_args)
+            if _recover_orchestrated_stage_limit(state, client, stage_res, pending_goal=user_input, stage_label=stage_label):
+                continue
+            if (
+                not poison_retried
+                and not stage_res.get("limit_exhausted")
+                and not _is_interrupted_res(stage_res)
+                and stage_res.get("aborted_reason") != "permission_denied"
+                and _has_budget_poison(stage_res)
+            ):
+                poison_retried = True
+                R.print_warn(f"{stage_label}: hallucinated tool exhaustion — resetting to a clean fresh chat and retrying once.")
+                _clear_poisoned_thread_for_fresh_chat(state, client)
+                cur_args = dict(
+                    cur_args,
+                    prompt=(
+                        f"Fresh session continuation: {recovery_action}\n\n{base_prompt}"
+                    ),
+                    new_chat_override=True,
+                )
+                continue
+            return stage_res
+
     ledger = getattr(state, "file_ledger", None)
     if not isinstance(ledger, FileContextLedger):
         ledger = FileContextLedger(state.project_root)
@@ -1131,6 +1214,7 @@ def run_orchestrated_turn(
 
         # ── Stage 2: Architect ──────────────────────────────────────────────
         _ui_stage_banner("architect", "Constructing dependency-ordered task plan…")
+        arch_exp_cap = 2400 if _max_web_prompt_chars_for_model(getattr(state, "model", None)) < MAX_WEB_PROMPT_CHARS else 6000
         arch_pkt = build_context_packet(
             project_root=state.project_root,
             project_type=getattr(state, "project_type", "unknown"),
@@ -1138,7 +1222,7 @@ def run_orchestrated_turn(
             decisions=getattr(state, "decisions", None),
             written_files=sorted(state.written_files),
             turn_digest=getattr(state, "turn_digest", None),
-            extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:6000]}",
+            extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:arch_exp_cap]}",
         )
         while True:
             arch_res = _run_stage(
@@ -1198,9 +1282,17 @@ def run_orchestrated_turn(
         ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             tid = task_item["id"]
             owned = list(task_item.get("owned_files") or [])
+            tight_model = _max_web_prompt_chars_for_model(getattr(state, "model", None)) < MAX_WEB_PROMPT_CHARS
             with state_lock:
                 task_item["status"] = "in_progress"
-                prior_notes = "\n".join(task_summaries[-8:])
+                prior_notes = "\n".join(task_summaries[-4:])[:1200] if tight_model else "\n".join(task_summaries[-8:])
+            exp_cap = 1800 if tight_model else 4500
+            req_cap = 1500 if tight_model else 4000
+            desc_extra = (
+                f"Description: {task_item['description']}\n"
+                if (not tight_model and task_item.get("description"))
+                else ""
+            )
             pkt = build_context_packet(
                 project_root=state.project_root,
                 project_type=getattr(state, "project_type", "unknown"),
@@ -1212,10 +1304,10 @@ def run_orchestrated_turn(
                 focus_files=owned,
                 turn_digest=getattr(state, "turn_digest", None),
                 extra_notes=(
-                    f"Explorer Findings:\n{explorer_summary[:4500]}\n\n"
+                    f"Explorer Findings:\n{explorer_summary[:exp_cap]}\n\n"
                     + (f"Completed Prior Task Results:\n{prior_notes}\n\n" if prior_notes else "")
                     + f"Assigned Task [{tid}]: {task_item['title']}\n"
-                    + (f"Description: {task_item['description']}\n" if task_item.get("description") else "")
+                    + desc_extra
                     + f"Owned files scope: {', '.join(owned) if owned else '(files required for this task)'}\n"
                     + f"Acceptance criteria: {task_item.get('acceptance', '')}"
                 ),
@@ -1225,12 +1317,13 @@ def run_orchestrated_turn(
                 "Think deeply about edge cases and dependencies before editing. Implement any requested deliverables "
                 "completely within the assigned scope. Read existing targets thoroughly before editing "
                 "and use `write_file` for new modules. For verification-only tasks, run the requested checks. "
-                "Verify the acceptance criteria thoroughly and summarize the observed results."
+                "Verify the acceptance criteria thoroughly and summarize the observed results. "
+                "You have full multi-round tool execution available for this slice (never claim a 0-call tool budget)."
             )
             worker_prompt = (
                 f"Execute task `{tid}`: {task_item['title']}\n"
                 f"{desc_text}"
-                f"Overall User Request:\n{user_input[:4000]}\n\n"
+                f"Overall User Request:\n{user_input[:req_cap]}\n\n"
                 f"Strict Scope:\n- Owned files: {', '.join(owned) if owned else 'only files required for this task'}\n"
                 f"- Acceptance: {task_item.get('acceptance', 'Passes verification checks cleanly')}\n\n"
                 f"{task_guidance}"
@@ -1260,8 +1353,63 @@ def run_orchestrated_turn(
             ):
                 R.print_warn(f"{tid}: browser response timed out before any tool calls. Retrying this task once.")
                 res = _run_stage(**worker_args)
+
+            wf_accum: List[str] = list(res.get("written_files") or [])
+            initial_reason = str(res.get("aborted_reason") or "")
+            has_zero_tools = "tool_calls_count" in res and res.get("tool_calls_count") == 0
+            budget_poisoned = _has_budget_poison(res)
+            missing_owned = _missing_required_owned_files(state.project_root, task_item)
+            needs_fresh_chat = (
+                not res.get("limit_exhausted")
+                and not _is_interrupted_res(res)
+                and initial_reason != "permission_denied"
+                and (budget_poisoned or (has_zero_tools and not wf_accum and bool(missing_owned)))
+            )
+            if needs_fresh_chat:
+                R.print_warn(
+                    f"{tid}: web chat stalled/hallucinated tool exhaustion — resetting to a clean fresh chat and retrying once."
+                )
+                _clear_poisoned_thread_for_fresh_chat(state, client)
+                if wf_accum and not missing_owned:
+                    recovery_note = (
+                        f"Fresh session continuation for `{tid}`: files already created on disk "
+                        f"({', '.join(wf_accum)}). Please run a verification check (`node --check`, `node -e`, "
+                        "`py_compile`, `pytest`, or `visual_inspect`) on them and summarize the observed results."
+                    )
+                else:
+                    target_list = ", ".join(missing_owned) if missing_owned else (", ".join(owned) or tid)
+                    recovery_note = (
+                        f"Fresh session continuation for `{tid}`: the following deliverables are not on disk yet: "
+                        f"{target_list}. Please implement and verify them using ```tool_call blocks."
+                    )
+                retry_args = dict(worker_args, prompt=f"{recovery_note}\n\n{worker_prompt}", new_chat_override=True)
+                res = _run_stage(**retry_args)
+                wf_accum = sorted(set(wf_accum) | set(res.get("written_files") or []))
+                if (
+                    initial_reason == "verification_incomplete"
+                    and res.get("ok")
+                    and not res.get("verification_evidence")
+                    and not res.get("written_files")
+                ):
+                    res = dict(res, ok=False, aborted_reason="verification_incomplete")
+
+            still_zero_tools = "tool_calls_count" in res and res.get("tool_calls_count") == 0
+            still_poisoned = _has_budget_poison(res)
+            still_missing = _missing_required_owned_files(state.project_root, task_item)
+            if res.get("ok") and not res.get("limit_exhausted") and (
+                (still_zero_tools and still_missing and not wf_accum)
+                or (still_poisoned and still_zero_tools)
+            ):
+                fail_reason = (
+                    f"missing_owned_files:{','.join(still_missing[:4])}"
+                    if still_missing
+                    else "budget_hallucination_no_tools"
+                )
+                res = dict(res, ok=False, aborted_reason=fail_reason)
+                R.print_warn(f"{tid}: failed closed ({fail_reason}) — refusing to mark 0-write/hallucinated task done.")
+
             with state_lock:
-                wf = list(res.get("written_files") or [])
+                wf = wf_accum
                 all_written.update(wf)
                 state.written_files.update(wf)
                 for p in wf:
@@ -1343,30 +1491,32 @@ def run_orchestrated_turn(
                 turn_digest=getattr(state, "turn_digest", None),
                 extra_notes="Task summaries before security hardening:\n" + "\n".join(task_summaries),
             )
-            while True:
-                with relay_seq_lock:
-                    sec_res = _run_stage(
-                        role="security",
-                        prompt=(
-                            f"Perform post-build website security auditing and surgical fixing for:\n{user_input[:3000]}\n\n"
-                            f"Files created/modified to audit & harden: {', '.join(sec_targets)}\n"
-                            "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first.\n"
-                            "2. Audit every modified HTML/CSS/JS/TS/Python/API file for confirmed XSS (`innerHTML`/`dangerouslySetInnerHTML`), "
-                            "unsafe URL schemes (`javascript:`), missing `rel=\"noopener noreferrer\"`, weak CSP/CORS/security headers, "
-                            "broken auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"
-                            "3. Disprove false positives adversarially; fix every confirmed vulnerability cleanly via `patch_file` without breaking UI craft.\n"
-                            "4. Report confirmed findings fixed and verify syntax/runtime cleanliness."
-                        ),
-                        state=state,
-                        client=client,
-                        context_packet=sec_pkt,
-                        max_rounds=24,
-                        label="security_audit",
-                        owned_files=sec_targets,
-                    )
-                if _recover_orchestrated_stage_limit(state, client, sec_res, pending_goal=user_input, stage_label="security_audit"):
-                    continue
-                break
+            sec_prompt = (
+                f"Perform post-build website security auditing and surgical fixing for:\n{user_input[:3000]}\n\n"
+                f"Files created/modified to audit & harden: {', '.join(sec_targets)}\n"
+                "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first.\n"
+                "2. Audit every modified HTML/CSS/JS/TS/Python/API file for confirmed XSS (`innerHTML`/`dangerouslySetInnerHTML`), "
+                "unsafe URL schemes (`javascript:`), missing `rel=\"noopener noreferrer\"`, weak CSP/CORS/security headers, "
+                "broken auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"
+                "3. Disprove false positives adversarially; fix every confirmed vulnerability cleanly via `patch_file` without breaking UI craft.\n"
+                "4. Report confirmed findings fixed and verify syntax/runtime cleanliness."
+            )
+            sec_args = dict(
+                role="security",
+                prompt=sec_prompt,
+                state=state,
+                client=client,
+                context_packet=sec_pkt,
+                max_rounds=24,
+                label="security_audit",
+                owned_files=sec_targets,
+            )
+            sec_res = _run_stage_with_recovery(
+                sec_args,
+                stage_label="security_audit",
+                recovery_action="Execute security audit & patching now.",
+                lock=relay_seq_lock,
+            )
             if sec_res.get("limit_exhausted"):
                 aborted_reason = str(sec_res.get("aborted_reason") or "limit_reached")
             elif sec_res.get("aborted_reason") == "permission_denied":
@@ -1437,26 +1587,28 @@ def run_orchestrated_turn(
                 turn_digest=getattr(state, "turn_digest", None),
                 extra_notes=f"Task summaries:\n" + "\n".join(task_summaries),
             )
-            while True:
-                ver_res = _run_stage(
-                    role="verifier",
-                    prompt=(
-                        f"Verify all work completed for the user request:\n{user_input[:4000]}\n\n"
-                        f"Modified files to verify: {', '.join(written_list) if written_list else '(check workspace)'}\n"
-                        "Run tests (`pytest`), syntax/compile checks, runtime checks, and inspect UI if applicable. "
-                        'Conclude with a JSON block: {"verdict":"pass","checks":["test name: result"],"failures":[],"summary":"result"}. '
-                        'checks must be an array of non-empty strings; failures must be an array of objects with an issue string. '
-                        'Use verdict "fail" and describe any failures honestly. ' + format_feedback
-                    ),
-                    state=state,
-                    client=client,
-                    context_packet=ver_pkt,
-                    max_rounds=24,
-                    label=f"verifier#{attempt + 1}",
-                )
-                if _recover_orchestrated_stage_limit(state, client, ver_res, pending_goal=user_input, stage_label=f"verifier#{attempt + 1}"):
-                    continue
-                break
+            ver_prompt = (
+                f"Verify all work completed for the user request:\n{user_input[:4000]}\n\n"
+                f"Modified files to verify: {', '.join(written_list) if written_list else '(check workspace)'}\n"
+                "Run tests (`pytest`), syntax/compile checks, runtime checks, and inspect UI if applicable. "
+                'Conclude with a JSON block: {"verdict":"pass","checks":["test name: result"],"failures":[],"summary":"result"}. '
+                'checks must be an array of non-empty strings; failures must be an array of objects with an issue string. '
+                'Use verdict "fail" and describe any failures honestly. ' + format_feedback
+            )
+            ver_args = dict(
+                role="verifier",
+                prompt=ver_prompt,
+                state=state,
+                client=client,
+                context_packet=ver_pkt,
+                max_rounds=24,
+                label=f"verifier#{attempt + 1}",
+            )
+            ver_res = _run_stage_with_recovery(
+                ver_args,
+                stage_label=f"verifier#{attempt + 1}",
+                recovery_action="Execute full verification checks now.",
+            )
             if ver_res.get("limit_exhausted"):
                 aborted_reason = str(ver_res.get("aborted_reason") or "limit_reached")
                 verdict = {

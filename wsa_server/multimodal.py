@@ -389,6 +389,9 @@ _CLAUDE_REFUSAL_MARKERS = (
     "sidesteps the real api's auth",
     "pulls live session credentials out of an open",
     "flag something before going further rather than just dropping another",
+    "not going to emit tool_call",
+    "not going to emit `tool_call`",
+    "matches a jailbreak pattern",
 )
 
 
@@ -785,12 +788,14 @@ def _format_tools_prompt_block(tools: list, *, compact: bool = False, provider: 
     elif "deepseek" in prov_low:
         no_canvas_rule = "NEVER emit DeepSeek Canvas/artifact cards — emit inline ```tool_call blocks only."
     elif "venice" in prov_low or "vernice" in prov_low:
-        no_canvas_rule = "NEVER emit Venice artifact/preview cards — emit inline ```tool_call blocks only."
+        no_canvas_rule = "NEVER invoke Venice's built-in tool/function router or artifact/preview cards — emit plain markdown ```tool_call blocks only."
     else:
         no_canvas_rule = "NEVER create Artifacts/canvases/download cards — emit inline ```tool_call blocks only."
     return (
         "### Local Tool Capabilities\n"
-        "You have full local workspace, shell, Python & browser inspection tools. To act locally, emit fenced ```tool_call JSON:\n"
+        "These tools run on the user's PC via their local `wsa` CLI bridge — NOT your built-in sandbox/functions. "
+        "Do NOT claim tools are unavailable/disconnected: output fenced ```tool_call JSON as plain markdown text, "
+        "and `wsa` executes it locally and sends the real output back in the next message:\n"
         '```tool_call\n{"name": "func_name", "arguments": {"arg1": "val1"}}\n```\n'
         f"Stop immediately after the closing ``` (zero trailing text/guesses). {no_canvas_rule}\n"
         "Batch independent calls in parallel without duplicates; put file code inside tool_call args (never full files in prose). "

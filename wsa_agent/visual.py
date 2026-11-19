@@ -123,6 +123,12 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
     if (clippedTexts.length >= 8) return;
     var cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    var cls = typeof el.className === 'string' ? el.className : '';
+    var isSrOnly = /(?:^|\s)(?:sr-only|visually-hidden|screen-reader-text)(?:\s|$)/i.test(cls)
+      || (el.clientWidth <= 2 && el.clientHeight <= 2)
+      || (cs.clipPath && cs.clipPath.indexOf('50%') !== -1)
+      || (cs.clip && cs.clip.indexOf('0px, 0px, 0px, 0px') !== -1);
+    if (isSrOnly) return;
     if ((cs.overflowX === 'hidden' || cs.overflow === 'hidden') && cs.textOverflow !== 'ellipsis') {
       if (el.scrollWidth > el.clientWidth + 4 && el.clientWidth > 0) {
         clippedTexts.push(cssLabel(el) + ' ("' + String(el.innerText || '').trim().slice(0, 32) + '")');

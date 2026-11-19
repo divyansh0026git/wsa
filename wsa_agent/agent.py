@@ -256,25 +256,17 @@ def _compact_tool_messages_proportionally(
     return compacted
 
 
-def _compact_messages_for_web_limit(
+def _compact_historical_slice(
     messages: List[Dict],
-    keep_recent_tools: int = 10,
-    force: bool = False,
+    end_idx: int,
     *,
-    max_chars: int = MAX_WEB_PROMPT_CHARS,
+    head_n: int,
+    tail_n: int,
+    old_thresh: int,
 ) -> int:
-    """Compact older tool outputs AND older assistant tool_call args when total chars exceed `max_chars`."""
-    limit = max(4_000, int(max_chars or MAX_WEB_PROMPT_CHARS))
-    total_chars = _messages_total_chars(messages)
-    if not force and total_chars <= limit:
-        return 0
+    """Compact historical tool outputs and oversized tool_call arguments within `messages[1:end_idx]`."""
     compacted = 0
-    tight_mode = limit < 40_000
-    head_n = 8 if tight_mode else 15
-    tail_n = 3 if tight_mode else 5
-    old_thresh = 800 if tight_mode else 1500
-    cutoff = max(1, len(messages) - (keep_recent_tools * 2 + 1))
-    for idx in range(1, cutoff):
+    for idx in range(1, max(1, end_idx)):
         m = messages[idx]
         if m.get("role") == "tool":
             content = str(m.get("content") or "")
@@ -300,6 +292,65 @@ def _compact_messages_for_web_limit(
                             compacted += 1
                     except Exception:
                         pass
+    return compacted
+
+
+def _compact_messages_for_web_limit(
+    messages: List[Dict],
+    keep_recent_tools: int = 10,
+    force: bool = False,
+    *,
+    max_chars: int = MAX_WEB_PROMPT_CHARS,
+    delta_mode: bool = False,
+) -> int:
+    """Compact older tool outputs AND older assistant tool_call args when total chars exceed `max_chars`.
+
+    When `delta_mode` is True (active persistent web chat where the server only transmits unread
+    messages after the last assistant turn), historical turns are compacted for failover hygiene
+    while `max_chars` budgets ONLY the unread trailing delta slice so fresh `read_file` outputs
+    are not crushed to stubs by prior-round byte counts.
+    """
+    limit = max(4_000, int(max_chars or MAX_WEB_PROMPT_CHARS))
+    total_chars = _messages_total_chars(messages)
+    if not force and total_chars <= limit:
+        return 0
+    tight_mode = limit < 40_000
+    head_n = 8 if tight_mode else 15
+    tail_n = 3 if tight_mode else 5
+    old_thresh = 800 if tight_mode else 1500
+    notice_verb = f"trimmed for {max(1, limit // 1000)}KB limit"
+    if force and keep_recent_tools == 0:
+        min_floor, skip_floor = 380, 480
+    elif tight_mode:
+        min_floor, skip_floor = 512, 750
+    else:
+        min_floor, skip_floor = 1500, 2500
+
+    if delta_mode and not force:
+        last_asst_idx = next(
+            (i for i in range(len(messages) - 1, 0, -1) if messages[i].get("role") == "assistant"),
+            None,
+        )
+        if last_asst_idx is not None and last_asst_idx + 1 < len(messages):
+            delta_start = last_asst_idx + 1
+            compacted = _compact_historical_slice(
+                messages, delta_start, head_n=head_n, tail_n=tail_n, old_thresh=old_thresh
+            )
+            delta_slice = messages[delta_start:]
+            if _messages_total_chars(delta_slice) > limit:
+                compacted += _compact_tool_messages_proportionally(
+                    [{"role": "system", "content": ""}, *delta_slice],
+                    limit,
+                    min_floor=min_floor,
+                    skip_floor=skip_floor,
+                    notice_verb=notice_verb,
+                )
+            return compacted
+
+    cutoff = max(1, len(messages) - (keep_recent_tools * 2 + 1))
+    compacted = _compact_historical_slice(
+        messages, cutoff, head_n=head_n, tail_n=tail_n, old_thresh=old_thresh
+    )
     for tighter_keep in (6, 4, 2, 1):
         current_chars = _messages_total_chars(messages)
         if current_chars <= limit and not force:
@@ -313,13 +364,6 @@ def _compact_messages_for_web_limit(
             if len(content) > 300 and "[Compacted" not in content:
                 message["content"] = _compact_head_tail_with_lines(content, head_n=head_n, tail_n=tail_n)
                 compacted += 1
-    notice_verb = f"trimmed for {max(1, limit // 1000)}KB limit"
-    if force and keep_recent_tools == 0:
-        min_floor, skip_floor = 380, 480
-    elif tight_mode:
-        min_floor, skip_floor = 512, 750
-    else:
-        min_floor, skip_floor = 1500, 2500
     compacted += _compact_tool_messages_proportionally(
         messages,
         limit,
@@ -328,6 +372,25 @@ def _compact_messages_for_web_limit(
         notice_verb=notice_verb,
     )
     return compacted
+
+
+def _trim_oversized_user_messages(messages: List[Dict], max_user_chars: int) -> int:
+    """Compact oversized plain-text user messages (e.g. large subagent handoffs) to fit composer limits."""
+    cap = max(1_800, int(max_user_chars))
+    trimmed = 0
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or len(content) <= cap:
+            continue
+        marker = "\n\n... [Compacted middle context to fit web composer limit] ...\n\n"
+        keep = max(800, cap - len(marker))
+        head_len = int(keep * 0.58)
+        tail_len = max(300, keep - head_len)
+        msg["content"] = content[:head_len].rstrip() + marker + content[-tail_len:].lstrip()
+        trimmed += 1
+    return trimmed
 
 
 def _trim_messages_for_prompt_too_long(messages: List[Dict], retry_num: int, model: Optional[str]) -> int:
@@ -973,6 +1036,10 @@ _DEFERRED_TAIL_RE = re.compile(
     r"|i\s+will\s+now\s+(?:read|inspect|search|check|edit|patch|update|implement|fix|run|test)"
     r"|i'll\s+now\s+(?:read|inspect|search|check|edit|patch|update|implement|fix|run|test)"
     r"|let(?:'s|s| me)\s+(?:inspect|read|check)\s+(?:the|those|these|remaining)"
+    r"|let\s+me\s+(?:emit|call|run|read|batch|do|start)"
+    r"|let(?:'s|s)\s+(?:do|run|start|batch|read|emit)"
+    r"|i\s+must\s+emit"
+    r"|actually\s+batch"
     r")\b",
     re.IGNORECASE,
 )
@@ -994,8 +1061,73 @@ _DONE_SUMMARY_RE = re.compile(
     r"\b(?:all\s+(?:fixes|changes|edits|tests)\s+(?:are\s+)?(?:complete|done|applied|verified|passed)|everything\s+is\s+(?:fixed|verified|complete))\b",
     re.IGNORECASE,
 )
+_BUDGET_HALLUCINATION_RE = re.compile(
+    r"(?:"
+    r"(?:tool(?:[- ]?(?:call|execution))?|session|turn)\s+budget\b[^\n.]{0,60}\b(?:exhausted|depleted|reached|exceeded|used\s+up|at\s+0|is\s+0)"
+    r"|\b(?:0|zero|no)\s+(?:tool\s+)?calls?\s+(?:remaining|left|available)\b"
+    r"|\b(?:no\s+more|out\s+of)\s+tool\s+calls?\b"
+    r"|\btool\s+execution\s+is\s+unavailable\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_budget_hallucination(content: Optional[str]) -> bool:
+    """Detect false claims by web models that WSA's tool execution budget hit 0 calls remaining."""
+    return bool(isinstance(content, str) and content.strip() and _BUDGET_HALLUCINATION_RE.search(content))
+
+
+_TOOL_UNAVAILABLE_MISCONCEPTION_RE = re.compile(
+    r"(?:"
+    r"(?:wsa|local(?:[- ]workspace)?|workspace|file)\s+tools?\b[^\n.]{0,80}\b(?:not\s+(?:exposed|available|connected|enabled)|unavailable|disconnected)"
+    r"|\bblocked:\s*read_skill\s+unavailable\b"
+    r"|\breconnect\s+the\s+wsa\b[^\n.]{0,50}\bsession\b"
+    r"|\bnot\s+exposed\s+in\s+(?:my|this)\s+(?:current\s+)?execution\s+environment\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_tool_unavailable_misconception(content: Optional[str]) -> bool:
+    """Detect web reasoning models confusing WSA's text-parsed tool_call bridge with missing native sandbox tools."""
+    return bool(isinstance(content, str) and content.strip() and _TOOL_UNAVAILABLE_MISCONCEPTION_RE.search(content))
+
+
 _NON_VERIFY_EXTS = {".md", ".txt", ".rst", ".csv", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _UI_VERIFY_EXTS = {".html", ".htm", ".css", ".js", ".jsx", ".tsx", ".svelte", ".vue"}
+_BUDGET_NUDGE_MARKERS = ("there is no 0-call cap here", "`wsa` parses plain markdown")
+
+
+def _is_budget_nudge_text(content: Optional[Any]) -> bool:
+    """True if content is a loop continuation note countering a 0-call cap or bridge misconception claim."""
+    if not isinstance(content, str):
+        return False
+    low = content.lower()
+    return any(marker in low for marker in _BUDGET_NUDGE_MARKERS)
+
+
+def _has_renderable_ui_entry(project_root: Optional[Path], ui_written: List[str]) -> bool:
+    """True when the workspace has a renderable HTML/component UI surface for visual_inspect."""
+    if project_root is None:
+        return True
+    if any(Path(p).suffix.lower() in {".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte"} for p in ui_written):
+        return True
+    root = Path(project_root)
+    for rel in ("index.html", "public/index.html", "dist/index.html", "src/index.html", "templates/index.html"):
+        if (root / rel).is_file():
+            return True
+    try:
+        if any(root.glob("*.html")):
+            return True
+    except OSError:
+        pass
+    try:
+        from .tools import _BG_PROCS
+        if _BG_PROCS:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _canonical_tool_sig(name: str, raw_args: Any) -> str:
@@ -1248,6 +1380,9 @@ _BATCH_READ_ONLY_TOOLS = frozenset({
     "glob_files", "list_dir", "search_files", "recall",
     "list_custom_tools", "list_dynamic_rules", "list_background",
     "todo", "wait_for", "web_fetch",
+})
+_READ_REPEAT_TOOLS = frozenset({
+    "read_file", "search_files", "glob_files", "list_dir", "get_file_outline", "get_file_info",
 })
 _PROJECT_CHECK_CMD_RE = re.compile(
     r"\b(?:pytest|unittest|py_compile|compileall|mypy|pyright|ruff|flake8|"
@@ -1531,6 +1666,9 @@ def _maybe_anti_laziness_nudge(
     requires_security_pass: bool = False,
     security_verified_after_edit: bool = True,
     security_nudges_used: int = 0,
+    project_root: Optional[Path] = None,
+    missing_appointed_skills: Tuple[str, ...] = (),
+    tool_calls_count: int = 0,
 ) -> Optional[Tuple[str, str]]:
     """Return `(kind, continuation_prompt)` if work is unverified/incomplete; never loop after verified completion."""
     if free_mode:
@@ -1569,7 +1707,13 @@ def _maybe_anti_laziness_nudge(
             "now so all edits are confirmed working before finishing.",
         )
 
-    if ui_written and not browser_verified_after_ui_edit and ui_verify_nudges_used < 1 and verify_nudges_used < 1:
+    if (
+        ui_written
+        and not browser_verified_after_ui_edit
+        and ui_verify_nudges_used < 1
+        and verify_nudges_used < 1
+        and _has_renderable_ui_entry(project_root, ui_written)
+    ):
         ui_targets = ", ".join(ui_written[:6])
         return (
             "ui_verify",
@@ -1588,7 +1732,13 @@ def _maybe_anti_laziness_nudge(
     if work_verified and _DONE_SUMMARY_RE.search(tail_line):
         return None
 
-    has_deferred = bool(_DEFERRED_TAIL_RE.search(tail_line))
+    has_deferred = bool(_DEFERRED_TAIL_RE.search(tail_line) or _DEFERRED_TAIL_RE.search(content[-400:]))
+    truncated_skill_thought = bool(
+        missing_appointed_skills
+        and tool_calls_count == 0
+        and tail_line
+        and not re.search(r'[.!?"\'\)\]`:]\s*$', tail_line)
+    )
     # Only flag "would you like me to..." punts when code work is NOT yet verified/completed
     has_punt = bool(
         (round_num > 0 or bool(written_this_turn))
@@ -1599,7 +1749,13 @@ def _maybe_anti_laziness_nudge(
         )
     )
     has_stub = bool(round_num > 0 and _PROSE_STUB_RE.search(content))
-    if has_deferred or has_punt or has_stub:
+    if has_deferred or has_punt or has_stub or truncated_skill_thought:
+        if missing_appointed_skills and tool_calls_count == 0:
+            skills_csv = ",".join(missing_appointed_skills[:8])
+            return (
+                "continue",
+                f'Please emit the required ```tool_call JSON block(s) now — start by calling `read_skill(name="{skills_csv}")` and inspecting/implementing the workspace files.',
+            )
         return (
             "continue",
             "[Continue Execution]: Do not stop at plans, deferred promises, placeholders, or confirmation prompts. "
@@ -2269,6 +2425,9 @@ def execute_agent_loop(
     ui_verify_nudges_used: int = 0
     security_nudges_used: int = 0
     continue_nudges_used: int = 0
+    budget_override_nudges_used: int = 0
+    budget_hallucinated: bool = False
+    pending_new_chat_override: Optional[bool] = new_chat_override
     test_check_done: bool = getattr(state, "_test_check_done", False)
     tests_exist: Optional[bool] = getattr(state, "_tests_exist", None)
     last_tool_hint: str = ""
@@ -2276,6 +2435,7 @@ def execute_agent_loop(
     turn_counted: bool = False
     last_failure_sig: str = ""
     consecutive_same_failures: int = 0
+    unmutated_read_counts: Dict[str, int] = {}
     local_canned_retries: int = 0
     local_parse_retries: int = 0
     final_assistant_text: str = ""
@@ -2463,8 +2623,26 @@ def execute_agent_loop(
 
         for round_num in range(max_rounds):
             rounds_used = round_num + 1
+            budget_hallucinated = False
             active_budget = _max_web_prompt_chars_for_model(effective_model)
-            compacted_n = _compact_messages_for_web_limit(messages, max_chars=active_budget)
+            is_delta_continuation = bool(
+                round_num > 0
+                and effective_chat_url
+                and failover_new_chat is not True
+                and pending_new_chat_override is not True
+                and not getattr(state, "_force_new_chat_next", False)
+            )
+            if (is_delta_continuation or bool(effective_chat_url)) and active_budget < MAX_WEB_PROMPT_CHARS:
+                delta_budget = min(active_budget, 8_200)
+            else:
+                delta_budget = active_budget
+            compacted_n = _compact_messages_for_web_limit(
+                messages,
+                max_chars=delta_budget,
+                delta_mode=is_delta_continuation,
+            )
+            if active_budget < MAX_WEB_PROMPT_CHARS:
+                compacted_n += _trim_oversized_user_messages(messages, min(delta_budget, 7_600))
             if compacted_n and not quiet_ui:
                 R.print_info(
                     f"Auto-compacted {compacted_n} tool output(s) to stay within "
@@ -2485,6 +2663,116 @@ def execute_agent_loop(
             visual_fallback_from = ""
             cur_status_hint = last_tool_hint
             prompt_too_long_retries = 0
+            composer_submit_retries = 0
+
+            def _apply_model_failover(
+                next_model: str,
+                *,
+                reason_text: str,
+                event_prefix: str,
+                is_limit: bool = True,
+            ) -> None:
+                nonlocal effective_model, system_prompt_override, effective_chat_url
+                nonlocal failover_new_chat, is_delta_continuation
+                nonlocal prompt_too_long_retries, composer_submit_retries
+                nonlocal cur_status_hint, visual_fallback_from
+                if callable(getattr(client, "get_health", None)) and hasattr(state, "sync_account_from_health"):
+                    try:
+                        _fo_health = client.get_health()
+                        if isinstance(_fo_health, dict) and _fo_health:
+                            state.sync_account_from_health(_fo_health)
+                    except Exception:
+                        pass
+                prev_model = effective_model
+                effective_model = next_model
+                if hasattr(state, "set_model"):
+                    state.set_model(next_model)
+                effective_chat_url = None
+                failover_new_chat = True
+                is_delta_continuation = False
+                prompt_too_long_retries = 0
+                composer_submit_retries = 0
+                if hasattr(state, "clear_provider_chats"):
+                    state.clear_provider_chats([next_model], clear_roles=(role != "main"))
+                elif hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
+                    state.chat_urls.pop(next_model, None)
+                if role != "main":
+                    if hasattr(state, "clear_role_chat_url"):
+                        state.clear_role_chat_url(role, model=next_model)
+                    elif hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
+                        state.chat_urls.pop(f"{next_model}:role:{role}", None)
+                if effective_session_id and callable(getattr(client, "clear_session_chats", None)):
+                    try:
+                        client.clear_session_chats(
+                            effective_session_id,
+                            providers=[next_model],
+                            include_roles=(role != "main"),
+                        )
+                    except Exception:
+                        pass
+                if not free_mode and messages and messages[0].get("role") == "system":
+                    if role != "main" and system_prompt_override is not None:
+                        try:
+                            from .subagents import get_role_system_prompt
+                            role_sys = get_role_system_prompt(role, next_model)
+                            system_prompt_override = role_sys
+                            messages[0] = _make_system_msg(next_model)
+                        except Exception:
+                            pass
+                    elif role == "main":
+                        messages[0] = _make_system_msg(next_model)
+                while len(messages) >= 2 and messages[-1].get("role") == "user" and _is_budget_nudge_text(messages[-1].get("content")):
+                    messages.pop()
+                    if messages and messages[-1].get("role") == "assistant" and (
+                        _looks_like_budget_hallucination(messages[-1].get("content"))
+                        or _looks_like_tool_unavailable_misconception(messages[-1].get("content"))
+                    ):
+                        messages.pop()
+                next_budget = _max_web_prompt_chars_for_model(next_model)
+                _compact_messages_for_web_limit(
+                    messages,
+                    keep_recent_tools=2 if next_budget < MAX_WEB_PROMPT_CHARS else 6,
+                    max_chars=next_budget,
+                )
+                if next_budget < MAX_WEB_PROMPT_CHARS:
+                    _trim_oversized_user_messages(messages, min(next_budget, 7_600))
+                is_single_switch = is_limit and getattr(state, "agent_mode", "singleagent") == "singleagent"
+                q_list = getattr(state, "multiagent_queue", []) or []
+                if is_single_switch:
+                    msg = (
+                        f"{event_prefix} {R.friendly_model_name(prev_model)} — "
+                        f"switched to {R.friendly_model_name(next_model)} with full context (single-agent mode)."
+                    )
+                    cur_status_hint = f"Switch -> {next_model}"
+                else:
+                    slot_num = (q_list.index(next_model) + 1) if next_model in q_list else getattr(state, "multiagent_index", 0) + 1
+                    msg = (
+                        f"{event_prefix} {R.friendly_model_name(prev_model)} — "
+                        f"switching with full context to {R.friendly_model_name(next_model)} "
+                        f"(slot {slot_num}/{max(len(q_list), slot_num)})."
+                    )
+                    cur_status_hint = f"Failover -> {next_model}"
+                if active_visual_tracker is not None:
+                    visual_fallback_from = prev_model
+                if event_callback:
+                    event_callback(
+                        "switch_model" if is_single_switch else "failover",
+                        {
+                            "from": prev_model,
+                            "to": next_model,
+                            "from_model": prev_model,
+                            "to_model": next_model,
+                            "message": msg,
+                            "reason": reason_text[:160],
+                            "mode": "singleagent" if is_single_switch else "multiagent",
+                        },
+                    )
+                if not quiet_ui:
+                    if is_single_switch:
+                        R.print_success(msg)
+                    else:
+                        R.print_warn(msg)
+
             sr = None
             try:
                 while True:
@@ -2546,14 +2834,16 @@ def execute_agent_loop(
                             stream_kwargs["relay_id"] = relay_id_override
                         if failover_new_chat is not None:
                             stream_kwargs["new_chat"] = bool(failover_new_chat)
-                        elif new_chat_override is not None:
-                            stream_kwargs["new_chat"] = bool(new_chat_override)
+                        elif pending_new_chat_override is not None:
+                            stream_kwargs["new_chat"] = bool(pending_new_chat_override)
                         elif getattr(state, "_force_new_chat_next", False):
                             stream_kwargs["new_chat"] = True
                         if tools_override is not None:
                             stream_kwargs["tools_override"] = tools_override
                         response = _call_client_stream(client, stream_kwargs)
                         failover_new_chat = None
+                        if pending_new_chat_override is True:
+                            pending_new_chat_override = None
                         if getattr(state, "_force_new_chat_next", False):
                             state._force_new_chat_next = False
                         # Multiagent-only: a silent model downgrade reported on
@@ -2633,91 +2923,12 @@ def execute_agent_loop(
                         )
                         next_model = chosen_next_model or (state.advance_multiagent_queue(failed_model=effective_model) if can_failover else None)
                         if next_model:
-                            if callable(getattr(client, "get_health", None)) and hasattr(state, "sync_account_from_health"):
-                                try:
-                                    _fo_health = client.get_health()
-                                    if isinstance(_fo_health, dict) and _fo_health:
-                                        state.sync_account_from_health(_fo_health)
-                                except Exception:
-                                    pass
-                            prev_model = effective_model
-                            effective_model = next_model
-                            if hasattr(state, "set_model"):
-                                state.set_model(next_model)
-                            effective_chat_url = None
-                            failover_new_chat = True
-                            prompt_too_long_retries = 0
-                            if hasattr(state, "clear_provider_chats"):
-                                state.clear_provider_chats([next_model], clear_roles=(role != "main"))
-                            elif hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
-                                state.chat_urls.pop(next_model, None)
-                            if role != "main":
-                                if hasattr(state, "clear_role_chat_url"):
-                                    state.clear_role_chat_url(role, model=next_model)
-                                elif hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
-                                    state.chat_urls.pop(f"{next_model}:role:{role}", None)
-                            if effective_session_id and callable(getattr(client, "clear_session_chats", None)):
-                                try:
-                                    client.clear_session_chats(
-                                        effective_session_id,
-                                        providers=[next_model],
-                                        include_roles=(role != "main"),
-                                    )
-                                except Exception:
-                                    pass
-                            if not free_mode and messages and messages[0].get("role") == "system":
-                                if role != "main" and system_prompt_override is not None:
-                                    try:
-                                        from .subagents import get_role_system_prompt
-                                        role_sys = get_role_system_prompt(role, next_model)
-                                        system_prompt_override = role_sys
-                                        messages[0] = _make_system_msg(next_model)
-                                    except Exception:
-                                        pass
-                                elif role == "main":
-                                    messages[0] = _make_system_msg(next_model)
-                            next_budget = _max_web_prompt_chars_for_model(next_model)
-                            _compact_messages_for_web_limit(
-                                messages,
-                                keep_recent_tools=2 if next_budget < MAX_WEB_PROMPT_CHARS else 6,
-                                max_chars=next_budget,
+                            _apply_model_failover(
+                                next_model,
+                                reason_text=str(ple),
+                                event_prefix="Limit reached on",
+                                is_limit=True,
                             )
-                            is_single_switch = getattr(state, "agent_mode", "singleagent") == "singleagent"
-                            q_list = getattr(state, "multiagent_queue", []) or []
-                            if is_single_switch:
-                                msg = (
-                                    f"Limit reached on {R.friendly_model_name(prev_model)} — "
-                                    f"switched to {R.friendly_model_name(next_model)} with full context (single-agent mode)."
-                                )
-                                cur_status_hint = f"Switch -> {next_model}"
-                            else:
-                                slot_num = (q_list.index(next_model) + 1) if next_model in q_list else getattr(state, "multiagent_index", 0) + 1
-                                msg = (
-                                    f"Limit reached on {R.friendly_model_name(prev_model)} — "
-                                    f"switching with full context to {R.friendly_model_name(next_model)} "
-                                    f"(slot {slot_num}/{max(len(q_list), slot_num)})."
-                                )
-                                cur_status_hint = f"Failover -> {next_model}"
-                            if active_visual_tracker is not None:
-                                visual_fallback_from = prev_model
-                            if event_callback:
-                                event_callback(
-                                    "switch_model" if is_single_switch else "failover",
-                                    {
-                                        "from": prev_model,
-                                        "to": next_model,
-                                        "from_model": prev_model,
-                                        "to_model": next_model,
-                                        "message": msg,
-                                        "reason": str(ple)[:160],
-                                        "mode": "singleagent" if is_single_switch else "multiagent",
-                                    },
-                                )
-                            if not quiet_ui:
-                                if is_single_switch:
-                                    R.print_success(msg)
-                                else:
-                                    R.print_warn(msg)
                             continue
 
                         # Queue exhausted (multiagent) OR single-agent limit hit:
@@ -2878,6 +3089,69 @@ def execute_agent_loop(
                         break
                     except ConnectionError as e:
                         _stop_stream_ui(sr)
+                        err_low = str(e).lower()
+                        is_unsubmitted = (
+                            "prompt remained unsubmitted in composer" in err_low
+                            or "did not start or produce a text response" in err_low
+                        )
+                        if is_unsubmitted and composer_submit_retries < 2:
+                            composer_submit_retries += 1
+                            if composer_submit_retries == 1:
+                                retry_cap = min(active_budget, 7_200) if active_budget < MAX_WEB_PROMPT_CHARS else active_budget
+                                _compact_messages_for_web_limit(
+                                    messages,
+                                    keep_recent_tools=1,
+                                    force=True,
+                                    max_chars=retry_cap,
+                                    delta_mode=is_delta_continuation,
+                                )
+                                _trim_oversized_user_messages(messages, max(2_400, retry_cap - 1_200))
+                                cur_status_hint = "Retry composer submit (1/2)"
+                                if not quiet_ui:
+                                    R.print_warn(
+                                        f"{R.friendly_model_name(effective_model)} composer did not submit — "
+                                        "compacting context & retrying (1/2)..."
+                                    )
+                            else:
+                                effective_chat_url = None
+                                failover_new_chat = True
+                                is_delta_continuation = False
+                                fresh_cap = min(active_budget, 5_000) if active_budget < MAX_WEB_PROMPT_CHARS else active_budget
+                                _compact_messages_for_web_limit(
+                                    messages,
+                                    keep_recent_tools=1 if active_budget < MAX_WEB_PROMPT_CHARS else 6,
+                                    force=True,
+                                    max_chars=fresh_cap,
+                                )
+                                _trim_oversized_user_messages(messages, max(2_200, fresh_cap - 800))
+                                cur_status_hint = "Retry in fresh chat (2/2)"
+                                if not quiet_ui:
+                                    R.print_warn(
+                                        f"{R.friendly_model_name(effective_model)} composer remained unsubmitted — "
+                                        "resetting to fresh chat & retrying (2/2)..."
+                                    )
+                            try:
+                                time.sleep(1.2)
+                            except KeyboardInterrupt:
+                                _abort_interrupted()
+                                stream_aborted = True
+                                break
+                            continue
+                        can_failover = (
+                            is_unsubmitted
+                            and getattr(state, "agent_mode", "singleagent") == "multiagent"
+                            and not model_override
+                            and hasattr(state, "advance_multiagent_queue")
+                        )
+                        next_model = state.advance_multiagent_queue(failed_model=effective_model) if can_failover else None
+                        if next_model:
+                            _apply_model_failover(
+                                next_model,
+                                reason_text=str(e),
+                                event_prefix="Composer stalled on",
+                                is_limit=False,
+                            )
+                            continue
                         if active_visual_tracker is not None and not active_visual_tracker.closed:
                             _vis_line = active_visual_tracker.finish("transport_error", error_kind=_classify_visual_error(e))
                             _emit_visual_final(active_visual_tracker, _vis_line, "transport_error")
@@ -3071,7 +3345,60 @@ def execute_agent_loop(
             new_messages.append(asst_msg)
 
             if not tool_calls:
+                is_budget_claim = (
+                    not free_mode
+                    and not is_workflow_refusal
+                    and _looks_like_budget_hallucination(sanitized_content)
+                )
+                is_tool_misconception = (
+                    not free_mode
+                    and not is_workflow_refusal
+                    and not is_budget_claim
+                    and _looks_like_tool_unavailable_misconception(sanitized_content)
+                )
+                if is_budget_claim or is_tool_misconception:
+                    budget_hallucinated = True
+                    remaining_rounds = max(0, max_rounds - round_num - 1)
+                    if remaining_rounds > 0 and budget_override_nudges_used < 1:
+                        budget_override_nudges_used += 1
+                        if is_tool_misconception:
+                            if not quiet_ui:
+                                R.print_warn(
+                                    "Detected native-tool misconception — clarifying local `wsa` text tool_call bridge…"
+                                )
+                            last_tool_hint = "Clarifying local wsa tool_call bridge…"
+                            override_msg = {
+                                "role": "user",
+                                "content": (
+                                    "You ARE connected to my local `wsa` CLI bridge right now — these tools do not appear in your "
+                                    "built-in sandbox tool list because `wsa` parses plain markdown ```tool_call JSON blocks directly "
+                                    "from your reply, runs them locally on my PC, and pastes the real output back in the next message. "
+                                    "Please emit the required ```tool_call JSON block(s) now."
+                                ),
+                            }
+                        else:
+                            if not quiet_ui:
+                                R.print_warn(
+                                    f"Detected hallucinated tool-budget exhaustion — overriding ({remaining_rounds} rounds still available)…"
+                                )
+                            last_tool_hint = "Continuing with available tool rounds…"
+                            override_msg = {
+                                "role": "user",
+                                "content": (
+                                    f"This workspace tool session still has {remaining_rounds} rounds available "
+                                    "(there is no 0-call cap here). Please go ahead and emit the next ```tool_call JSON block(s) "
+                                    "to complete or verify the assigned files on disk."
+                                ),
+                            }
+                        messages.append(override_msg)
+                        new_messages.append(override_msg)
+                        continue
                 if enforce_verify_gate and not is_workflow_refusal:
+                    missing_skills = tuple(
+                        s
+                        for s in (active_appointment.skills if active_appointment else ())
+                        if s not in skills_read_this_turn and s not in getattr(state, "loaded_skills", set())
+                    )
                     nudge = _maybe_anti_laziness_nudge(
                         content=sanitized_content,
                         written_this_turn=written_this_turn,
@@ -3086,6 +3413,9 @@ def execute_agent_loop(
                         requires_security_pass=active_requires_security_pass,
                         security_verified_after_edit=security_verified_after_edit,
                         security_nudges_used=security_nudges_used,
+                        project_root=state.project_root,
+                        missing_appointed_skills=missing_skills,
+                        tool_calls_count=tool_calls_count,
                     )
                     if nudge:
                         kind, nudge_prompt = nudge
@@ -3383,6 +3713,7 @@ def execute_agent_loop(
 
                 path_arg = _rel_tool_path(args.get("path", ""), state.project_root)
                 if name in ("write_file", "patch_file", "apply_patch", "delete_file", "move_file", "copy_file") and not is_err:
+                    unmutated_read_counts.clear()
                     verification_evidence.clear()  # prior checks describe the pre-edit version
                     state._workspace_snapshot = None
                     verified_after_last_edit = False
@@ -3417,6 +3748,7 @@ def execute_agent_loop(
                                 security_skills_read_this_turn = True
                                 security_verified_after_edit = True
                 if name == "rollback" and not is_err and str(args.get("action") or "rollback").lower() == "rollback":
+                    unmutated_read_counts.clear()
                     verification_evidence.clear()
                     state._workspace_snapshot = None
                     verified_after_last_edit = False
@@ -3424,6 +3756,15 @@ def execute_agent_loop(
                 if name == "read_file" and not is_err and path_arg:
                     verified_this_turn.add(path_arg)
                     state.verified_files.add(path_arg)
+
+                if name in _READ_REPEAT_TOOLS and not is_err:
+                    rsig = _canonical_tool_sig(name, args)
+                    unmutated_read_counts[rsig] = unmutated_read_counts.get(rsig, 0) + 1
+                    if unmutated_read_counts[rsig] >= 3 and result:
+                        result += (
+                            "\n[Note: You already executed this exact read earlier in this turn with no file edits since. "
+                            "Synthesize what you have and proceed directly to write_file / patch_file or verification.]"
+                        )
 
                 if name in ("run_command", "run_python", "run_tests") and not is_err and _is_verification_command(name, args, result):
                     verified_after_last_edit = True
@@ -3438,14 +3779,21 @@ def execute_agent_loop(
                         if not tests_exist:
                             verified_after_last_edit = True
                 elif name == "visual_inspect":
+                    unrenderable_intermediate = (
+                        is_err
+                        and role == "coder"
+                        and "No index.html found in directory:" in result
+                        and not _has_renderable_ui_entry(state.project_root, list(written_this_turn))
+                    )
                     visual_clean = not is_err and result.rstrip().endswith("\nVisual checks: pass")
                     browser_verified_after_ui_edit = visual_clean
                     verification_evidence.pop(approval_key, None)
-                    verification_evidence[approval_key] = {
-                        "tool": name,
-                        "ok": bool(visual_clean),
-                        "result_class": "capture_failed" if is_err else ("ok" if visual_clean else "visual_defects"),
-                    }
+                    if not unrenderable_intermediate:
+                        verification_evidence[approval_key] = {
+                            "tool": name,
+                            "ok": bool(visual_clean),
+                            "result_class": "capture_failed" if is_err else ("ok" if visual_clean else "visual_defects"),
+                        }
                     if not is_err:
                         capture_keys.append(approval_key)
                     if visual_clean and not tests_exist:
@@ -3803,6 +4151,7 @@ def execute_agent_loop(
         "tool_calls_count": tool_calls_count,
         "aborted_reason": aborted_reason,
         "limit_exhausted": bool(limit_exhausted),
+        "budget_hallucinated": bool(budget_hallucinated),
         "messages": new_messages,
         "verification_evidence": list(verification_evidence.values()),
         "skills_read": sorted(skills_read_this_turn),

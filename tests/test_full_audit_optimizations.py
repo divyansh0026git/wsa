@@ -216,3 +216,577 @@ def test_visual_inspect_click_fires_exactly_once():
         cdp.run_actions([{"type": "click", "selector": "#inc"}])
         assert cdp.evaluate("window.clicks") == 1
 
+
+def test_budget_hallucination_in_loop_override_recovers(tmp_path):
+    """Verify fake 0-call tool-budget claims are overridden so the agent emits tool calls."""
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+    calls = []
+
+    def fake_stream(**kwargs):
+        calls.append(kwargs)
+        n = len(calls)
+        if n == 1:
+            assert kwargs.get("new_chat") is True
+            return {"content": "Tool execution budget for this turn is exhausted (0 calls remaining)."}
+        if n == 2:
+            last_msg = str(kwargs["messages"][-1]["content"])
+            assert "there is no 0-call cap here" in last_msg
+            assert "System Override" not in last_msg
+            assert kwargs.get("new_chat") is None
+            return {
+                "content": '```tool_call\n{"name": "write_file", "arguments": {"path": "ok.py", "content": "X = 1\\n"}}\n```'
+            }
+        if n == 3:
+            assert kwargs.get("new_chat") is None
+            return {
+                "content": '```tool_call\n{"name": "run_command", "arguments": {"command": "python -m py_compile ok.py"}}\n```'
+            }
+        return {"content": "All changes verified cleanly."}
+
+    client = Mock()
+    client.stream.side_effect = fake_stream
+    try:
+        res = agent.execute_agent_loop(
+            "Write ok.py",
+            state,
+            client,
+            max_rounds=6,
+            new_chat_override=True,
+            enforce_verify_gate=True,
+            quiet_ui=True,
+            live_ui=False,
+        )
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True, res
+    assert res["budget_hallucinated"] is False
+    assert (tmp_path / "ok.py").exists()
+    assert len(calls) == 4
+
+
+def test_orchestrator_fresh_chat_recovery_on_zero_write_missing_owned_files(tmp_path):
+    """Verify a poisoned 0-write coder task clears thread affinity, retries in fresh chat, and recovers."""
+    from wsa_agent import subagents
+
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, selected_model="gemini", permission_mode="auto", auto_approve=True)
+    state.active_chat_url = "https://gemini.google.com/app/poisoned1"
+    state.chat_urls["gemini"] = "https://gemini.google.com/app/poisoned1"
+    plan = [
+        {"id": "t1", "title": "Build a.js", "owned_files": ["a.js"], "depends_on": []},
+        {"id": "t2", "title": "Build b.js", "owned_files": ["b.js"], "depends_on": ["t1"]},
+    ]
+    calls = []
+
+    def role(**kwargs):
+        stage = kwargs.get("label") or kwargs["role"]
+        calls.append((stage, kwargs.get("new_chat_override"), kwargs.get("prompt", "")))
+        if stage == "explorer":
+            return {"ok": True, "final_text": "Clean workspace"}
+        if stage == "architect":
+            return {"ok": True, "final_text": json.dumps(plan)}
+        if stage == "coder:t1":
+            if sum(1 for s, _, _ in calls if s == "coder:t1") == 1:
+                return {
+                    "ok": True,
+                    "tool_calls_count": 0,
+                    "written_files": [],
+                    "budget_hallucinated": True,
+                    "final_text": "Task t1 could not be written (0 calls remaining).",
+                }
+            assert kwargs.get("new_chat_override") is True
+            assert "Fresh session continuation" in kwargs["prompt"]
+            (tmp_path / "a.js").write_text("export const a = 1;\n", encoding="utf-8")
+            return {"ok": True, "tool_calls_count": 2, "written_files": ["a.js"], "final_text": "Built a.js"}
+        if stage == "coder:t2":
+            (tmp_path / "b.js").write_text("export const b = 2;\n", encoding="utf-8")
+            return {"ok": True, "tool_calls_count": 2, "written_files": ["b.js"], "final_text": "Built b.js"}
+        if kwargs["role"] == "verifier":
+            return {
+                "ok": True,
+                "final_text": '{"verdict":"pass","checks":["node check ok"],"failures":[]}',
+                "verification_evidence": [{"tool": "run_command", "ok": True}],
+            }
+        return {"ok": True, "final_text": "done"}
+
+    client = Mock()
+    try:
+        with patch.object(subagents, "_run_role_agent", side_effect=role), \
+             patch.object(subagents, "_discover_live_relays", return_value=[]), \
+             patch.object(state, "auto_checkpoint"):
+            res = subagents.run_orchestrated_turn("Implement a.js and b.js", state, client)
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True
+    assert sum(1 for s, _, _ in calls if s == "coder:t1") == 2
+    assert sum(1 for s, _, _ in calls if s == "coder:t2") == 1
+    assert state.chat_urls.get("gemini") is None
+    assert client.clear_session_chats.called
+
+
+def test_orchestrator_fails_closed_when_retry_still_missing_owned_files(tmp_path):
+    """Verify a 0-write coder task whose retry also writes nothing fails closed instead of marking ok=True."""
+    from wsa_agent import subagents
+
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, selected_model="gemini", permission_mode="auto", auto_approve=True)
+    plan = [
+        {"id": "t1", "title": "Build a.js", "owned_files": ["a.js"], "depends_on": []},
+        {"id": "t2", "title": "Build b.js", "owned_files": ["b.js"], "depends_on": ["t1"]},
+    ]
+    calls = []
+
+    def role(**kwargs):
+        stage = kwargs.get("label") or kwargs["role"]
+        calls.append(stage)
+        if stage == "explorer":
+            return {"ok": True, "final_text": "Clean workspace"}
+        if stage == "architect":
+            return {"ok": True, "final_text": json.dumps(plan)}
+        if stage == "coder:t1":
+            return {
+                "ok": True,
+                "tool_calls_count": 0,
+                "written_files": [],
+                "budget_hallucinated": True,
+                "final_text": "Tool execution budget exhausted (0 calls remaining).",
+            }
+        return {"ok": True, "final_text": "should not run"}
+
+    try:
+        with patch.object(subagents, "_run_role_agent", side_effect=role), \
+             patch.object(subagents, "_discover_live_relays", return_value=[]), \
+             patch.object(state, "auto_checkpoint"):
+            res = subagents.run_orchestrated_turn("Implement a.js and b.js", state, Mock())
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is False
+    assert calls.count("coder:t1") == 2
+    assert "coder:t2" not in calls
+    assert [t["status"] for t in res["tasks"]] == ["failed", "blocked"]
+    assert res["verdict"]["failures"][0] == {"file": "t1", "issue": "missing_owned_files:a.js"}
+
+
+def test_cross_provider_failover_strips_gemini_budget_refusal_and_nudge(tmp_path):
+    """Cross-provider failover must drop trailing Gemini 0-call refusals/nudges and detect new Claude refusals."""
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, selected_model="gemini", permission_mode="auto", auto_approve=True)
+    state.configure_multiagent(["gemini", "claude"])
+    seen_calls = []
+
+    def fake_stream(**kwargs):
+        seen_calls.append({
+            "model": kwargs.get("model"),
+            "contents": [str(m.get("content") or "") for m in kwargs.get("messages") or []],
+        })
+        n = len(seen_calls)
+        if n == 1:
+            return {"content": "I cannot edit files here (0 tool calls remaining)."}
+        if n == 2:
+            raise agent.ProviderLimitError("limit reached", provider="gemini", raw_error="LIMIT_REACHED")
+        return {"content": "Completed safely without inheriting prior refusal framing."}
+
+    client = Mock()
+    client.stream.side_effect = fake_stream
+    client.get_health.return_value = {}
+    try:
+        res = agent.execute_agent_loop(
+            "Verify status",
+            state,
+            client,
+            role="explorer",
+            max_rounds=6,
+            enforce_verify_gate=False,
+            quiet_ui=True,
+            live_ui=False,
+        )
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True
+    assert len(seen_calls) == 3
+    assert seen_calls[2]["model"] == "claude"
+    joined_claude_msgs = "\n".join(seen_calls[2]["contents"])
+    assert "0 tool calls remaining" not in joined_claude_msgs
+    assert "there is no 0-call cap here" not in joined_claude_msgs
+    assert mm.is_claude_workflow_refusal(
+        "I'm not going to emit tool_call JSON blocks because this matches a jailbreak pattern."
+    ) is True
+
+
+def test_ui_verify_gate_skips_intermediate_js_slice_without_index_html(tmp_path):
+    """ui_verify should skip intermediate JS/CSS modules until an HTML entrypoint exists."""
+    skip = agent._maybe_anti_laziness_nudge(
+        content="Implemented js/uiController.js.",
+        written_this_turn={"js/uiController.js"},
+        verified_after_last_edit=True,
+        tests_exist=False,
+        round_num=1,
+        verify_nudges_used=0,
+        continue_nudges_used=0,
+        free_mode=False,
+        browser_verified_after_ui_edit=False,
+        ui_verify_nudges_used=0,
+        project_root=tmp_path,
+    )
+    assert skip is None
+
+    (tmp_path / "index.html").write_text("<!doctype html><html><body></body></html>", encoding="utf-8")
+    fire = agent._maybe_anti_laziness_nudge(
+        content="Implemented js/uiController.js.",
+        written_this_turn={"js/uiController.js"},
+        verified_after_last_edit=True,
+        tests_exist=False,
+        round_num=1,
+        verify_nudges_used=0,
+        continue_nudges_used=0,
+        free_mode=False,
+        browser_verified_after_ui_edit=False,
+        ui_verify_nudges_used=0,
+        project_root=tmp_path,
+    )
+    assert fire is not None
+    assert fire[0] == "ui_verify"
+
+
+def test_delta_mode_compaction_preserves_unread_tool_output_on_chatgpt():
+    """Active-thread delta compaction trims historical tools while keeping fresh unread reads intact."""
+    old_chunk = "\n".join(f"{i:4d} | old_line {'x' * 90}" for i in range(1, 140))
+    unread_chunk = "\n".join(f"{i:4d} | fresh_line {'y' * 75}" for i in range(1, 75))
+    msgs = [
+        {"role": "system", "content": "S" * 10_000},
+        {"role": "user", "content": "Inspect and wire main.js"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "read_file", "arguments": '{"path":"old.js"}'}}]},
+        {"role": "tool", "name": "read_file", "content": old_chunk},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "function": {"name": "read_file", "arguments": '{"path":"fresh.js"}'}}]},
+        {"role": "tool", "name": "read_file", "content": unread_chunk},
+    ]
+    assert agent._messages_total_chars(msgs) > agent.CHATGPT_WEB_PROMPT_CHARS
+    compacted_n = agent._compact_messages_for_web_limit(
+        msgs,
+        max_chars=agent.CHATGPT_WEB_PROMPT_CHARS,
+        delta_mode=True,
+    )
+    assert compacted_n >= 1
+    assert "[Compacted" in msgs[3]["content"]
+    assert msgs[5]["content"] == unread_chunk
+
+    # An oversized unread delta (> 21.5KB on its own) still gets bounded cleanly
+    huge_unread = "\n".join(f"{i:4d} | huge_line {'z' * 110}" for i in range(1, 240))
+    msgs.append({"role": "tool", "name": "read_file", "content": huge_unread})
+    compacted_over = agent._compact_messages_for_web_limit(
+        msgs,
+        max_chars=agent.CHATGPT_WEB_PROMPT_CHARS,
+        delta_mode=True,
+    )
+    assert compacted_over >= 1
+    assert agent._messages_total_chars(msgs[5:]) <= agent.CHATGPT_WEB_PROMPT_CHARS + 300
+
+
+def test_repeated_unmutated_read_hint_fires_on_third_repeat(tmp_path):
+    """Repeating identical read-only calls 3 times without intervening edits appends a concise guidance note."""
+    (tmp_path / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+    seen_tool_contents = []
+    call_idx = 0
+
+    def fake_stream(**kwargs):
+        nonlocal call_idx
+        call_idx += 1
+        for m in kwargs.get("messages") or []:
+            if m.get("role") == "tool" and m.get("name") == "read_file":
+                c = str(m.get("content") or "")
+                if c not in seen_tool_contents:
+                    seen_tool_contents.append(c)
+        if call_idx <= 3:
+            return {"content": '```tool_call\n{"name": "read_file", "arguments": {"path": "a.txt"}}\n```'}
+        return {"content": "Finished reading."}
+
+    client = Mock()
+    client.stream.side_effect = fake_stream
+    try:
+        res = agent.execute_agent_loop(
+            "Inspect a.txt",
+            state,
+            client,
+            role="explorer",
+            max_rounds=6,
+            enforce_verify_gate=False,
+            quiet_ui=True,
+            live_ui=False,
+        )
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True
+    assert len(seen_tool_contents) == 2
+    assert "already executed this exact read earlier" not in seen_tool_contents[0]
+    assert "already executed this exact read earlier" in seen_tool_contents[-1]
+
+
+@pytest.mark.parametrize("transient_err", [
+    "ChatGPT prompt remained unsubmitted in composer (Send button/form did not trigger response)",
+    "ChatGPT tab did not start or produce a text response",
+])
+def test_composer_unsubmitted_error_retries_and_recovers(tmp_path, transient_err):
+    """Verify transient composer/no-response relay errors retry compactly, then reset to fresh chat."""
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, selected_model="chatgpt", permission_mode="auto", auto_approve=True)
+    state.active_chat_url = "https://chatgpt.com/c/sticky1"
+    state.chat_urls["chatgpt"] = "https://chatgpt.com/c/sticky1"
+    err = ConnectionError(f"API error: upstream error: DOM relay error: {transient_err}")
+
+    seen_new_chat = []
+
+    def two_fail_then_ok(**kwargs):
+        seen_new_chat.append(kwargs.get("new_chat"))
+        if len(seen_new_chat) <= 2:
+            raise err
+        return {"content": "Recovered cleanly in fresh chat."}
+
+    client = Mock()
+    client.stream.side_effect = two_fail_then_ok
+    try:
+        with patch.object(agent.time, "sleep"):
+            res = agent.execute_agent_loop(
+                "Finish index.html",
+                state,
+                client,
+                max_rounds=4,
+                enforce_verify_gate=False,
+                quiet_ui=True,
+                live_ui=False,
+            )
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True
+    assert client.stream.call_count == 3
+    assert seen_new_chat == [None, None, True]
+
+
+def test_tool_unavailable_misconception_clarification_nudge_recovers(tmp_path):
+    """Verify web reasoning tool-unavailable misconceptions receive a bridge clarification and recover."""
+    (tmp_path / "app.txt").write_text("ok\n", encoding="utf-8")
+    tool_block = mm._format_tools_prompt_block(tools.TOOL_DEFINITIONS, provider="chatgpt")
+    assert "local `wsa` CLI bridge" in tool_block
+    turn1_prompt, _ = mm.messages_to_prompt(
+        [{"role": "system", "content": "Helper"}, {"role": "user", "content": "Check app.txt"}],
+        tools=tools.TOOL_DEFINITIONS,
+        provider="chatgpt",
+    )
+    assert len(turn1_prompt.encode("utf-8")) <= 14_000
+
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, selected_model="chatgpt", permission_mode="auto", auto_approve=True)
+    calls = []
+
+    def fake_stream(**kwargs):
+        calls.append(kwargs)
+        n = len(calls)
+        if n == 1:
+            return {
+                "content": (
+                    "One important limitation: the read_file and related WSA local-workspace tools "
+                    "are not exposed in my current execution environment."
+                )
+            }
+        if n == 2:
+            assert "`wsa` parses plain markdown" in str(kwargs["messages"][-1]["content"])
+            return {"content": '```tool_call\n{"name": "read_file", "arguments": {"path": "app.txt"}}\n```'}
+        return {"content": "Read app.txt cleanly."}
+
+    client = Mock()
+    client.stream.side_effect = fake_stream
+    try:
+        res = agent.execute_agent_loop(
+            "Check app.txt",
+            state,
+            client,
+            max_rounds=6,
+            enforce_verify_gate=False,
+            quiet_ui=True,
+            live_ui=False,
+        )
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True, res
+    assert res["budget_hallucinated"] is False
+    assert len(calls) == 3
+
+
+def test_truncated_mid_thought_with_appointed_skills_triggers_continue_nudge() -> None:
+    from wsa_agent.agent import _maybe_anti_laziness_nudge
+
+    # 1. Truncated mid-thought with appointed skills unread and zero tool calls
+    truncated = _maybe_anti_laziness_nudge(
+        content="Let me inspect the workspace and load skills first.\nActually batch: read_skill, glob",
+        written_this_turn=set(),
+        verified_after_last_edit=True,
+        tests_exist=False,
+        round_num=0,
+        verify_nudges_used=0,
+        continue_nudges_used=0,
+        free_mode=False,
+        missing_appointed_skills=("threejs-skills", "unslop"),
+        tool_calls_count=0,
+    )
+    assert truncated is not None
+    assert truncated[0] == "continue"
+    assert 'read_skill(name="threejs-skills,unslop")' in truncated[1]
+
+    # 2. Mid-thought cutoff ending in a bare token without deferred phrasing still nudges read_skill
+    bare_cutoff = _maybe_anti_laziness_nudge(
+        content="Checking project entrypoints and runtime configuration, glob",
+        written_this_turn=set(),
+        verified_after_last_edit=True,
+        tests_exist=False,
+        round_num=0,
+        verify_nudges_used=0,
+        continue_nudges_used=0,
+        free_mode=False,
+        missing_appointed_skills=("threejs-skills", "unslop"),
+        tool_calls_count=0,
+    )
+    assert bare_cutoff is not None
+    assert bare_cutoff[0] == "continue"
+    assert 'read_skill(name="threejs-skills,unslop")' in bare_cutoff[1]
+
+    # 3. Finished prose answer ending cleanly does not false-trigger
+    finished = _maybe_anti_laziness_nudge(
+        content="The workspace is already verified and complete.",
+        written_this_turn=set(),
+        verified_after_last_edit=True,
+        tests_exist=False,
+        round_num=0,
+        verify_nudges_used=0,
+        continue_nudges_used=0,
+        free_mode=False,
+        missing_appointed_skills=("threejs-skills", "unslop"),
+        tool_calls_count=0,
+    )
+    assert finished is None
+
+
+def test_layout_audit_js_excludes_sr_only_from_clipped_text() -> None:
+    from wsa_agent.visual import _AUDIT_AND_SOM_JS
+
+    assert "sr-only" in _AUDIT_AND_SOM_JS
+    assert "visually-hidden" in _AUDIT_AND_SOM_JS
+    assert "isSrOnly" in _AUDIT_AND_SOM_JS
+
+
+def test_composer_unsubmitted_trims_oversized_user_handoff_message(tmp_path):
+    """Verify oversized user handoff messages (with 0 tool messages) shrink on composer retry 1 and retry 2."""
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, selected_model="chatgpt", permission_mode="auto", auto_approve=True)
+    state.active_chat_url = "https://chatgpt.com/c/sticky_handoff"
+    state.chat_urls["chatgpt"] = "https://chatgpt.com/c/sticky_handoff"
+    err = ConnectionError(
+        "API error: upstream error: DOM relay error: "
+        "ChatGPT prompt remained unsubmitted in composer (Send button/form did not trigger response)"
+    )
+
+    seen_user_lens = []
+    seen_new_chat = []
+
+    def two_fail_then_ok(**kwargs):
+        msgs = kwargs.get("messages") or []
+        user_msgs = [m for m in msgs if m.get("role") == "user"]
+        seen_user_lens.append(len(str(user_msgs[-1].get("content") or "")) if user_msgs else 0)
+        seen_new_chat.append(kwargs.get("new_chat"))
+        if len(seen_new_chat) <= 2:
+            raise err
+        return {"content": "Handoff submitted after trimming."}
+
+    client = Mock()
+    client.stream.side_effect = two_fail_then_ok
+    huge_handoff = "TASK HEADER: fix bugs\n" + ("Explorer detail line with context.\n" * 340) + "\nSTRICT SCOPE: index.html"
+    assert len(huge_handoff) > 11_500
+    try:
+        with patch.object(agent.time, "sleep"):
+            res = agent.execute_agent_loop(
+                huge_handoff,
+                state,
+                client,
+                max_rounds=3,
+                enforce_verify_gate=False,
+                quiet_ui=True,
+                live_ui=False,
+            )
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True
+    assert seen_new_chat == [None, None, True]
+    assert seen_user_lens[0] <= 8_000
+    assert seen_user_lens[1] < seen_user_lens[0]
+    assert seen_user_lens[1] < 7_500
+    assert seen_user_lens[2] <= 5_000
+
+
+def test_composer_unsubmitted_exhausted_fails_over_in_multiagent_mode(tmp_path):
+    """Verify persistent composer-unsubmitted errors on primary provider fail over to next queued provider."""
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    state = SessionState(project_root=tmp_path, selected_model="chatgpt", permission_mode="auto", auto_approve=True)
+    state.configure_multiagent(["chatgpt", "venice"])
+    state.active_chat_url = "https://chatgpt.com/c/stalled1"
+    state.chat_urls["chatgpt"] = "https://chatgpt.com/c/stalled1"
+    err = ConnectionError(
+        "API error: upstream error: DOM relay error: "
+        "ChatGPT prompt remained unsubmitted in composer (Send button/form did not trigger response)"
+    )
+
+    seen_calls = []
+
+    def three_chatgpt_fails_then_venice_ok(**kwargs):
+        seen_calls.append((kwargs.get("model"), kwargs.get("new_chat")))
+        if len(seen_calls) <= 3:
+            raise err
+        return {"content": "Completed on Venice failover."}
+
+    client = Mock()
+    client.stream.side_effect = three_chatgpt_fails_then_venice_ok
+    try:
+        with patch.object(agent.time, "sleep"):
+            res = agent.execute_agent_loop(
+                "Inspect and fix layout overflow",
+                state,
+                client,
+                max_rounds=3,
+                enforce_verify_gate=False,
+                quiet_ui=True,
+                live_ui=False,
+            )
+    finally:
+        tools.set_project_root(prev_root)
+
+    assert res["ok"] is True
+    assert len(seen_calls) == 4
+    assert [m for m, _ in seen_calls] == ["chatgpt", "chatgpt", "chatgpt", "venice"]
+    assert seen_calls[3] == ("venice", True)
+    assert state.model == "venice"
+
+
+
+
+
+
+
+
+
