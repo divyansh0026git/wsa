@@ -3186,14 +3186,15 @@ def execute_agent_loop(
                         is_unsubmitted = (
                             "prompt remained unsubmitted in composer" in err_low
                             or "did not start or produce a text response" in err_low
+                            or "dom relay timeout (" in err_low
                         )
                         if is_unsubmitted and composer_submit_retries < 2:
                             composer_submit_retries += 1
                             if composer_submit_retries == 1:
-                                retry_cap = min(active_budget, 7_200) if active_budget < MAX_WEB_PROMPT_CHARS else active_budget
+                                retry_cap = min(active_budget, 7_200) if active_budget < MAX_WEB_PROMPT_CHARS else min(active_budget, 24_000)
                                 _compact_messages_for_web_limit(
                                     messages,
-                                    keep_recent_tools=1,
+                                    keep_recent_tools=1 if active_budget < MAX_WEB_PROMPT_CHARS else 2,
                                     force=True,
                                     max_chars=retry_cap,
                                     delta_mode=is_delta_continuation,
@@ -3209,10 +3210,10 @@ def execute_agent_loop(
                                 effective_chat_url = None
                                 failover_new_chat = True
                                 is_delta_continuation = False
-                                fresh_cap = min(active_budget, 5_000) if active_budget < MAX_WEB_PROMPT_CHARS else active_budget
+                                fresh_cap = min(active_budget, 5_000) if active_budget < MAX_WEB_PROMPT_CHARS else min(active_budget, 20_000)
                                 _compact_messages_for_web_limit(
                                     messages,
-                                    keep_recent_tools=1 if active_budget < MAX_WEB_PROMPT_CHARS else 6,
+                                    keep_recent_tools=1 if active_budget < MAX_WEB_PROMPT_CHARS else 3,
                                     force=True,
                                     max_chars=fresh_cap,
                                 )

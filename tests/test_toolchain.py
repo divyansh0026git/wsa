@@ -557,4 +557,28 @@ def test_all_18_skills_are_mapped_to_authoritative_toolchains(tmp_path):
     assert "@types/three" in d_3d
 
 
+def test_agent_loop_recovers_from_dom_relay_timeout_via_compaction_retry(tmp_path):
+    from wsa_agent import agent
+    from wsa_agent.session import SessionState
+
+    state = SessionState(project_root=tmp_path, selected_model="gemini", permission_mode="auto", auto_approve=True)
+    calls = {"n": 0}
+
+    class TimeoutOnceClient:
+        api_base = "http://127.0.0.1:8081/v1"
+        api_key = "sk-wsa"
+
+        def stream(self, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("API error: upstream error: DOM relay timeout (300s) waiting for the Gemini tab to finish answering")
+            return {"content": "Recovered after compaction retry.", "tool_calls": []}
+
+    with mock.patch("time.sleep"):
+        res = agent.execute_agent_loop("Explain the orbital solver", state, TimeoutOnceClient(), quiet_ui=True)
+    assert res["ok"] is True
+    assert calls["n"] == 2
+
+
+
 
