@@ -1163,6 +1163,152 @@ def test_explorer_and_baseline_visual_inspect_do_not_abort_dag_while_verifier_an
         tools.set_project_root(prev_root)
 
 
+def test_intermediate_dag_slice_defers_downstream_visual_defects_while_enforcing_console_and_final_ui_gates(tmp_path) -> None:
+    """Verify intermediate DAG slices defer downstream visual layout defects while failing console errors and enforcing final UI gates."""
+    from wsa_agent import subagents, visual
+
+    (tmp_path / "index.html").write_text("<h1>Hello</h1>", encoding="utf-8")
+    (tmp_path / "js").mkdir(exist_ok=True)
+    (tmp_path / "js" / "shaders.js").write_text("export const v = 1;\n", encoding="utf-8")
+    (tmp_path / "styles").mkdir(exist_ok=True)
+    (tmp_path / "styles" / "main.css").write_text("body { color: #111; }\n", encoding="utf-8")
+
+    tiny_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc`\xa8\x00\x00"
+        b"\x00\x04\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    res_downstream_visual_only = {
+        "ok": True,
+        "tiles": ["DESKTOP 1440x900 [SoM]"],
+        "image_bytes": tiny_png,
+        "image_mime": "image/png",
+        "image_width": 1440,
+        "image_height": 900,
+        "viewports": [{
+            "name": "desktop",
+            "width": 1440,
+            "height": 900,
+            "pixels": {"ok": True, "std_luma": 40.0, "unique_buckets": 30, "blank": False},
+            "audit": {"overflow_x": 0, "low_contrast_texts": ['p (rendered contrast 1.5:1 on #090a0d "Hi")']},
+        }],
+        "console_errors": [],
+        "page_exceptions": [],
+        "failed_requests": [],
+    }
+    res_console_error = {
+        **res_downstream_visual_only,
+        "console_errors": ["ReferenceError: bad is not defined", "TypeError: foo"],
+    }
+
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    try:
+        # 1. Intermediate DAG slice (defer_visual_gate=True) with Console/JS Errors: 0 completes ok=True
+        st_mid = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        mid_client = Mock()
+        mid_client.stream.side_effect = [
+            {"content": '```tool_call\n{"name": "read_file", "arguments": {"path": "js/shaders.js"}}\n```'},
+            {"content": '```tool_call\n{"name": "write_file", "arguments": {"path": "js/shaders.js", "content": "export const v = 2;\\n"}}\n```'},
+            {"content": '```tool_call\n{"name": "visual_inspect", "arguments": {"target": "index.html"}}\n```'},
+            {"content": '```tool_call\n{"name": "run_python", "arguments": {"code": "assert 2 == 2"}}\n```'},
+            {"content": "Shaders updated and runtime clean; CSS deferred downstream."},
+        ]
+        with patch.object(visual, "capture_visual_inspection", return_value=res_downstream_visual_only):
+            out_mid = agent.execute_agent_loop(
+                "Update shaders",
+                st_mid,
+                mid_client,
+                role="coder",
+                allowed_write_paths=["js/shaders.js"],
+                enforce_verify_gate=True,
+                defer_visual_gate=True,
+                quiet_ui=True,
+                live_ui=False,
+            )
+        assert out_mid["ok"] is True, out_mid
+
+        # 2. Intermediate DAG slice with Console/JS Errors: 2 STILL fails strictly
+        st_err = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        err_client = Mock()
+        err_client.stream.side_effect = [
+            {"content": '```tool_call\n{"name": "read_file", "arguments": {"path": "js/shaders.js"}}\n```'},
+            {"content": '```tool_call\n{"name": "write_file", "arguments": {"path": "js/shaders.js", "content": "export const v = 3;\\n"}}\n```'},
+            {"content": '```tool_call\n{"name": "visual_inspect", "arguments": {"target": "index.html"}}\n```'},
+            {"content": "Done."},
+            {"content": "Done."},
+            {"content": "Done."},
+        ]
+        with patch.object(visual, "capture_visual_inspection", return_value=res_console_error):
+            out_err = agent.execute_agent_loop(
+                "Update shaders broken",
+                st_err,
+                err_client,
+                role="coder",
+                allowed_write_paths=["js/shaders.js"],
+                enforce_verify_gate=False,
+                defer_visual_gate=True,
+                quiet_ui=True,
+                live_ui=False,
+            )
+        assert out_err["ok"] is False
+        assert out_err["aborted_reason"] == "verification_failed"
+
+        # 3. Final UI slice (defer_visual_gate=False) STILL fails strictly on visual contrast defects
+        st_fin = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        fin_client = Mock()
+        fin_client.stream.side_effect = [
+            {"content": '```tool_call\n{"name": "read_file", "arguments": {"path": "styles/main.css"}}\n```'},
+            {"content": '```tool_call\n{"name": "write_file", "arguments": {"path": "styles/main.css", "content": "body { color: #111; }\\n"}}\n```'},
+            {"content": '```tool_call\n{"name": "visual_inspect", "arguments": {"target": "index.html"}}\n```'},
+            {"content": "Done."},
+            {"content": "Done."},
+            {"content": "Done."},
+        ]
+        with patch.object(visual, "capture_visual_inspection", return_value=res_downstream_visual_only):
+            out_fin = agent.execute_agent_loop(
+                "Polish UI",
+                st_fin,
+                fin_client,
+                role="coder",
+                allowed_write_paths=["styles/main.css"],
+                enforce_verify_gate=False,
+                defer_visual_gate=False,
+                quiet_ui=True,
+                live_ui=False,
+            )
+        assert out_fin["ok"] is False
+        assert out_fin["aborted_reason"] == "verification_failed"
+
+        # 4. Orchestrator sets defer_visual_gate=True on T1 (js/shaders.js) and omits/False on final T2 (ui=True)
+        st_orch = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        plan = [
+            {"id": "t1", "title": "Fix shaders", "owned_files": ["js/shaders.js"], "depends_on": [], "acceptance": "ok", "ui": False},
+            {"id": "t2", "title": "Polish UI", "owned_files": ["styles/main.css"], "depends_on": ["t1"], "acceptance": "ok", "ui": True},
+        ]
+        coder_calls = []
+
+        def fake_worker(**kwargs):
+            r = kwargs.get("role")
+            if r == "coder":
+                coder_calls.append((kwargs.get("label"), bool(kwargs.get("defer_visual_gate", False))))
+                return {"ok": True, "written_files": list(kwargs.get("owned_files") or ())}
+            if r == "architect":
+                return {"ok": True, "final_text": json.dumps(plan)}
+            if r == "verifier":
+                return {"ok": True, "final_text": '{"verdict":"pass","checks":["ok"],"failures":[]}', "verification_evidence": [{"ok": True}]}
+            return {"ok": True, "final_text": "ok"}
+
+        with patch.object(subagents, "_run_role_agent", side_effect=fake_worker), \
+             patch.object(subagents, "_discover_live_relays", return_value=[]), \
+             patch.object(st_orch, "auto_checkpoint"):
+            orch_out = subagents.run_orchestrated_turn("Upgrade 3D shaders and CSS", st_orch, Mock())
+        assert orch_out["ok"] is True, orch_out
+        assert coder_calls == [("coder:t1", True), ("coder:t2", False)]
+    finally:
+        tools.set_project_root(prev_root)
+
+
 
 
 

@@ -795,6 +795,7 @@ def _run_role_agent(
     label: str = "",
     owned_files: Optional[List[str]] = None,
     new_chat_override: Optional[bool] = None,
+    defer_visual_gate: bool = False,
 ) -> Dict[str, Any]:
     """Execute one scoped subagent call under strict tool allowlist and thread-mode continuity policy."""
     stage_label = label or role
@@ -851,6 +852,8 @@ def _run_role_agent(
     )
     if new_chat_override is not None:
         loop_kwargs["new_chat_override"] = new_chat_override
+    if defer_visual_gate:
+        loop_kwargs["defer_visual_gate"] = True
     return execute_agent_loop(stage_prompt, state, client, **loop_kwargs)
 
 
@@ -1495,12 +1498,32 @@ def run_orchestrated_turn(
                 else ""
             )
             desc_text = f"Task Description:\n{task_item['description']}\n\n" if task_item.get("description") else ""
+            has_downstream_ui = bool(not task_item.get("ui")) and any(
+                t.get("id") != tid
+                and t.get("status") not in ("done", "failed")
+                and (
+                    bool(t.get("ui"))
+                    or any(
+                        _SLICE_UI_RE.search(str(p)) or _SLICE_3D_RE.search(str(p))
+                        for p in (t.get("owned_files") or ())
+                    )
+                )
+                for t in tasks
+            )
+            defer_slice_note = (
+                " Intermediate DAG slice: verify your owned files with syntax/runtime checks "
+                "(e.g. `node --check`, `py_compile`, `pytest`); full-page `visual_inspect` "
+                "contrast/header/palette acceptance is enforced once downstream UI/stage slices complete."
+                if has_downstream_ui
+                else ""
+            )
             task_guidance = (
                 "Think deeply about edge cases and dependencies before editing. Implement any requested deliverables "
                 "completely within the assigned scope. Read existing targets thoroughly before editing "
                 "and use `write_file` for new modules. For verification-only tasks, run the requested checks. "
                 "Verify the acceptance criteria thoroughly and summarize the observed results. "
                 "You have full multi-round tool execution available for this slice (never claim a 0-call tool budget)."
+                + defer_slice_note
             )
             worker_prompt = (
                 f"Execute task `{tid}`: {task_item['title']}\n"
@@ -1527,6 +1550,8 @@ def run_orchestrated_turn(
                 label=f"coder:{tid}",
                 owned_files=owned or None,
             )
+            if has_downstream_ui:
+                worker_args["defer_visual_gate"] = True
             res = _run_stage(**worker_args)
             reason = str(res.get("aborted_reason") or "")
             if (

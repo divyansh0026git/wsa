@@ -1669,6 +1669,7 @@ def _maybe_anti_laziness_nudge(
     project_root: Optional[Path] = None,
     missing_appointed_skills: Tuple[str, ...] = (),
     tool_calls_count: int = 0,
+    defer_visual_gate: bool = False,
 ) -> Optional[Tuple[str, str]]:
     """Return `(kind, continuation_prompt)` if work is unverified/incomplete; never loop after verified completion."""
     if free_mode:
@@ -1700,15 +1701,21 @@ def _maybe_anti_laziness_nudge(
                 "Run `python -m pytest -x -q` (and any relevant syntax/runtime check via `run_command` or `run_python`) "
                 "now, fix any failure, and then report your verified final summary.",
             )
+        verify_hint = (
+            "`py_compile`, `node --check`, or targeted runtime checks"
+            if defer_visual_gate
+            else "`py_compile`, `node --check`, `browser_inspect`, `visual_inspect`, or targeted checks"
+        )
         return (
             "verify",
             f"[System Verification Gate]: You edited `{targets}` without running a passing check after your final edit. "
-            "Run a thorough verification command (`py_compile`, `node --check`, `browser_inspect`, `visual_inspect`, or targeted checks) "
+            f"Run a thorough verification command ({verify_hint}) "
             "now so all edits are confirmed working before finishing.",
         )
 
     if (
         ui_written
+        and not defer_visual_gate
         and not browser_verified_after_ui_edit
         and ui_verify_nudges_used < 1
         and verify_nudges_used < 1
@@ -2342,6 +2349,7 @@ def execute_agent_loop(
     live_ui: Optional[bool] = None,
     flush_final_stream: bool = True,
     skill_appointment: Optional[SkillAppointment] = None,
+    defer_visual_gate: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute an agentic tool loop for either the main session (`run_turn`) or a scoped subagent role.
@@ -3420,6 +3428,7 @@ def execute_agent_loop(
                         project_root=state.project_root,
                         missing_appointed_skills=missing_skills,
                         tool_calls_count=tool_calls_count,
+                        defer_visual_gate=defer_visual_gate,
                     )
                     if nudge:
                         kind, nudge_prompt = nudge
@@ -3790,6 +3799,11 @@ def execute_agent_loop(
                         and not _has_renderable_ui_entry(state.project_root, list(written_this_turn))
                     )
                     visual_clean = not is_err and result.rstrip().endswith("\nVisual checks: pass")
+                    has_console_errors = bool(
+                        re.search(r"(?m)^Console/JS Errors\s*\(", result)
+                        or re.search(r"(?m)^Console/JS Errors:\s*[1-9]\d*", result)
+                        or re.search(r"(?m)^Failed Network Requests\s*\(", result)
+                    )
                     browser_verified_after_ui_edit = visual_clean
                     verification_evidence.pop(approval_key, None)
                     if not unrenderable_intermediate:
@@ -3797,10 +3811,11 @@ def execute_agent_loop(
                             "tool": name,
                             "ok": bool(visual_clean),
                             "result_class": "capture_failed" if is_err else ("ok" if visual_clean else "visual_defects"),
+                            "has_console_errors": has_console_errors,
                         }
                     if not is_err:
                         capture_keys.append(approval_key)
-                    if visual_clean and not tests_exist:
+                    if (visual_clean or (defer_visual_gate and not is_err and not has_console_errors)) and not tests_exist:
                         verified_after_last_edit = True
 
                 _record_tool_history(state, {
@@ -4136,8 +4151,9 @@ def execute_agent_loop(
         # A coding turn can correct a faulty check command and rerun it. Keep
         # all evidence for the independent verifier; do not permanently poison
         # coder completion with a historical failed attempt followed by success.
-        # Read-only exploration/planning and zero-write baseline visual checks
-        # intentionally capture pre-edit defects and must not fail as verification_failed.
+        # Read-only exploration/planning, zero-write baseline visual checks, and
+        # downstream-deferred visual defect checks on intermediate DAG slices
+        # must not fail as verification_failed unless capture/console/code checks fail.
         checks = list(verification_evidence.values())
         if role not in ("explorer", "architect"):
             is_baseline_visual_only = (
@@ -4148,12 +4164,24 @@ def execute_agent_loop(
                 and all(e.get("tool") == "visual_inspect" for e in checks if not e["ok"])
             )
             if not is_baseline_visual_only:
-                unresolved = any(not e["ok"] for e in checks) if role == "verifier" else not checks[-1]["ok"]
-                if any(e["tool"] == "visual_inspect" and not e["ok"] for e in checks):
-                    browser_verified_after_ui_edit = False
-                    unresolved = True
-                if unresolved:
-                    aborted_reason = "verification_failed"
+                if defer_visual_gate and role == "coder":
+                    effective_checks = [
+                        e for e in checks
+                        if not (
+                            e.get("tool") == "visual_inspect"
+                            and e.get("result_class") == "visual_defects"
+                            and not e.get("has_console_errors")
+                        )
+                    ]
+                else:
+                    effective_checks = checks
+                if effective_checks:
+                    unresolved = any(not e["ok"] for e in effective_checks) if role == "verifier" else not effective_checks[-1]["ok"]
+                    if any(e["tool"] == "visual_inspect" and not e["ok"] for e in effective_checks):
+                        browser_verified_after_ui_edit = False
+                        unresolved = True
+                    if unresolved:
+                        aborted_reason = "verification_failed"
     if not quiet_ui and aborted_reason in ("verification_incomplete", "verification_failed", "permission_denied"):
         R.print_warn("Turn incomplete: " + aborted_reason.replace("_", " ") + ".")
     return {
