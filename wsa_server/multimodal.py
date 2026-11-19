@@ -690,11 +690,27 @@ _CLAUDE_WEB_OMITTED_TOOLS = frozenset({
 })
 
 
+def _clip_tool_desc(desc: str, max_len: int) -> str:
+    """Shorten a one-line tool description cleanly on punctuation or word boundaries."""
+    clean = " ".join((desc or "").split())
+    if not max_len or len(clean) <= max_len:
+        return clean
+    first_sent = re.split(r"(?<=[.;])\s+", clean, maxsplit=1)[0].strip()
+    if 24 <= len(first_sent) <= max_len:
+        return first_sent
+    cut = clean[:max_len].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return cut or clean[:max_len]
+
+
 def _format_tools_prompt_block(tools: list, *, compact: bool = False, provider: str = "gemini") -> str:
     """Build tool-protocol instructions calibrated for the target web model provider."""
     if not tools:
         return ""
-    is_claude = "claude" in str(provider or "").lower()
+    prov_low = str(provider or "").strip().lower()
+    is_claude = "claude" in prov_low
+    is_tight = ("chatgpt" in prov_low or "openai" in prov_low or "deepseek" in prov_low)
+    omit_desc = bool(compact and not is_claude)
+    desc_cap = 78 if (not is_claude and is_tight and not compact) else 0
     sig_lines = []
     for tool in tools:
         fn = tool.get("function", tool) if tool.get("type") == "function" else tool
@@ -703,6 +719,8 @@ def _format_tools_prompt_block(tools: list, *, compact: bool = False, provider: 
             continue
         description_lines = (fn.get("description", tool.get("description", "")) or "").splitlines()
         description = description_lines[0].strip() if description_lines else ""
+        if desc_cap:
+            description = _clip_tool_desc(description, desc_cap)
         params = fn.get("parameters", tool.get("parameters", {})) or {}
         properties = params.get("properties", {}) or {}
         required = set(params.get("required", []) or [])
@@ -724,7 +742,10 @@ def _format_tools_prompt_block(tools: list, *, compact: bool = False, provider: 
                 value_type = "any"
             optional = "" if key in required else "?"
             arguments.append(f"{key}{optional}: {value_type}")
-        sig_lines.append(f"- {name}({', '.join(arguments)}): {description}")
+        if omit_desc or not description:
+            sig_lines.append(f"- {name}({', '.join(arguments)})")
+        else:
+            sig_lines.append(f"- {name}({', '.join(arguments)}): {description}")
     if not sig_lines:
         return ""
 
@@ -752,42 +773,28 @@ def _format_tools_prompt_block(tools: list, *, compact: bool = False, provider: 
             f"JSON action shapes my local `wsa` CLI parser currently recognizes when you recommend a local step:\n{chr(10).join(sig_lines)}"
         )
 
-    heading = "### Active Stage Toolset Update" if compact else "### Local Tool Capabilities"
-    prov_low = str(provider or "").strip().lower()
+    if compact:
+        return (
+            "### Active Stage Toolset Update\n"
+            "Continue emitting inline ```tool_call JSON blocks (stop right after ```; no Canvas/artifacts).\n"
+            f"Active tools:\n{chr(10).join(sig_lines)}"
+        )
+
     if "chatgpt" in prov_low or "openai" in prov_low:
-        no_canvas_rule = (
-            "NEVER open ChatGPT Canvas cards, external sandbox interpreters, or downloadable file cards "
-            "for tool actions, file writes, or code edits — always emit tool calls inside normal inline ```tool_call blocks.\n"
-        )
+        no_canvas_rule = "NEVER open ChatGPT Canvas/sandbox/download cards — emit inline ```tool_call blocks only."
     elif "deepseek" in prov_low:
-        no_canvas_rule = (
-            "NEVER emit DeepSeek Canvas/artifact cards or claim to execute code remotely "
-            "for tool actions, file writes, or code edits — always emit tool calls inside normal inline ```tool_call blocks.\n"
-        )
+        no_canvas_rule = "NEVER emit DeepSeek Canvas/artifact cards — emit inline ```tool_call blocks only."
     elif "venice" in prov_low or "vernice" in prov_low:
-        no_canvas_rule = (
-            "NEVER emit Venice artifact/preview cards or claim to execute code remotely "
-            "for tool actions, file writes, or code edits — always emit tool calls inside normal inline ```tool_call blocks.\n"
-        )
+        no_canvas_rule = "NEVER emit Venice artifact/preview cards — emit inline ```tool_call blocks only."
     else:
-        no_canvas_rule = (
-            "NEVER create Claude Artifacts, canvases, interactive previews, or separate downloadable artifact cards "
-            "for tool actions, file writes, or code edits — always emit tool calls inside normal inline ```tool_call blocks.\n"
-        )
+        no_canvas_rule = "NEVER create Artifacts/canvases/download cards — emit inline ```tool_call blocks only."
     return (
-        f"{heading}\n"
-        "You have full access to local workspace, shell, and Python execution tools. "
-        "When a request benefits from local files, calculations, benchmarks, or commands, "
-        "emit a fenced `tool_call` JSON block in this exact format:\n"
+        "### Local Tool Capabilities\n"
+        "You have full local workspace, shell, Python & browser inspection tools. To act locally, emit fenced ```tool_call JSON:\n"
         '```tool_call\n{"name": "func_name", "arguments": {"arg1": "val1"}}\n```\n'
-        "Stop immediately after the closing ``` — do NOT emit any text, tokens, or speculative results after it.\n"
-        f"{no_canvas_rule}"
-        "You may emit multiple tool_call blocks or a JSON array of tool calls "
-        "in one response for parallel execution (never repeat identical tool calls).\n"
-        "When using `write_file` or `patch_file`, put the file code ONLY inside tool_call arguments — "
-        "do NOT repeat full file contents or full code rewrites in your prose.\n"
-        "For standalone conceptual, mathematical, analytical, security, or general questions, "
-        "respond directly with full depth without calling tools.\n\n"
+        f"Stop immediately after the closing ``` (zero trailing text/guesses). {no_canvas_rule}\n"
+        "Batch independent calls in parallel without duplicates; put file code inside tool_call args (never full files in prose). "
+        "For pure conceptual/math/security questions, answer directly in prose.\n\n"
         f"Available tools:\n{chr(10).join(sig_lines)}"
     )
 

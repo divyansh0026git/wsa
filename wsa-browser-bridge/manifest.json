@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "WSA — Web Browser Bridge",
   "short_name": "WSA",
-  "version": "2.0.4",
-  "version_name": "2.0.4",
+  "version": "2.0.5",
+  "version_name": "2.0.5",
   "author": "Divyansh Saraf",
   "description": "Auto sync between wsa-cli and web agents. Engineered by Divyansh Saraf.",
   "icons": {

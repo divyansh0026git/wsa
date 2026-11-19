@@ -18,10 +18,6 @@ def compute_sha256_text(text: str) -> str:
     return hashlib.sha256(norm.encode("utf-8", errors="replace")).hexdigest()
 
 
-def compute_sha256_bytes(raw: bytes) -> str:
-    return hashlib.sha256(raw or b"").hexdigest()
-
-
 def _merge_ranges(ranges: List[List[int]]) -> List[List[int]]:
     if not ranges:
         return []
@@ -611,6 +607,23 @@ _LAYER_TERMS_RE = re.compile(
 _PROJECT_INTENT_RE = re.compile(r"\b(?:build|create|make|develop|design|implement|i\s+want|i(?:'d|\s+would)\s+like)\b[\s\S]{0,100}\b(?:app(?:lication)?|website|web\s*site|project|platform|dashboard|game|system|service|product|tool)\b", re.I)
 _EXTENSIVE_WORK_RE = re.compile(r"\b(?:fix|debug|investigate|implement|add|develop|build|create|refactor|audit|extend|expand|enhance|research)\b", re.I)
 _EXTENT_RE = re.compile(r"\b(?:detailed|deep(?:ly)?|comprehensive|complex|multiple|multi[- ]step|end[- ]to[- ]end|entire|complete|full|thorough|feature|features|bugs|issues|functionality|capabilities)\b", re.I)
+_FAST_INFO_RE = re.compile(
+    r"^\s*(?:explain|what\s+(?:is|are|does|was|were)|why\s+(?:does|is|are|did|was)|how\s+(?:does|is|do|can|should\s+(?:i|we))|summarize|define|compare|difference\s+between)\b",
+    re.I,
+)
+_FAST_INFO_FOLLOWUP_RE = re.compile(
+    r"(?:\b(?:and\s+(?:then\s+)?|then\s+|now\s+)|[;?]\s*)(?:build|create|implement|fix|refactor|write|make|design)\b",
+    re.I,
+)
+_FAST_SINGLE_STEP_RE = re.compile(
+    r"^\s*(?:fix\s+(?:a\s+|the\s+)?typo|rename\s+\S+\s+to\s+\S+|run\s+(?:pytest|tests?|npm\s+test|git\s+\S+)|"
+    r"check\s+(?:git\s+)?status|show\s+(?:me\s+)?(?:git\s+)?(?:diff|log|status)|list\s+files|read\s+\S+|format\s+\S+|lint\s+\S+)\b",
+    re.I,
+)
+_AMBIGUOUS_PRODUCT_RE = re.compile(
+    r"\b(?:i\s+want|i'?d\s+like|sell|shop|store|website|web\s*site|app(?:lication)?|platform|gallery|portfolio|dashboard)\b",
+    re.I,
+)
 
 
 def classify_task_complexity(prompt: str, state: Any = None) -> Dict[str, Any]:
@@ -618,13 +631,18 @@ def classify_task_complexity(prompt: str, state: Any = None) -> Dict[str, Any]:
     text = (prompt or "").strip()
     team_mode = str(getattr(state, "team_mode", "auto") or "auto").lower()
     if getattr(state, "free_mode", False) or team_mode == "off":
-        return {"mode": "direct", "score": 0, "reasons": ["team_mode=off or free_mode"]}
+        return {"mode": "direct", "score": 0, "reasons": ["team_mode=off or free_mode"], "fast_direct": True}
 
     if not text:
-        return {"mode": "direct", "score": 0, "reasons": ["short prompt"]}
+        return {"mode": "direct", "score": 0, "reasons": ["short prompt"], "fast_direct": True}
 
-    if re.match(r"^\s*(?:explain|what is|why does|how does|how (?:do|can|should) (?:i|we)|summarize)\b", text, re.I):
-        return {"mode": "direct", "score": 1, "reasons": ["informational request"]}
+    if _FAST_INFO_RE.match(text) and not _FAST_INFO_FOLLOWUP_RE.search(text):
+        return {
+            "mode": "direct",
+            "score": 1,
+            "reasons": ["informational request"],
+            "fast_direct": len(text) < 260,
+        }
     project_match = _PROJECT_INTENT_RE.search(text)
     # A project mentioned as a location is not the object being built.
     project_intent = bool(project_match and not re.search(
@@ -632,17 +650,35 @@ def classify_task_complexity(prompt: str, state: Any = None) -> Dict[str, Any]:
         project_match.group(), re.I,
     ))
     extensive_work = bool(_EXTENSIVE_WORK_RE.search(text) and (_EXTENT_RE.search(text) or len(text.split()) >= 80))
+
+    verbs = set(m.lower() for m in _BUILD_VERBS_RE.findall(text))
+    layers = set(m.lower() for m in _LAYER_TERMS_RE.findall(text))
+    mentioned_files = set(re.findall(r"[A-Za-z0-9_./\\-]+\.(?:py|js|ts|tsx|jsx|css|html|json|sh|ps1|md)\b", text))
+    is_fast_single = bool(
+        _FAST_SINGLE_STEP_RE.match(text)
+        and len(text.split()) <= 20
+        and len(text) < 160
+        and not project_intent
+        and not extensive_work
+        and not verbs
+        and len(mentioned_files) <= 1
+        and len(layers) <= 1
+        and not _AMBIGUOUS_PRODUCT_RE.search(text)
+    )
+
     if _SIMPLE_PROMPT_RE.match(text) and len(text) < 220 and not (project_intent or extensive_work):
-        return {"mode": "direct", "score": 1, "reasons": ["informational or single-step query"]}
+        return {
+            "mode": "direct",
+            "score": 1,
+            "reasons": ["informational or single-step query"],
+            "fast_direct": is_fast_single,
+        }
 
     score = 0
     reasons: List[str] = []
     if project_intent or extensive_work:
         score += 4
         reasons.append("substantial project or multi-step development request")
-    verbs = set(m.lower() for m in _BUILD_VERBS_RE.findall(text))
-    layers = set(m.lower() for m in _LAYER_TERMS_RE.findall(text))
-    mentioned_files = set(re.findall(r"[A-Za-z0-9_./\\-]+\.(?:py|js|ts|tsx|jsx|css|html|json|sh|ps1|md)\b", text))
 
     if verbs:
         score += 2
@@ -663,11 +699,14 @@ def classify_task_complexity(prompt: str, state: Any = None) -> Dict[str, Any]:
         reasons.append("structured multi-line specification")
 
     if team_mode == "on":
-        return {"mode": "orchestrate" if (score >= 2 or verbs or len(layers) >= 2) else "direct", "score": score, "reasons": reasons}
+        mode = "orchestrate" if (score >= 2 or verbs or len(layers) >= 2) else "direct"
+        return {"mode": mode, "score": score, "reasons": reasons, "fast_direct": bool(mode == "direct" and is_fast_single)}
 
     # Auto mode: escalate cleanly only on genuine multi-file/multi-layer build tasks (score >= 4)
+    mode = "orchestrate" if score >= 4 else "direct"
     return {
-        "mode": "orchestrate" if score >= 4 else "direct",
+        "mode": mode,
         "score": score,
         "reasons": reasons,
+        "fast_direct": bool(mode == "direct" and is_fast_single),
     }

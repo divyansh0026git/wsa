@@ -1718,12 +1718,12 @@ async function ensurePageRuntime(tabId, provider = "gemini", world = "MAIN") {
     target: { tabId },
     world,
     func: (rtKey, rtVer, needsUtils, rtRev) => Boolean(
-      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 10 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
+      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 11 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
       globalThis[rtKey] &&
       globalThis[rtKey].version === rtVer &&
       globalThis[rtKey].rev === rtRev
     ),
-    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude") ? 8 : 7],
+    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude" || p === "gemini") ? 8 : 7],
   });
   if (probe?.[0]?.result) return true;
   if (spec.needsDomUtils) {
@@ -3458,10 +3458,10 @@ function _domInstallPageRuntimeFn() {
   function autoDismissWaitPrompts() {
     try {
       const candidates = document.querySelectorAll(
-        "button, [role='button'], .mat-mdc-button-base, [role='dialog'] button, mat-dialog-container button, .modal button"
+        "[role='dialog'] button, [role='alertdialog'] button, mat-dialog-container button, .cdk-overlay-container button, dialog button, .modal button, .mdc-dialog button"
       );
       for (const b of candidates) {
-        const txt = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const txt = (b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
         if (txt === "wait" || txt === "keep waiting" || txt === "wait for page" || txt === "continue waiting") {
           b.click();
           break;
@@ -3830,15 +3830,21 @@ function _domInstallPageRuntimeFn() {
       "[class*='pill' i]", "[class*='card' i]", "[aria-label*='limit' i]", "[aria-label*='resets' i]"
     ];
     for (const el of document.querySelectorAll(selectors.join(", "))) {
+      const rawT = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (!rawT || rawT.length > 1500) continue;
       if (!isVisibleElement(el)) continue;
-      const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
-      if (t && t.length <= 1500 && !msgs.includes(t)) msgs.push(t);
+      if (!msgs.includes(rawT)) msgs.push(rawT);
     }
-    // Also scan for floating composer cards, quota indicators or toast elements containing limit keywords
-    for (const el of document.querySelectorAll("div, p, span, section, aside, [role='region']")) {
-      if (!isVisibleElement(el)) continue;
-      const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
-      if (t && t.length <= 250 && /\b(?:limit\s+reached|resets?\s+\d+:\d+|\bgemini\s+auto\b)/i.test(t)) {
+    // Pre-check document text without reflow; only inspect compact non-prose cards when limit text exists
+    const bodyText = document.body?.textContent || "";
+    if (/\b(?:limit\s+reached|resets?\s+\d+:\d+)\b/i.test(bodyText)) {
+      const limitBannerRe = /\b(?:limit\s+reached|resets?\s+\d+:\d+)\b/i;
+      for (const el of document.querySelectorAll("div, p, span, section, aside, [role='region']")) {
+        if (el.children && el.children.length > 4) continue;
+        const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (!t || t.length > 250 || !limitBannerRe.test(t)) continue;
+        if (el.closest?.("message-content, model-response, .markdown, .model-response-text")) continue;
+        if (!isVisibleElement(el)) continue;
         if (!msgs.includes(t)) msgs.push(t);
       }
     }
@@ -3891,7 +3897,7 @@ function _domInstallPageRuntimeFn() {
 
   globalThis.__wsaRuntime = {
     version: 2,
-    rev: 7,
+    rev: 8,
     log,
     computeTailDomRange,
     isVisibleElement,
@@ -6178,7 +6184,7 @@ function _installWsaDomUtilsFn() {
   if (
     globalThis.__wsaDomUtils &&
     globalThis.__wsaDomUtils.version === 3 &&
-    globalThis.__wsaDomUtils.rev === 10 &&
+    globalThis.__wsaDomUtils.rev === 11 &&
     typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function"
   ) {
     return true;
@@ -6601,8 +6607,14 @@ function _installWsaDomUtilsFn() {
       return ed.closest?.("main, [role='main']") || (typeof document !== "undefined" ? (document.body || document) : null);
     };
     const outsideComposer = "nav, aside, [data-testid='user-message'], [data-testid='assistant-message'], .ds-message, article";
-    const previews = () => {
+    const previewScope = () => {
       const r = root();
+      const ed = editor();
+      const mainScope = ed?.closest?.("main, [role='main']");
+      return (mainScope && r && typeof mainScope.contains === "function" && mainScope.contains(r)) ? mainScope : r;
+    };
+    const previews = () => {
+      const r = previewScope();
       if (!r || typeof r.querySelectorAll !== "function") return [];
       return [...r.querySelectorAll(
         "img, canvas, [data-testid*='file'], [data-testid*='attachment'], [data-testid*='image'], " +
@@ -6612,7 +6624,7 @@ function _installWsaDomUtilsFn() {
       )].filter(el => !el.closest(outsideComposer));
     };
     const countNames = () => {
-      const scope = root();
+      const scope = previewScope();
       if (!scope || typeof document === "undefined" || !document.createTreeWalker) return 0;
       const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
       let count = 0;
@@ -6636,7 +6648,12 @@ function _installWsaDomUtilsFn() {
       type => type === file.type || type === "image/*" || type === extension || type === "*/*"
     );
     const input = inputs.find(compatible) || inputs.find(el => !el.accept || !el.accept.trim());
+    const hasUploadSpinner = () => [...(previewScope()?.querySelectorAll?.(
+      "[role=progressbar], [aria-busy=true], [data-testid*='uploading'], [class*='upload-progress']"
+    ) || [])].some(el => !el.closest(outsideComposer) && isVisible(el));
+
     let method = input ? "file input" : "paste";
+    let fileInputDispatched = false;
     if (input) {
       try {
         input.value = "";
@@ -6650,10 +6667,34 @@ function _installWsaDomUtilsFn() {
         }
         input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-      } catch { /* fall through to paste */ }
+        fileInputDispatched = true;
+      } catch { fileInputDispatched = false; }
     }
 
-    // Also dispatch paste event to editor as fallback
+    const deadline = Date.now() + 20000;
+    let readySince = 0;
+    if (fileInputDispatched) {
+      const fileWaitUntil = Math.min(deadline, Date.now() + 4500);
+      let sawSignal = false;
+      while (Date.now() < fileWaitUntil || (sawSignal && Date.now() < deadline)) {
+        const previewSeen = previews().length > before || countNames() > beforeNames;
+        const busy = hasUploadSpinner();
+        if (previewSeen || busy) sawSignal = true;
+        if (previewSeen && !busy) {
+          if (readySince && Date.now() - readySince >= 350) {
+            return { ok: true, attached: 1, expected: 1, verified: true, method: "file input" };
+          }
+          readySince ||= Date.now();
+        } else {
+          readySince = 0;
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+
+    // Fallback to editor paste only when fileInput was absent or produced no preview/spinner
+    method = "paste";
+    readySince = 0;
     const target = editor();
     if (target && typeof ClipboardEvent === "function") {
       try {
@@ -6664,13 +6705,9 @@ function _installWsaDomUtilsFn() {
       } catch { /* ignore */ }
     }
 
-    const deadline = Date.now() + 20000;
-    let readySince = 0;
     while (Date.now() < deadline) {
       const previewSeen = previews().length > before || countNames() > beforeNames;
-      const busy = previewSeen && [...(root()?.querySelectorAll?.(
-        "[role=progressbar], [aria-busy=true], [data-testid*='uploading'], [class*='upload-progress']"
-      ) || [])].some(el => !el.closest(outsideComposer) && isVisible(el));
+      const busy = previewSeen && hasUploadSpinner();
       if (previewSeen && !busy) {
         if (readySince && Date.now() - readySince >= 350) {
           return { ok: true, attached: 1, expected: 1, verified: true, method };
@@ -6840,11 +6877,30 @@ function _installWsaDomUtilsFn() {
     const tried = [];
     let attachedMethod = "";
 
-    const fileInput =
-      (root && root.querySelector && root.querySelector("input[type='file']")) ||
-      (typeof document !== "undefined" && document.querySelector ? document.querySelector("input[type='file']") : null);
+    const selectCompatibleInput = () => {
+      const pool = [];
+      const addFrom = (container) => {
+        if (!container || typeof container.querySelectorAll !== "function") return;
+        for (const el of container.querySelectorAll("input[type='file']")) {
+          if (!el || el.disabled || el.webkitdirectory) continue;
+          if (typeof el.closest === "function" && el.closest(outsideComposer)) continue;
+          if (!pool.includes(el)) pool.push(el);
+        }
+      };
+      addFrom(root);
+      if (typeof document !== "undefined") addFrom(document);
+      if (!pool.length) return null;
+      const sampleFile = files[0];
+      const ext = sampleFile?.name?.includes(".") ? ("." + sampleFile.name.split(".").pop().toLowerCase()) : ".png";
+      const fType = String(sampleFile?.type || "image/png").toLowerCase();
+      const compatible = (inp) => (inp.accept || "").toLowerCase().split(",").map(s => s.trim()).some(
+        t => t === fType || t === "image/*" || t === ext || t === "*/*"
+      );
+      return pool.find(compatible) || pool.find(inp => !inp.accept || !inp.accept.trim()) || null;
+    };
+    const fileInput = selectCompatibleInput();
 
-    if (fileInput && !fileInput.disabled && !(typeof fileInput.closest === "function" && fileInput.closest(outsideComposer))) {
+    if (fileInput) {
       tried.push("fileInput");
       try {
         const desc = typeof HTMLInputElement !== "undefined"
@@ -7381,10 +7437,10 @@ function _installWsaDomUtilsFn() {
   function autoDismissWaitPrompts() {
     try {
       const candidates = document.querySelectorAll(
-        "button, [role='button'], .mat-mdc-button-base, [role='dialog'] button, mat-dialog-container button, .modal button"
+        "[role='dialog'] button, [role='alertdialog'] button, mat-dialog-container button, .cdk-overlay-container button, dialog button, .modal button, .mdc-dialog button"
       );
       for (const b of candidates) {
-        const txt = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const txt = (b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
         if (txt === "wait" || txt === "keep waiting" || txt === "wait for page" || txt === "continue waiting") {
           b.click();
           break;
@@ -7601,7 +7657,7 @@ function _installWsaDomUtilsFn() {
 
   globalThis.__wsaDomUtils = {
     version: 3,
-    rev: 10,
+    rev: 11,
     getClassStr,
     isVisible,
     normalizeCompareText,

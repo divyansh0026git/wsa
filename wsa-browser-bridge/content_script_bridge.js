@@ -92,14 +92,23 @@
     connectKeepalive();
   });
 
+  const WAIT_MODAL_BTN_SELECTOR =
+    "[role='dialog'] button, [role='alertdialog'] button, mat-dialog-container button, .cdk-overlay-container button, dialog button, .modal button, .mdc-dialog button";
+  const WAIT_MODAL_CONTAINER_SELECTOR =
+    "[role='dialog'], [role='alertdialog'], mat-dialog-container, dialog, .cdk-overlay-pane, .modal, .mdc-dialog";
+  const WAIT_BTN_TEXT_RE = /^(?:wait|keep waiting|wait for page|continue waiting)$/i;
+  let lastWaitDismissCheckAt = 0;
+  let waitCheckTimer = null;
+
   function autoDismissWaitPrompts() {
     try {
-      const candidates = document.querySelectorAll(
-        "button, [role='button'], .mat-mdc-button-base, [role='dialog'] button, mat-dialog-container button, .modal button"
-      );
+      const now = Date.now();
+      if ((now - lastWaitDismissCheckAt) < 1200) return;
+      lastWaitDismissCheckAt = now;
+      const candidates = document.querySelectorAll(WAIT_MODAL_BTN_SELECTOR);
       for (const b of candidates) {
-        const txt = (b.innerText || b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-        if (txt === "wait" || txt === "keep waiting" || txt === "wait for page" || txt === "continue waiting") {
+        const txt = (b.textContent || "").replace(/\s+/g, " ").trim();
+        if (WAIT_BTN_TEXT_RE.test(txt)) {
           b.click();
           console.log("[WSA bridge] Auto-clicked 'Wait' prompt on page.");
           break;
@@ -108,22 +117,44 @@
     } catch { /* ignore */ }
   }
 
-  // Observe DOM for any unresponsive/wait modals appearing dynamically
-  try {
-    const waitObserver = new MutationObserver(() => {
+  function scheduleWaitDismissCheck() {
+    if (waitCheckTimer !== null) return;
+    waitCheckTimer = setTimeout(() => {
+      waitCheckTimer = null;
       autoDismissWaitPrompts();
+    }, 1500);
+  }
+
+  // Observe DOM ONLY for added element nodes (never streaming text chunks) to catch unresponsive modals
+  try {
+    const waitObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.addedNodes && m.addedNodes.length) {
+          for (const n of m.addedNodes) {
+            if (n.nodeType === 1) {
+              scheduleWaitDismissCheck();
+              return;
+            }
+          }
+        }
+      }
     });
+    const startWaitObserver = () => {
+      if (document.body) waitObserver.observe(document.body, { childList: true, subtree: true });
+    };
     if (document.body) {
-      waitObserver.observe(document.body, { childList: true, subtree: true });
+      startWaitObserver();
     } else {
-      document.addEventListener("DOMContentLoaded", () => {
-        if (document.body) waitObserver.observe(document.body, { childList: true, subtree: true });
-      });
+      document.addEventListener("DOMContentLoaded", startWaitObserver, { once: true });
     }
   } catch { /* ignore */ }
 
   setInterval(() => {
-    autoDismissWaitPrompts();
+    try {
+      if (document.querySelector(WAIT_MODAL_CONTAINER_SELECTOR)) {
+        autoDismissWaitPrompts();
+      }
+    } catch { /* ignore */ }
     if (!keepalivePort) {
       connectKeepalive();
     } else {

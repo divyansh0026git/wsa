@@ -514,8 +514,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "get_file_outline",
             "description": (
-                "Extract structural AST/symbol outline (classes, functions, JS exports, HTML IDs, CSS selectors) "
-                "with exact line ranges BEFORE reading slices with read_file."
+                "Extract structural AST/symbol outline (classes, functions, exports, IDs, selectors) with line ranges BEFORE reading slices."
             ),
             "parameters": {
                 "type": "object",
@@ -531,8 +530,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "inspect_image",
             "description": (
-                "Load an image or screenshot (.png, .jpg, .jpeg, .webp, .gif, .bmp) for direct visual "
-                "inspection in the next reasoning turn and report its dimensions, format, and byte size."
+                "Load an image/screenshot for visual inspection in the next turn and report dimensions, format, and byte size."
             ),
             "parameters": {
                 "type": "object",
@@ -687,9 +685,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "browser_interact",
             "description": (
-                "Interact with the live inspected browser tab (click, fill input, select, press_enter, "
-                "hover, scroll, wait), then automatically re-run console/layout diagnostics and attach "
-                "an updated live screenshot."
+                "Interact with live browser tab (click/fill/select/press_enter/hover/scroll/wait), then re-audit and attach screenshot."
             ),
             "parameters": {
                 "type": "object",
@@ -714,10 +710,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "visual_inspect",
             "description": (
-                "Render a local HTML/SVG/project path or URL in an isolated headless browser (zero focus stealing), "
-                "capture a full laptop/desktop (1440x900 Windows desktop mode) screenshot (plus optional interaction/drag, "
-                "pixel diff, or extra viewports when explicitly requested) with Set-of-Mark [1][2][3] element badges, "
-                "audit console/network errors, overflow, occlusion, and blank-canvas renders, and attach the image to the next turn."
+                "Headless 1440x900 desktop capture (optional viewports/actions/diff) with Set-of-Mark [1][2] badges, console/layout/blank-canvas audit & next-turn image attach."
             ),
             "parameters": {
                 "type": "object",
@@ -741,7 +734,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "run_command",
             "description": (
-                "Run a shell command (PowerShell on Windows, /bin/sh on macOS) or direct argv array in the project root; use run_python for multi-line Python."
+                "Run a shell command or direct argv array in project root; use run_python for multi-line Python."
             ),
             "parameters": {
                 "type": "object",
@@ -774,8 +767,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "remember",
             "description": (
-                "Store a note in session memory. Use to record architectural insights, "
-                "findings, or plans during large codebase analysis. Persists for the session."
+                "Store a persistent session note (architecture, findings, or plan)."
             ),
             "parameters": {
                 "type": "object",
@@ -979,9 +971,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "set_dynamic_rule",
             "description": (
-                "Add, update, or remove a project rule. "
-                "Rules are injected into the system prompt on every turn. "
-                "Pass an empty rule string to remove a key."
+                "Add, update, or remove (empty rule string) a persistent project system-prompt rule."
             ),
             "parameters": {
                 "type": "object",
@@ -1034,9 +1024,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "spawn_subagent",
             "description": (
-                "Delegate a scoped sub-task to a specialized worker subagent (`explorer` read-only recon, "
-                "`architect` design DAG, `coder` surgical edit slice, or `verifier` QA/tests). "
-                "Always pass concise `owned_files` and `acceptance` when spawning `coder`."
+                "Delegate a scoped sub-task to a worker (explorer/architect/coder/security/verifier); pass owned_files & acceptance for coder."
             ),
             "parameters": {
                 "type": "object",
@@ -1106,8 +1094,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "git",
             "description": (
-                "Run an allowlisted git subcommand (status, diff, log, show, blame, add, commit, "
-                "stash, restore, switch, tag) as an argv list; never a shell string."
+                "Run an allowlisted git subcommand (status/diff/log/show/blame/add/commit/stash/restore/switch/tag) via argv list."
             ),
             "parameters": {
                 "type": "object",
@@ -1125,8 +1112,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "web_fetch",
             "description": (
-                "Fetch a public http(s) URL for docs, release notes, or error messages. "
-                "Private/loopback/link-local/metadata hosts are blocked; output is truncated."
+                "Fetch a public http(s) URL (SSRF-guarded, output truncated)."
             ),
             "parameters": {
                 "type": "object",
@@ -1147,8 +1133,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "todo",
             "description": (
-                "Maintain the persistent task checklist. action='read'|'write'|'clear'; "
-                "items=[{text, status}] where status is pending, in_progress, or completed."
+                "Manage task checklist: action='read'|'write'|'clear'; items=[{text, status}] (pending|in_progress|completed)."
             ),
             "parameters": {
                 "type": "object",
@@ -1176,8 +1161,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "wait_for",
             "description": (
-                "Block until a port accepts connections, a localhost URL responds, a path exists, "
-                "or a log regex appears (target 'path::regex'). Replaces polling across rounds."
+                "Block until a port, localhost http URL, file path, or log regex ('path::regex') is ready; replaces polling."
             ),
             "parameters": {
                 "type": "object",
@@ -1196,10 +1180,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "apply_patch",
             "description": (
-                "Atomically apply edits across multiple files in one checkpointed transaction. "
-                "Every edit is validated as it is applied; if any edit fails, all files already "
-                "modified by this call are rolled back to their pre-patch bytes. Each edit targets a "
-                "distinct file via old_string/new_string or hunks."
+                "Atomically edit multiple distinct files via old_string/new_string or hunks, rolling back all files if any edit fails."
             ),
             "parameters": {
                 "type": "object",
@@ -1230,8 +1211,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "read_skill",
             "description": (
-                "Read one or more bundled WSA engineering/UI/3D/debugging/security skills before planning or editing. "
-                "Pass comma-separated skill names (e.g. 'impeccable,threejs-skills') or 'catalog' to list all skills."
+                "Read bundled WSA skills before planning/coding; pass comma-separated slugs (e.g. 'impeccable,unslop') or 'catalog'."
             ),
             "parameters": {
                 "type": "object",

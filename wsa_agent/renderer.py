@@ -1201,7 +1201,7 @@ class StreamRenderer:
         "Inspecting…",
         "Reasoning…",
     )
-    _RENDER_INTERVAL = 0.035  # Adaptive frame batching interval (~28fps max Markdown re-parse)
+    _RENDER_INTERVAL = 0.05  # Adaptive frame batching interval (~20fps max Markdown re-parse)
 
     def __init__(
         self,
@@ -1225,9 +1225,17 @@ class StreamRenderer:
         self._printed_thinking_summary: bool = False
         self._frame_idx: int = 0
         self._last_preview: str = ""
+        self._last_raw_preview: str = ""
         self._cached_markdown: Optional[Padding] = None
         self._last_md_render_ts: float = 0.0
         self._last_live_refresh_ts: float = 0.0
+        self._cached_think_len: int = -1
+        self._cached_think_words: int = 0
+        self._cached_think_steps: list[str] = []
+        self._cached_ans_len: int = -1
+        self._cached_ans_words: int = 0
+        self._cached_has_tool_fence: bool = False
+        self._pending_preview_dirty: bool = False
         self._round_num: int = max(0, int(round_num or 0))
         self._status_hint: str = sanitize_surrogates(status_hint or "").strip()
         self._stage_clock: Callable[[], float] = clock or time.monotonic
@@ -1255,13 +1263,55 @@ class StreamRenderer:
             self._status_hint_started_at = None
         self._throttled_live_refresh(force=True)
 
+    def _get_thinking_stats(self) -> tuple[int, list[str]]:
+        buf = self._thinking_buf
+        if not buf:
+            return 0, []
+        blen = len(buf)
+        if blen != self._cached_think_len:
+            tail = buf[-12_000:] if blen > 12_000 else buf
+            self._cached_think_words = len(buf.split())
+            self._cached_think_steps = _clean_thinking_lines(tail)
+            self._cached_think_len = blen
+        return self._cached_think_words, self._cached_think_steps
+
+    def _get_answer_stats(self) -> tuple[int, bool]:
+        buf = self._answer_buf
+        if not buf:
+            return 0, False
+        blen = len(buf)
+        if blen != self._cached_ans_len:
+            self._cached_ans_words = len(buf.split())
+            self._cached_has_tool_fence = _has_active_tool_fence(buf)
+            self._cached_ans_len = blen
+        return self._cached_ans_words, self._cached_has_tool_fence
+
+    def _refresh_answer_preview(self, now: float, *, stop_if_empty: bool = True) -> bool:
+        buf = self._answer_buf
+        preview = _strip_internal_tags(buf, streaming=True).lstrip("\n")
+        self._last_md_render_ts = now
+        self._pending_preview_dirty = False
+        if not preview:
+            _, has_fence = self._get_answer_stats()
+            if has_fence:
+                return True
+            if stop_if_empty and self._live is not None and not self._in_thinking:
+                self._stop_live()
+            return False
+        if preview != self._last_raw_preview or self._cached_markdown is None:
+            clipped, bounded = _render_live_markdown_bounded(preview)
+            self._last_raw_preview = preview
+            self._last_preview = clipped
+            self._cached_markdown = bounded
+        return True
+
     def _thinking_renderable(self) -> Text:
         frame_pos = self._frame_idx
         self._frame_idx += 1
         frame = self._SPINNER_FRAMES[frame_pos % len(self._SPINNER_FRAMES)]
         now = time.time()
         elapsed = max(0.0, now - (self._thinking_start or now))
-        think_words = len(self._thinking_buf.split()) if self._thinking_buf else 0
+        think_words, steps = self._get_thinking_stats()
         verb_idx = (int(elapsed // 2.0) + (think_words // 18)) % len(self._SPINNER_VERBS)
         verb = self._SPINNER_VERBS[verb_idx]
         pulse_style = Theme.SHIMMER if (frame_pos % 2 == 1) else Theme.ACCENT
@@ -1283,7 +1333,6 @@ class StreamRenderer:
         meta_parts.append("ctrl+c to interrupt")
         t.append(f" ({' · '.join(meta_parts)})", style=Theme.DIM)
 
-        steps = _clean_thinking_lines(self._thinking_buf) if self._thinking_buf else []
         line_cap = max(20, (console.size.width or 80) - 12)
         branch = ui_glyph("branch")
         if steps:
@@ -1322,13 +1371,14 @@ class StreamRenderer:
             t.append(shown_h, style=hint_style)
         return t
 
-    def _streaming_footer_renderable(self, crafting_tool: bool = False) -> Text:
+    def _streaming_footer_renderable(self, crafting_tool: bool = False, ans_words: Optional[int] = None) -> Text:
         frame_pos = self._frame_idx
         self._frame_idx += 1
         frame = self._SPINNER_FRAMES[frame_pos % len(self._SPINNER_FRAMES)]
         now = time.time()
         elapsed = max(0.0, now - (self._start_time or now))
-        ans_words = len(self._answer_buf.split()) if self._answer_buf else 0
+        if ans_words is None:
+            ans_words, _ = self._get_answer_stats()
         pulse_style = Theme.SHIMMER if (frame_pos % 2 == 1) else Theme.ACCENT
         label = "Crafting tool call…" if crafting_tool else "Streaming…"
 
@@ -1351,8 +1401,14 @@ class StreamRenderer:
     def _build_live_renderable(self):
         if self._in_thinking or not self._answered:
             return _clamp_live_text(self._thinking_renderable())
-        crafting_tool = _has_active_tool_fence(self._answer_buf)
-        footer = _clamp_live_text(self._streaming_footer_renderable(crafting_tool=crafting_tool))
+        if self._pending_preview_dirty:
+            now = time.time()
+            if (now - self._last_md_render_ts) >= self._RENDER_INTERVAL:
+                self._refresh_answer_preview(now, stop_if_empty=False)
+        ans_words, crafting_tool = self._get_answer_stats()
+        footer = _clamp_live_text(
+            self._streaming_footer_renderable(crafting_tool=crafting_tool, ans_words=ans_words)
+        )
         if self._cached_markdown is not None:
             return Group(self._cached_markdown, footer)
         return footer
@@ -1441,8 +1497,11 @@ class StreamRenderer:
             self.start_thinking()
         self._thinking_buf += clean
         if self._in_thinking and not self._answered:
-            self._ensure_live()
-            self._throttled_live_refresh()
+            if self._live is None or self._live_console is not console:
+                self._ensure_live()
+                self._throttled_live_refresh()
+            elif (time.time() - self._last_live_refresh_ts) >= self._RENDER_INTERVAL:
+                self._throttled_live_refresh()
 
     def _print_thinking_summary(self, elapsed: float) -> None:
         if self._printed_thinking_summary:
@@ -1505,48 +1564,53 @@ class StreamRenderer:
         clean = sanitize_surrogates(token or "")
         if not clean:
             return
+        now = time.time()
         if self._start_time is None:
-            self._start_time = time.time()
+            self._start_time = now
         if not self._answered:
             if self._in_thinking:
                 self.stop_thinking()
             elif self._thinking_buf and not self._printed_thinking_summary:
-                elapsed = time.time() - (self._thinking_start or self._start_time or time.time())
+                elapsed = now - (self._thinking_start or self._start_time or now)
                 self._print_thinking_summary(elapsed)
             self._answered = True
             self._phase = "answering"
 
         self._answer_buf += clean
-        preview = _strip_internal_tags(self._answer_buf, streaming=True).lstrip("\n")
-        if not preview:
-            if _has_active_tool_fence(self._answer_buf):
-                self._ensure_live()
-                self._throttled_live_refresh()
-            elif self._live is not None and not self._in_thinking:
-                self._stop_live()
-            return
-        clipped = _clip_live_preview_rows(preview)
-        now = time.time()
-        if clipped != self._last_preview and (
-            self._cached_markdown is None or (now - self._last_md_render_ts) >= self._RENDER_INTERVAL
+        if (
+            self._live is not None
+            and self._live_console is console
+            and self._cached_markdown is not None
+            and (now - self._last_md_render_ts) < self._RENDER_INTERVAL
         ):
-            clipped, bounded = _render_live_markdown_bounded(preview)
-            self._last_preview = clipped
-            self._last_md_render_ts = now
-            self._cached_markdown = bounded
-        self._ensure_live()
-        self._throttled_live_refresh()
+            self._pending_preview_dirty = True
+            return
+
+        if not self._refresh_answer_preview(now, stop_if_empty=True):
+            return
+        if self._live is None or self._live_console is not console:
+            self._ensure_live()
+        if (now - self._last_live_refresh_ts) >= self._RENDER_INTERVAL:
+            self._throttled_live_refresh()
 
     def reset_answer(self, full_retry: bool = False) -> None:
         """Clear partial streamed answer (and optionally thinking state on hard retry)."""
         self._stop_live()
         self._answer_buf = ""
         self._last_preview = ""
+        self._last_raw_preview = ""
         self._cached_markdown = None
         self._last_md_render_ts = 0.0
+        self._cached_ans_len = -1
+        self._cached_ans_words = 0
+        self._cached_has_tool_fence = False
+        self._pending_preview_dirty = False
         self._answered = False
         if full_retry:
             self._thinking_buf = ""
+            self._cached_think_len = -1
+            self._cached_think_words = 0
+            self._cached_think_steps = []
             self._phase = "thinking"
             self._in_thinking = False
             self._thinking_start = None

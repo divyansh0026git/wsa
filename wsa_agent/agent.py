@@ -3846,7 +3846,7 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
                 _u_norm,
             ):
                 simple = True
-        if team_mode == "auto" and not simple and complexity.get("mode") != "orchestrate":
+        if team_mode == "auto" and not simple and not complexity.get("fast_direct") and complexity.get("mode") != "orchestrate":
             decision = _judge_workflow(user_input, state, client, complexity)
             if decision.get("stopped"):
                 return decision["result"]

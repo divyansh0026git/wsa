@@ -2095,8 +2095,8 @@ console.log("NODE_HELPERS_OK");
         bg_src = (ext_dir / "background.js").read_text(encoding="utf-8")
 
         self.assertEqual(manifest.get("name"), "WSA — Web Browser Bridge")
-        self.assertEqual(manifest.get("version"), "2.0.4")
-        self.assertEqual(manifest.get("version_name"), "2.0.4")
+        self.assertEqual(manifest.get("version"), "2.0.5")
+        self.assertEqual(manifest.get("version_name"), "2.0.5")
         self.assertEqual(manifest.get("author"), "Divyansh Saraf")
         self.assertIn("Engineered by Divyansh Saraf", manifest.get("description", ""))
         self.assertNotIn("downloads", manifest.get("permissions", []))
@@ -7934,7 +7934,7 @@ async function run() {
     vm.runInNewContext("(" + bg._installWsaDomUtilsFn.toString() + ")()", sb);
     vm.runInNewContext("(" + bg._chatgptInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaDomUtils.version, 3);
-    assert.strictEqual(sb.__wsaDomUtils.rev, 10);
+    assert.strictEqual(sb.__wsaDomUtils.rev, 11);
     assert.strictEqual(sb.__wsaChatgptRuntime.version, 3);
     assert.strictEqual(sb.__wsaChatgptRuntime.rev, 8);
     assert.strictEqual(sb.__wsaChatgptRuntime.findSendButton(ed), realSend);
@@ -8119,7 +8119,7 @@ async function run() {
     });
     vm.runInNewContext("(" + bg._domInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaRuntime.version, 2);
-    assert.strictEqual(sb.__wsaRuntime.rev, 7);
+    assert.strictEqual(sb.__wsaRuntime.rev, 8);
     assert.strictEqual(sb.__wsaRuntime.findEnabledSendButton(ed), sendBtn);
 
     sb.__wsaRuntime.setPromptTextInEditor(ed, promptMulti);
@@ -8255,7 +8255,7 @@ async function run() {
     await sw.ensurePageRuntime(1, "chatgpt");
     assert.strictEqual(execCheckCalls, 1);
     assert.deepStrictEqual(installedFns, ["_installWsaDomUtilsFn", "_chatgptInstallPageRuntimeFn"]);
-    assert.strictEqual(pageCtx.__wsaDomUtils.rev, 10);
+    assert.strictEqual(pageCtx.__wsaDomUtils.rev, 11);
     assert.strictEqual(pageCtx.__wsaChatgptRuntime.rev, 8);
 
     installedFns.length = 0;

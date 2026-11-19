@@ -712,7 +712,7 @@ class _HeadlessCDPClient:
                     else:
                         break
 
-                if isinstance(pt, dict) and pt.get("x") is not None:
+                if isinstance(pt, dict) and pt.get("x") is not None and float(pt.get("width") or 0) > 0 and float(pt.get("height") or 0) > 0:
                     cx, cy = float(pt["x"]), float(pt["y"])
 
             if kind == "click":
@@ -723,7 +723,7 @@ class _HeadlessCDPClient:
                     self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": float(cx), "y": float(cy), "button": "left", "clickCount": 1})
                     self.drain_events(250)
                     clicked = True
-                if selector:
+                if selector and not clicked:
                     dom_click_js = f"""
 (function() {{
     try {{

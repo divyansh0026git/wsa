@@ -12,7 +12,7 @@ from socketserver import ThreadingMixIn, TCPServer
 from typing import Optional
 
 from .accounts import get_account_pool, load_cookie
-from .config import CONFIG, _CONFIG_LOCK, _resolve_cookie_file, _resolve_local_path, __version__, log
+from .config import CONFIG, _CONFIG_LOCK, _resolve_local_path, __version__, log
 from .gemini import _bridge_provider_for_cfg, gemini_stream_generate, gemini_stream_generate_events
 from .models import LAST_UPSTREAM_MODEL, MODELS, WEB_BRIDGE_MODES, WEB_PROVIDER_SPECS
 from .multimodal import (
