@@ -1743,12 +1743,12 @@ async function ensurePageRuntime(tabId, provider = "gemini", world = "MAIN") {
     target: { tabId },
     world,
     func: (rtKey, rtVer, needsUtils, rtRev) => Boolean(
-      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 11 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
+      (!needsUtils || (globalThis.__wsaDomUtils && globalThis.__wsaDomUtils.version === 3 && globalThis.__wsaDomUtils.rev === 12 && typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function")) &&
       globalThis[rtKey] &&
       globalThis[rtKey].version === rtVer &&
       globalThis[rtKey].rev === rtRev
     ),
-    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "claude" || p === "gemini") ? 8 : 7],
+    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "gemini") ? 9 : (p === "claude" ? 8 : 7)],
   });
   if (probe?.[0]?.result) return true;
   if (spec.needsDomUtils) {
@@ -1825,52 +1825,114 @@ async function extractGeneratedImagesFromTab(tabId, provider) {
     const arr = await chrome.scripting.executeScript({
       target: { tabId },
       world: "MAIN",
-      func: (prov) => {
+      func: async (prov) => {
         const containerSels = prov === "chatgpt"
           ? ["[data-message-author-role='assistant']", "article[data-testid^='conversation-turn-']"]
-          : ["model-response", "message-content", ".response-container", "response-container"];
-        let scope = null;
+          : ["model-response", "generated-image", "single-image", ".response-container", "response-container"];
+        const roots = [];
         for (const sel of containerSels) {
           const nodes = Array.from(document.querySelectorAll(sel));
           if (nodes.length) {
-            scope = nodes[nodes.length - 1];
-            break;
+            const tail = nodes[nodes.length - 1];
+            if (tail && !roots.includes(tail)) roots.push(tail);
+            if (prov === "chatgpt") {
+              const art = tail.closest?.("article[data-testid^='conversation-turn-']");
+              if (art && !roots.includes(art)) roots.push(art);
+            }
           }
         }
-        const roots = scope ? [scope] : [document.body];
+        if (!roots.length && document.body) roots.push(document.body);
+
+        const collectImgsDeep = (rootNode) => {
+          const imgs = [];
+          const visited = new Set();
+          const walk = (node) => {
+            if (!node || visited.has(node)) return;
+            visited.add(node);
+            if (node.tagName === "IMG") imgs.push(node);
+            if (node.shadowRoot) walk(node.shadowRoot);
+            if (typeof node.querySelectorAll === "function") {
+              for (const img of node.querySelectorAll("img")) {
+                if (!imgs.includes(img)) imgs.push(img);
+              }
+              for (const child of node.querySelectorAll("*")) {
+                if (child.shadowRoot) walk(child.shadowRoot);
+              }
+            }
+          };
+          walk(rootNode);
+          return imgs;
+        };
+
+        const blobToDataUrl = (blob) => new Promise((resolve) => {
+          try {
+            const fr = new FileReader();
+            fr.onloadend = () => resolve(typeof fr.result === "string" ? fr.result : "");
+            fr.onerror = () => resolve("");
+            fr.readAsDataURL(blob);
+          } catch {
+            resolve("");
+          }
+        });
+
         const out = [];
         const seen = new Set();
         for (const root of roots) {
           if (!root) continue;
-          const imgs = Array.from(root.querySelectorAll("img"));
+          const imgs = collectImgsDeep(root);
           for (const img of imgs) {
-            const src = String(img.currentSrc || img.src || "").trim();
+            const src = String(img.currentSrc || img.src || img.getAttribute("src") || "").trim();
             if (!src || seen.has(src)) continue;
             const w = Number(img.naturalWidth || img.width || 0);
             const h = Number(img.naturalHeight || img.height || 0);
             if (!img.complete || w < 180 || h < 180) continue;
-            if (/(?:avatar|profile|favicon|emoji|logo)/i.test((img.alt || "") + " " + (img.className || ""))) continue;
+            const clsStr = typeof img.className === "string" ? img.className : String(img.className?.baseVal || "");
+            if (/(?:avatar|profile|favicon|emoji|logo)/i.test((img.alt || "") + " " + clsStr)) continue;
             seen.add(src);
+
             let dataUrl = "";
-            let mimeType = "image/webp";
-            try {
-              const scale = w > 1024 ? (1024 / w) : 1;
-              const cw = Math.max(1, Math.round(w * scale));
-              const ch = Math.max(1, Math.round(h * scale));
-              const canvas = document.createElement("canvas");
-              canvas.width = cw;
-              canvas.height = ch;
-              const ctx = canvas.getContext("2d");
-              if (ctx) {
-                ctx.drawImage(img, 0, 0, cw, ch);
-                dataUrl = canvas.toDataURL("image/webp", 0.86);
-                if (!dataUrl || !dataUrl.startsWith("data:image/")) {
-                  dataUrl = canvas.toDataURL("image/png");
-                  mimeType = "image/png";
+            let mimeType = "image/png";
+            if (src.startsWith("data:image/")) {
+              dataUrl = src;
+              const semi = src.indexOf(";");
+              if (semi > 5) mimeType = src.slice(5, semi).trim() || "image/png";
+            } else {
+              try {
+                const scale = w > 1024 ? (1024 / w) : 1;
+                const cw = Math.max(1, Math.round(w * scale));
+                const ch = Math.max(1, Math.round(h * scale));
+                const canvas = document.createElement("canvas");
+                canvas.width = cw;
+                canvas.height = ch;
+                const ctx = canvas.getContext("2d");
+                if (ctx) {
+                  ctx.drawImage(img, 0, 0, cw, ch);
+                  dataUrl = canvas.toDataURL("image/webp", 0.88);
+                  if (dataUrl && dataUrl.startsWith("data:image/webp")) {
+                    mimeType = "image/webp";
+                  } else {
+                    dataUrl = canvas.toDataURL("image/png");
+                    mimeType = "image/png";
+                  }
                 }
+              } catch {
+                dataUrl = "";
               }
-            } catch {
-              dataUrl = "";
+              if ((!dataUrl || !dataUrl.startsWith("data:image/")) && /^(?:blob:|https?:\/\/)/i.test(src)) {
+                try {
+                  const resp = await fetch(src, { credentials: "include" });
+                  if (resp.ok) {
+                    const blob = await resp.blob();
+                    if (blob && blob.size > 0 && blob.size <= 2_800_000) {
+                      const d = await blobToDataUrl(blob);
+                      if (d && d.startsWith("data:image/")) {
+                        dataUrl = d;
+                        mimeType = String(blob.type || "image/png").split(";")[0].trim() || "image/png";
+                      }
+                    }
+                  }
+                } catch { /* fallback to background worker fetch */ }
+              }
             }
             out.push({
               data_url: dataUrl,
@@ -1897,7 +1959,10 @@ async function extractGeneratedImagesFromTab(tabId, provider) {
       let mimeType = String(item.mime_type || "image/png");
       if (!dataUrl && item.remote_url && /^https?:\/\//i.test(item.remote_url)) {
         try {
-          const resp = await fetch(item.remote_url, { signal: AbortSignal.timeout(8000) });
+          const resp = await fetch(item.remote_url, {
+            credentials: "include",
+            signal: AbortSignal.timeout(12000),
+          });
           if (resp.ok) {
             const buf = await resp.arrayBuffer();
             if (buf.byteLength > 0 && buf.byteLength <= 2_800_000) {
@@ -1913,8 +1978,11 @@ async function extractGeneratedImagesFromTab(tabId, provider) {
         } catch { /* ignore remote fetch error */ }
       }
       if (dataUrl.startsWith("data:image/") && dataUrl.length <= 3_900_000) {
+        const ext = mimeType.includes("webp")
+          ? "webp"
+          : (/jpeg|jpg/i.test(mimeType) ? "jpg" : "png");
         finalized.push({
-          filename: `concept_${finalized.length + 1}.${mimeType.includes("webp") ? "webp" : "png"}`,
+          filename: `concept_${finalized.length + 1}.${ext}`,
           mime_type: mimeType,
           data_url: dataUrl,
           alt: String(item.alt || ""),
@@ -3363,11 +3431,31 @@ function _domInstallPageRuntimeFn() {
     lastTextChangeAt,
     lastThinkChangeAt,
     lastBusyAt,
+    hasGeneratedImage = false,
+    imageGen = false,
   }) {
-    if (!text) return false;
+    if (!text && !hasGeneratedImage) return false;
     const textStableMs = lastTextChangeAt > 0 ? Math.max(0, now - lastTextChangeAt) : 0;
     const thinkStableMs = lastThinkChangeAt > 0 ? Math.max(0, now - lastThinkChangeAt) : textStableMs;
     const quietSinceBusyMs = lastBusyAt > 0 ? Math.max(0, now - lastBusyAt) : textStableMs;
+
+    if (imageGen) {
+      if (!hasGeneratedImage && text && /\b(?:creating|generating|working\s+on)\b/i.test(text)) {
+        return Boolean(!stopVisible && !reactBusy && textStableMs >= 15000);
+      }
+      if (hasGeneratedImage) {
+        if (!stopVisible && !reactBusy && textStableMs >= 1800 && (hasTurnActions || quietSinceBusyMs >= 1800)) {
+          return true;
+        }
+        if (!stopVisible && hasTurnActions && textStableMs >= 2500) {
+          return true;
+        }
+        if (!stopVisible && sawNewTurn && textStableMs >= 6500 && thinkStableMs >= 4000) {
+          return true;
+        }
+        return false;
+      }
+    }
 
     if (!stopVisible && !reactBusy && textStableMs >= 1400 && (hasTurnActions || quietSinceBusyMs >= 1400)) {
       return true;
@@ -4043,9 +4131,44 @@ function _domInstallPageRuntimeFn() {
     return (s && s.length <= 460 && !isSoftOnly(s) && re.test(s)) ? s : "";
   }
 
+  function countGeneratedImages(minModelIdx = 0) {
+    const visited = new Set();
+    const countedImgs = new Set();
+    const walk = (node) => {
+      if (!node || visited.has(node)) return;
+      visited.add(node);
+      if (node.tagName === "IMG") {
+        const w = Number(node.naturalWidth || node.width || 0);
+        const h = Number(node.naturalHeight || node.height || 0);
+        const clsStr = typeof node.className === "string" ? node.className : String(node.className?.baseVal || "");
+        if (node.complete && w >= 180 && h >= 180 && !/(?:avatar|profile|favicon|emoji|logo)/i.test((node.alt || "") + " " + clsStr)) {
+          countedImgs.add(node);
+        }
+      }
+      if (node.shadowRoot) walk(node.shadowRoot);
+      if (typeof node.querySelectorAll === "function") {
+        for (const img of node.querySelectorAll("img")) walk(img);
+        for (const child of node.querySelectorAll("*")) {
+          if (child.shadowRoot) walk(child.shadowRoot);
+        }
+      }
+    };
+    const modelNodes = Array.from(document.querySelectorAll("model-response"));
+    if (minModelIdx > 0) {
+      for (const mr of modelNodes.slice(minModelIdx)) {
+        walk(mr);
+      }
+      return countedImgs.size;
+    }
+    for (const el of document.querySelectorAll("model-response, generated-image, single-image")) {
+      walk(el);
+    }
+    return countedImgs.size;
+  }
+
   globalThis.__wsaRuntime = {
     version: 2,
-    rev: 8,
+    rev: 9,
     log,
     computeTailDomRange,
     isVisibleElement,
@@ -4060,6 +4183,7 @@ function _domInstallPageRuntimeFn() {
     readDomAssistantState,
     isTurnActionButton,
     countVisibleActionButtons,
+    countGeneratedImages,
     isStopButtonVisible,
     detectReactBusy,
     detectTurnCompletionActions,
@@ -4128,6 +4252,7 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
 
   if (imageGen === true) {
     try {
+      const clickableSel = "button, [role='menuitem'], [role='menuitemradio'], [role='option'], [role='button'], mat-list-item, .mat-mdc-menu-item, a";
       const isVis = (el) => {
         if (!el) return false;
         const r = el.getBoundingClientRect();
@@ -4135,7 +4260,7 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
         return (r.width > 0 || r.height > 0) && cs.display !== "none" && cs.visibility !== "hidden";
       };
       const clickToolOption = (re) => {
-        for (const el of document.querySelectorAll("button, [role='menuitem'], [role='menuitemradio'], [role='option']")) {
+        for (const el of document.querySelectorAll(clickableSel)) {
           if (!isVis(el)) continue;
           const lbl = `${el.innerText || el.textContent || ""} ${el.getAttribute("aria-label") || ""}`.replace(/\s+/g, " ").trim();
           if (re.test(lbl)) {
@@ -4145,15 +4270,20 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
         }
         return false;
       };
-      const imgChipAlready = Array.from(document.querySelectorAll("button[aria-pressed='true'], chip, [class*='tool' i] button")).some((el) => {
-        const t = `${el.innerText || el.textContent || ""} ${el.getAttribute("aria-label") || ""}`;
-        return isVis(el) && /\b(?:create\s+images?|imagen|deselect\s+create\s+image)\b/i.test(t);
+      const isCreateImageSelected = () => Array.from(document.querySelectorAll(clickableSel + ", chip, [class*='tool' i] button")).some((el) => {
+        if (!isVis(el)) return false;
+        const lbl = `${el.innerText || el.textContent || ""} ${el.getAttribute("aria-label") || ""}`.replace(/\s+/g, " ").trim();
+        return /\b(?:deselect|remove)\s+create\s+image\b/i.test(lbl) || (
+          el.getAttribute("aria-pressed") === "true" && /\b(?:create\s+images?|imagen)\b/i.test(lbl)
+        );
       });
-      if (!imgChipAlready) {
+      if (!isCreateImageSelected()) {
         if (!clickToolOption(/\b(?:create\s+images?|generate\s+images?|imagen)\b/i)) {
           if (clickToolOption(/^\s*tools\s*$/i) || clickToolOption(/\btools\b/i)) {
-            await sleepMs(260);
-            clickToolOption(/\b(?:create\s+images?|generate\s+images?|imagen)\b/i);
+            for (let tPoll = 0; tPoll < 5; tPoll++) {
+              await sleepMs(300);
+              if (clickToolOption(/\b(?:create\s+images?|generate\s+images?|imagen)\b/i)) break;
+            }
           }
         }
         await sleepMs(300);
@@ -4207,6 +4337,7 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
   const beforeDomCount = rt.readDomAssistantState(0).count;
   const beforeModelCount = document.querySelectorAll("model-response").length;
   const beforeActionCount = rt.countVisibleActionButtons();
+  const beforeImageCount = typeof rt.countGeneratedImages === "function" ? rt.countGeneratedImages(0) : 0;
   const beforeAnnouncerSnapshot = [...document.querySelectorAll(".cdk-live-announcer-element")]
     .map(el => (el.innerText || el.textContent || "").trim())
     .join("\n");
@@ -4223,12 +4354,16 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
     startedAt: now,
     selectedBadge,
     prompt: String(prompt || ""),
+    imageGen: Boolean(imageGen),
     submitRetries: 0,
     lastRetryAt: now,
     beforeRelayObj,
     beforeDomCount,
     beforeModelCount,
     beforeActionCount,
+    beforeImageCount,
+    lastImageCount: beforeImageCount,
+    hasGeneratedImage: false,
     beforeAnnouncerSnapshot,
     lastText: "",
     lastThinking: "",
@@ -4349,6 +4484,14 @@ function _domPollTurnFn(reqId) {
   if (nextThinking !== job.lastThinking) {
     job.lastThinking = nextThinking;
     job.lastThinkChangeAt = now;
+  }
+  const newModelImgCount = typeof rt.countGeneratedImages === "function" ? rt.countGeneratedImages(job.beforeModelCount || 0) : 0;
+  const totalImgCount = typeof rt.countGeneratedImages === "function" ? rt.countGeneratedImages(0) : 0;
+  if (newModelImgCount > 0 || totalImgCount > (job.lastImageCount || 0)) {
+    job.lastImageCount = Math.max(job.lastImageCount || 0, totalImgCount);
+    job.hasGeneratedImage = true;
+    job.sawNewTurn = true;
+    job.lastTextChangeAt = now;
   }
   if (!busy) {
     const pageBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
@@ -4484,6 +4627,8 @@ function _domPollTurnFn(reqId) {
     lastTextChangeAt: job.lastTextChangeAt,
     lastThinkChangeAt: job.lastThinkChangeAt,
     lastBusyAt: job.lastBusyAt,
+    hasGeneratedImage: Boolean(job.hasGeneratedImage),
+    imageGen: Boolean(job.imageGen),
   });
 
   if (done) {
@@ -6368,7 +6513,7 @@ function _installWsaDomUtilsFn() {
   if (
     globalThis.__wsaDomUtils &&
     globalThis.__wsaDomUtils.version === 3 &&
-    globalThis.__wsaDomUtils.rev === 11 &&
+    globalThis.__wsaDomUtils.rev === 12 &&
     typeof globalThis.__wsaDomUtils.detectPromptTooLongMessage === "function"
   ) {
     return true;
@@ -7598,6 +7743,9 @@ function _installWsaDomUtilsFn() {
       lastText: "",
       lastThinking: "",
       prompt: String(prompt || ""),
+      imageGen: Boolean(opts.imageGen),
+      hasGeneratedImage: false,
+      lastImageCount: 0,
       submitRetries: 0,
       beforeTurnCount: beforeTurns.length,
       beforeTurnKeys: beforeTurns.map(item => item.turnKey).filter(Boolean),
@@ -7731,6 +7879,13 @@ function _installWsaDomUtilsFn() {
       turn.lastChangeAt = now;
       turn.sawActivity = true;
     }
+    const curImgCount = Number(latest?.generatedImageCount || 0);
+    if (curImgCount > (turn.lastImageCount || 0)) {
+      turn.lastImageCount = curImgCount;
+      turn.hasGeneratedImage = true;
+      turn.lastChangeAt = now;
+      turn.sawActivity = true;
+    }
 
     const quietMs = now - turn.lastChangeAt;
     if (!isStillStreaming) {
@@ -7793,7 +7948,10 @@ function _installWsaDomUtilsFn() {
       !isStillStreaming &&
       (latest?.stoppedByUser || (opts.stoppedRe && opts.stoppedRe.test(`${curThinking}\n${curText}\n${turn.lastThinking}`)))
     );
-    const emptyStalledAfterActivity = Boolean(turn.sawActivity && !turn.lastText && !isStillStreaming && quietMs >= 10000);
+    const stalledTimeoutMs = turn.imageGen ? 60000 : 10000;
+    const emptyStalledAfterActivity = Boolean(
+      turn.sawActivity && !turn.lastText && !turn.hasGeneratedImage && !isStillStreaming && quietMs >= stalledTimeoutMs
+    );
     const stuckUnsentStall = Boolean(promptUnsent && (turn.submitRetries || 0) >= 3 && (now - turn.startedAt) >= 14000);
     const neverStartedStall = Boolean(!turn.sawActivity && !isStillStreaming && (now - turn.startedAt) >= 45000);
     if (stoppedByUser || emptyStalledAfterActivity || stuckUnsentStall || neverStartedStall) {
@@ -7819,12 +7977,22 @@ function _installWsaDomUtilsFn() {
       };
     }
 
-    const done = Boolean(
-      turn.sawActivity &&
-      turn.lastText &&
-      !isStillStreaming &&
-      ((latest?.hasActionBar && quietMs >= 450) || quietMs >= 1400)
-    );
+    let done = false;
+    if (turn.imageGen) {
+      if (turn.hasGeneratedImage && !isStillStreaming && ((latest?.hasActionBar && quietMs >= 1000) || quietMs >= 2500)) {
+        done = true;
+      } else if (!turn.hasGeneratedImage && turn.lastText && !isStillStreaming) {
+        const isCreatingMsg = /\b(?:creating\s+image|generating\s+image|getting\s+started)\b/i.test(turn.lastText);
+        done = isCreatingMsg ? (quietMs >= 20000) : Boolean((latest?.hasActionBar && quietMs >= 4000) || quietMs >= 6000);
+      }
+    } else {
+      done = Boolean(
+        turn.sawActivity &&
+        turn.lastText &&
+        !isStillStreaming &&
+        ((latest?.hasActionBar && quietMs >= 450) || quietMs >= 1400)
+      );
+    }
     if (done) {
       delete rt.turns[reqId];
     }
@@ -7841,7 +8009,7 @@ function _installWsaDomUtilsFn() {
 
   globalThis.__wsaDomUtils = {
     version: 3,
-    rev: 11,
+    rev: 12,
     getClassStr,
     isVisible,
     normalizeCompareText,
@@ -7861,7 +8029,7 @@ function _installWsaDomUtilsFn() {
 }
 
 function _chatgptInstallPageRuntimeFn() {
-  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 8) {
+  if (globalThis.__wsaChatgptRuntime && globalThis.__wsaChatgptRuntime.version === 3 && globalThis.__wsaChatgptRuntime.rev === 9) {
     return true;
   }
   const u = globalThis.__wsaDomUtils;
@@ -8167,8 +8335,49 @@ function _chatgptInstallPageRuntimeFn() {
       }
     }
 
-    const stoppedByUser = Boolean(!text && /\b(?:stopped generating|you stopped)\b/i.test(String(turnEl.innerText || turnEl.textContent || "")));
-    return { text, thinking, isStreaming, hasActionBar, stoppedByUser };
+    const countLargeTurnImages = (rootNode) => {
+      if (!rootNode) return 0;
+      const seen = new Set();
+      let count = 0;
+      const visit = (node) => {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+        if (node.tagName === "IMG") {
+          if (!node.closest?.("[data-message-author-role='user'], .bg-user-message, [class*='user-message']")) {
+            const w = Number(node.naturalWidth || node.width || 0);
+            const h = Number(node.naturalHeight || node.height || 0);
+            const cls = getClassStr(node);
+            if (node.complete && w >= 180 && h >= 180 && !/(?:avatar|profile|favicon|emoji|logo)/i.test((node.alt || "") + " " + cls)) {
+              count += 1;
+            }
+          }
+        }
+        if (node.shadowRoot) visit(node.shadowRoot);
+        if (typeof node.querySelectorAll === "function") {
+          for (const img of node.querySelectorAll("img")) visit(img);
+          for (const ch of node.querySelectorAll("*")) {
+            if (ch.shadowRoot) visit(ch.shadowRoot);
+          }
+        }
+      };
+      visit(rootNode);
+      return count;
+    };
+    let generatedImageCount = countLargeTurnImages(turnEl);
+    if (generatedImageCount === 0 && searchScope && searchScope !== turnEl) {
+      generatedImageCount = countLargeTurnImages(searchScope);
+    }
+
+    const stoppedByUser = Boolean(!text && !generatedImageCount && /\b(?:stopped generating|you stopped)\b/i.test(String(turnEl.innerText || turnEl.textContent || "")));
+    return {
+      text,
+      thinking,
+      isStreaming,
+      hasActionBar,
+      stoppedByUser,
+      generatedImageCount,
+      hasGeneratedImage: generatedImageCount > 0,
+    };
   }
 
   function readAllTurns() {
@@ -8191,7 +8400,7 @@ function _chatgptInstallPageRuntimeFn() {
 
   globalThis.__wsaChatgptRuntime = {
     version: 3,
-    rev: 8,
+    rev: 9,
     turns: Object.create(null),
     findEditor,
     findSendButton,
@@ -8213,6 +8422,7 @@ async function _chatgptStartTurnFn(reqId, prompt, images = [], _imageGen = false
     label: "ChatGPT",
     editorError: "ChatGPT prompt editor not found after 20s. Make sure chatgpt.com is open and signed in.",
     defaultModel: "ChatGPT Web",
+    imageGen: Boolean(_imageGen),
   });
 }
 

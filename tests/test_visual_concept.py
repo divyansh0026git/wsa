@@ -60,7 +60,8 @@ def test_select_image_gen_provider_chatgpt_gemini_and_claude_delegation(tmp_path
     assert select_image_gen_provider(s1) == ("chatgpt", "direct")
 
     s2 = SessionState(project_root=tmp_path, selected_model="gemini")
-    assert select_image_gen_provider(s2) == ("gemini", "select_tool")
+    s2.providers_info = {"gemini": {"has_tab": True}, "chatgpt": {"has_tab": False}}
+    assert select_image_gen_provider(s2) == (None, "chatgpt_required")
 
     s3 = SessionState(project_root=tmp_path, selected_model="claude")
     s3.providers_info = {"chatgpt": {"has_tab": True}, "claude": {"has_tab": True}}
@@ -68,12 +69,69 @@ def test_select_image_gen_provider_chatgpt_gemini_and_claude_delegation(tmp_path
 
     s4 = SessionState(project_root=tmp_path, selected_model="claude")
     s4.providers_info = {"gemini": {"has_tab": True}, "claude": {"has_tab": True}}
-    assert select_image_gen_provider(s4) == ("gemini", "select_tool")
+    assert select_image_gen_provider(s4) == (None, "chatgpt_required")
 
     s5 = SessionState(project_root=tmp_path, selected_model="claude")
     s5.providers_info = {"claude": {"has_tab": True}}
     s5.multiagent_queue = ["claude"]
-    assert select_image_gen_provider(s5) == (None, "unavailable")
+    assert select_image_gen_provider(s5) == (None, "chatgpt_required")
+
+
+def test_visual_concept_gate_prompts_to_open_chatgpt_then_retries_and_approves(tmp_path: Path):
+    png_url = _make_png_data_url()
+
+    # Case 1: User skips when ChatGPT stays closed
+    s_skip = SessionState(project_root=tmp_path, selected_model="claude")
+    s_skip.providers_info = {"claude": {"has_tab": True}, "chatgpt": {"has_tab": False}}
+
+    class _NoChatGPTClient:
+        def get_health(self):
+            return {"active_providers": {"claude": {"has_tab": True}, "chatgpt": {"has_tab": False}}}
+
+        def stream(self, **kwargs):
+            raise AssertionError("Should not call stream when ChatGPT is not open")
+
+    prompts_seen: List[str] = []
+    res_skip = maybe_run_visual_concept_gate(
+        "Build a dark mission-control dashboard UI",
+        s_skip,
+        _NoChatGPTClient(),
+        input_fn=lambda p: prompts_seen.append(p) or "s",
+    )
+    assert res_skip["skipped"] is True
+    assert res_skip["approved"] is False
+    assert any("Open ChatGPT" in p for p in prompts_seen)
+
+    # Case 2: User opens ChatGPT, presses [r] to retry, then approves [y]; echoed prompt is sanitized
+    s_ok = SessionState(project_root=tmp_path, selected_model="claude")
+    s_ok.providers_info = {"claude": {"has_tab": True}, "chatgpt": {"has_tab": False}}
+    health_calls = {"n": 0}
+
+    class _RetryOpenChatGPTClient:
+        def get_health(self):
+            health_calls["n"] += 1
+            if health_calls["n"] >= 2:
+                return {"active_providers": {"claude": {"has_tab": True}, "chatgpt": {"has_tab": True}}}
+            return {"active_providers": {"claude": {"has_tab": True}, "chatgpt": {"has_tab": False}}}
+
+        def stream(self, **kwargs):
+            prompt_sent = kwargs["messages"][0]["content"]
+            return {
+                "content": prompt_sent,  # Echo raw prompt to verify sanitization
+                "generated_images": [{"data_url": png_url, "alt": "UI concept"}],
+            }
+
+    answers = iter(["r", "y", "y"])
+    res_ok = maybe_run_visual_concept_gate(
+        "Build a dark mission-control dashboard UI",
+        s_ok,
+        _RetryOpenChatGPTClient(),
+        input_fn=lambda _p: next(answers),
+    )
+    assert res_ok["approved"] is True
+    assert s_ok.approved_design_concepts[0]["provider"] == "chatgpt"
+    assert s_ok.approved_design_concepts[0]["description"] == "ChatGPT generated UI concept mockup image."
+    assert s_ok.model == "claude"
 
 
 def test_build_image_gen_prompt_formats_for_provider():
@@ -410,3 +468,109 @@ def test_slash_command_concept_modes(tmp_path: Path):
 
     assert handle_command("/concept auto", state) == (True, True)
     assert state.visual_concept_mode == "auto"
+
+
+def test_run_turn_preserves_singleagent_and_multiagent_after_concept_approval(tmp_path: Path):
+    import wsa_agent.subagents as subagents_mod
+    import wsa_agent.visual_concept as vc_mod
+    from wsa_agent.agent import run_turn
+
+    png_url = _make_png_data_url()
+
+    # Case A: Single-agent mode with team_mode="off" -> ChatGPT concept preview, then normal execute_agent_loop on Claude
+    dir_single = tmp_path / "single"
+    dir_single.mkdir(parents=True, exist_ok=True)
+    s_single = SessionState(project_root=dir_single, selected_model="claude", agent_mode="singleagent", team_mode="off")
+    s_single.providers_info = {"chatgpt": {"has_tab": True}, "claude": {"has_tab": True}}
+
+    calls_single: List[Dict[str, Any]] = []
+
+    class _SingleTurnClient:
+        api_base = "http://127.0.0.1:8081"
+        api_key = ""
+
+        def get_health(self):
+            return {"dom_relay_active": True, "active_providers": s_single.providers_info}
+
+        def stream(self, **kwargs):
+            calls_single.append(kwargs)
+            if kwargs.get("image_gen"):
+                return {
+                    "content": "ChatGPT concept preview ready.",
+                    "generated_images": [{"data_url": png_url, "alt": "Dashboard Preview"}],
+                }
+            return {
+                "content": "Built dashboard UI in single-agent mode.",
+                "tool_calls": [],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 4},
+                "upstream_model": {"chat_url": "https://claude.ai/chat/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            }
+
+    ans_a = iter(["y", "y"])
+    with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True), patch.object(
+        vc_mod, "_safe_read_choice", side_effect=lambda _p, input_fn=None: next(ans_a)
+    ):
+        out_a = run_turn("Design a clean telemetry dashboard UI", s_single, _SingleTurnClient())
+
+    assert out_a["final_text"] == "Built dashboard UI in single-agent mode."
+    assert len(calls_single) == 2
+    assert calls_single[0]["model"] == "chatgpt" and calls_single[0]["image_gen"] is True
+    assert calls_single[1]["model"] == "claude"
+    assert s_single.agent_mode == "singleagent"
+    assert s_single.model == "claude"
+    assert len(s_single.approved_design_concepts) == 1
+
+    # Case B: Multi-agent mode with team_mode="on" -> ChatGPT concept preview, then normal run_orchestrated_turn
+    dir_multi = tmp_path / "multi"
+    dir_multi.mkdir(parents=True, exist_ok=True)
+    s_multi = SessionState(
+        project_root=dir_multi,
+        selected_model="claude",
+        agent_mode="multiagent",
+        multiagent_queue=["claude", "gemini", "chatgpt"],
+        multiagent_index=0,
+        team_mode="on",
+    )
+    s_multi.providers_info = {"chatgpt": {"has_tab": True}, "claude": {"has_tab": True}, "gemini": {"has_tab": True}}
+
+    calls_multi: List[Dict[str, Any]] = []
+    orch_seen: Dict[str, Any] = {}
+
+    class _MultiTurnClient:
+        api_base = "http://127.0.0.1:8081"
+        api_key = ""
+
+        def get_health(self):
+            return {"dom_relay_active": True, "active_providers": s_multi.providers_info}
+
+        def stream(self, **kwargs):
+            calls_multi.append(kwargs)
+            return {
+                "content": "ChatGPT 3D preview ready.",
+                "generated_images": [{"data_url": png_url, "alt": "3D Preview"}],
+            }
+
+    def _fake_orch(prompt, st, cli, **kwargs):
+        orch_seen["prompt"] = prompt
+        orch_seen["agent_mode"] = st.agent_mode
+        orch_seen["model"] = st.model
+        orch_seen["queue"] = list(st.multiagent_queue)
+        orch_seen["index"] = st.multiagent_index
+        orch_seen["concepts"] = list(st.approved_design_concepts)
+        return {"final_text": "Orchestrated build complete."}
+
+    ans_b = iter(["y", "y"])
+    with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True), patch.object(
+        vc_mod, "_safe_read_choice", side_effect=lambda _p, input_fn=None: next(ans_b)
+    ), patch.object(subagents_mod, "run_orchestrated_turn", side_effect=_fake_orch):
+        out_b = run_turn("Build a 3d interactive solar system website with spatial HUD", s_multi, _MultiTurnClient())
+
+    assert out_b["final_text"] == "Orchestrated build complete."
+    assert len(calls_multi) == 1
+    assert calls_multi[0]["model"] == "chatgpt" and calls_multi[0]["image_gen"] is True
+    assert orch_seen["agent_mode"] == "multiagent"
+    assert orch_seen["model"] == "claude"
+    assert orch_seen["queue"] == ["claude", "gemini", "chatgpt"]
+    assert orch_seen["index"] == 0
+    assert len(orch_seen["concepts"]) == 1
+    assert "USER-APPROVED VISUAL UI CONCEPT" in orch_seen["prompt"]

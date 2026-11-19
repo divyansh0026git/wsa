@@ -1,11 +1,11 @@
 """
 Pre-Orchestrator Visual Concept Mockup & Approval Gate.
 
-Generates UI/dashboard/website visual concept mockups via ChatGPT (direct prompt)
-or Gemini (Create image selection) before Orchestrator planning starts, pauses for
-explicit user confirmation (`y` continue, `n` refine/regenerate, `m` add UI part,
-`s` skip), saves approved mockups in `.wsa_concepts/`, and preserves both the
-images and visual context across every stage and account/provider switch.
+Generates UI/dashboard/website visual concept mockups exclusively via ChatGPT
+before Orchestrator planning starts, pauses cleanly (prompting the user to open
+ChatGPT if missing, then requesting explicit `y/n` confirmation until satisfied),
+saves approved mockups in `.wsa_concepts/`, and preserves both the images and
+visual context across every stage and account/provider switch.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from rich.panel import Panel
 from . import renderer as R
 from .session import get_model_info, normalize_web_model
 
-IMAGE_GEN_PROVIDERS = ("chatgpt", "gemini")
+IMAGE_GEN_PROVIDERS = ("chatgpt",)
 
 _FRONTEND_VISUAL_RE = re.compile(
     r"\b(?:website|web\s*site|web\s*app|webapp|landing\s*page|ui|ux|dashboard|admin\s*panel|"
@@ -62,38 +62,22 @@ def is_frontend_visual_prompt(
 
 def select_image_gen_provider(state: Any) -> Tuple[Optional[str], str]:
     """
-    Choose which connected web provider generates UI concept images.
+    Choose the web provider used for UI concept image generation.
 
-    Only ``chatgpt`` (direct text prompt) and ``gemini`` (Create image tool)
-    support web image generation. Returns ``(provider, mode)`` where ``mode`` is:
-      - ``"direct"`` for active ChatGPT
-      - ``"select_tool"`` for Gemini (requires Create image tool selection)
-      - ``"unavailable"`` when neither ChatGPT nor Gemini is active/open
+    Concept mockups always use ChatGPT (`"chatgpt"`) exclusively. Returns
+    ``("chatgpt", "direct")`` when a ChatGPT tab/session is active or open,
+    otherwise ``(None, "chatgpt_required")``.
     """
     active = normalize_web_model(getattr(state, "model", "") or getattr(state, "selected_model", "")) or "gemini"
     providers_info = getattr(state, "providers_info", None) or {}
-    queue = [
-        p for p in (getattr(state, "multiagent_queue", None) or [])
-        if normalize_web_model(p) in IMAGE_GEN_PROVIDERS
-    ]
-
-    def _is_available(pid: str) -> bool:
-        if pid == active:
-            return True
-        info = providers_info.get(pid) if isinstance(providers_info, dict) else None
-        if isinstance(info, dict) and info.get("has_tab"):
-            return True
-        return normalize_web_model(pid) in [normalize_web_model(q) for q in queue]
-
+    cg_info = providers_info.get("chatgpt") if isinstance(providers_info, dict) else None
+    if isinstance(cg_info, dict):
+        if bool(cg_info.get("has_tab")):
+            return "chatgpt", "direct"
+        return None, "chatgpt_required"
     if active == "chatgpt":
         return "chatgpt", "direct"
-    if active == "gemini":
-        return "gemini", "select_tool"
-    if _is_available("chatgpt"):
-        return "chatgpt", "direct"
-    if _is_available("gemini"):
-        return "gemini", "select_tool"
-    return None, "unavailable"
+    return None, "chatgpt_required"
 
 
 def plan_concept_views(user_input: str) -> List[Dict[str, str]]:
@@ -430,6 +414,10 @@ def _generate_single_concept(
         view_title,
     )
     reply_txt = str(resp.get("content") or "").strip()
+    norm_reply = " ".join(reply_txt.split())
+    norm_prompt = " ".join(gen_prompt.split())
+    if not norm_reply or norm_reply == norm_prompt:
+        reply_txt = "ChatGPT generated UI concept mockup image."
     return {
         "ok": True,
         "provider": provider,
@@ -475,32 +463,79 @@ def maybe_run_visual_concept_gate(
     active_model = normalize_web_model(getattr(state, "model", "") or "gemini") or "gemini"
     planned_views = plan_concept_views(user_input)
 
+    if provider is None and callable(getattr(client, "get_health", None)):
+        try:
+            _pre_h = client.get_health()
+            if isinstance(_pre_h, dict) and _pre_h and hasattr(state, "sync_account_from_health"):
+                state.sync_account_from_health(_pre_h)
+                provider, gen_mode = select_image_gen_provider(state)
+        except Exception:
+            pass
+
     if provider is None:
         if input_fn is None:
+            try:
+                R._release_console_live(R.console)
+                R.sync_theme()
+                R.console.print()
+                R.console.print(
+                    Panel(
+                        "\n".join([
+                            f"[bold {R.Theme.PRIMARY}]ChatGPT Required for UI Preview Generation[/]",
+                            "",
+                            "  Please open ChatGPT (https://chatgpt.com) and click Sync in WSA Bridge "
+                            "for generating a preview of your UI for confirmation before Architecture Planning starts.",
+                            f"  Active coding agent ([bold]{escape(R.friendly_model_name(active_model))}[/]) will stay selected for planning & coding.",
+                        ]),
+                        title=f"[bold {R.Theme.WARN}]Open ChatGPT to Preview UI Concept[/]",
+                        border_style=R.Theme.WARN,
+                        padding=(1, 2),
+                    )
+                )
+            except Exception:
+                pass
+        while provider is None:
             R.print_warn(
-                f"{R.friendly_model_name(active_model)} does not support image generation, and no open ChatGPT/Gemini tab "
-                "was detected. Open ChatGPT or Gemini in Chrome/Brave and click Sync next time for UI concept previews."
+                "Please open ChatGPT (https://chatgpt.com) and click Sync in WSA Bridge "
+                "for generating a preview of your UI for confirmation before Architecture Planning starts."
             )
-        return no_op
+            try:
+                retry_choice = _safe_read_choice(
+                    "  Open ChatGPT & press [r] to retry, or [s] to skip UI preview: ",
+                    input_fn=input_fn,
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return no_op
+            if retry_choice in ("s", "skip", "n", "no"):
+                return no_op
+            if callable(getattr(client, "get_health", None)):
+                try:
+                    _retry_h = client.get_health()
+                    if isinstance(_retry_h, dict) and _retry_h and hasattr(state, "sync_account_from_health"):
+                        state.sync_account_from_health(_retry_h)
+                except Exception:
+                    pass
+            provider, gen_mode = select_image_gen_provider(state)
+            if provider is None:
+                R.print_warn(
+                    "ChatGPT tab still not detected — please open https://chatgpt.com and click Sync, "
+                    "then press [r] (or [s] to skip)."
+                )
 
     prov_label = R.friendly_model_name(provider)
     if mode != "on":
+        how_it_works = (
+            f"ChatGPT generates the UI preview image directly from a tailored prompt "
+            f"(even while keeping {escape(R.friendly_model_name(active_model))} for architecture/coding)."
+            if provider != active_model
+            else "ChatGPT generates the UI preview image directly from a tailored prompt."
+        )
         note_lines = [
             f"[bold {R.Theme.PRIMARY}]Generate UI / Frontend Concept Mockup(s) Before Architecture Planning?[/]",
             "",
-            f"  Previewing layout mockups first prevents wasted context by locking the exact look you want before coding starts.",
-            f"  [bold]Image generator:[/] [{R.Theme.ACCENT}]{escape(prov_label)}[/]"
-            + (
-                f" [dim](temporarily generating mockup while keeping {escape(R.friendly_model_name(active_model))} for architecture/coding)[/]"
-                if provider != active_model
-                else ""
-            ),
-            f"  [bold]How it works:[/] "
-            + (
-                "ChatGPT generates the image directly from a tailored prompt."
-                if provider == "chatgpt"
-                else "Gemini uses Create image mode (`Tools -> Create image`)."
-            ),
+            "  Previewing layout mockups first prevents wasted context by locking the exact look you want before coding starts.",
+            f"  [bold]Image generator:[/] [{R.Theme.ACCENT}]{escape(prov_label)}[/]",
+            f"  [bold]How it works:[/] {how_it_works}",
             "  [bold]Suggested UI part:[/] " + escape(planned_views[0]["title"]),
         ]
         if input_fn is None:

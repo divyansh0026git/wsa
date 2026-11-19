@@ -4518,15 +4518,26 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
                 orch_kwargs["skill_appointment"] = appointment
             return run_orchestrated_turn(eff_input, state, client, **orch_kwargs)
 
+    eff_input = user_input
     exec_kwargs: Dict[str, Any] = {"allow_auto_decisions": False}
-    if not free_mode and (ai_skills or ai_security_pass is not None):
-        exec_kwargs["skill_appointment"] = analyze_prompt_skills(
+    if not free_mode:
+        from .visual_concept import maybe_run_visual_concept_gate
+        direct_appt = analyze_prompt_skills(
             user_input,
             ai_skills=ai_skills,
             ai_security_pass=ai_security_pass,
         )
+        vc_gate = maybe_run_visual_concept_gate(
+            user_input,
+            state,
+            client,
+            appointment=direct_appt,
+        )
+        eff_input = str(vc_gate.get("enriched_prompt") or user_input)
+        if ai_skills or ai_security_pass is not None:
+            exec_kwargs["skill_appointment"] = direct_appt
     return execute_agent_loop(
-        user_input,
+        eff_input,
         state,
         client,
         **exec_kwargs,

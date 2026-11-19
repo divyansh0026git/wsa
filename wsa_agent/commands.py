@@ -882,7 +882,7 @@ def _cmd_concept(arg: str, state: SessionState) -> HandlerResult:
     if not raw or low in ("status", "show"):
         mode = getattr(state, "visual_concept_mode", "auto")
         concepts = list(getattr(state, "approved_design_concepts", None) or [])
-        R.print_info(f"Visual concept gate: mode={mode} | locked concepts={len(concepts)}")
+        R.print_info(f"Visual concept gate: mode={mode} | generator=ChatGPT | locked concepts={len(concepts)}")
         for idx, c in enumerate(concepts, 1):
             if not isinstance(c, dict):
                 continue
