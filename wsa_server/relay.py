@@ -843,7 +843,9 @@ def seed_session_hint_url(
             cur_tab_url = _relay_provider_url(entry, prov).strip().rstrip("/")
             cur_email = _relay_provider_email(entry, prov).strip().lower()
             old_email = str(inv[norm].get("account_email") or "").strip().lower()
-            if (cur_tab_url and cur_tab_url == norm) or (cur_email and (not old_email or old_email == "*" or old_email == cur_email)):
+            tab_matches = bool(cur_tab_url and cur_tab_url == norm)
+            email_matches = bool(cur_email and old_email and old_email != "*" and cur_email == old_email)
+            if tab_matches or email_matches:
                 inv.pop(norm, None)
     if is_chat_url_stale_for_relay(url, provider=prov, relay_id=relay_id):
         return False
