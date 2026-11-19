@@ -3187,6 +3187,7 @@ def execute_agent_loop(
                             "prompt remained unsubmitted in composer" in err_low
                             or "did not start or produce a text response" in err_low
                             or "dom relay timeout (" in err_low
+                            or "picked up the prompt in" in err_low
                         )
                         if is_unsubmitted and composer_submit_retries < 2:
                             composer_submit_retries += 1

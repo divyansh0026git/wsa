@@ -661,6 +661,37 @@ def test_run_orchestrated_turn_resumes_saved_plan_skipping_completed_tasks(tmp_p
     assert all(item["status"] == "done" for item in state.plan_items)
 
 
+def test_agent_loop_fails_over_on_dom_relay_pickup_timeout(tmp_path):
+    from wsa_agent import agent
+    from wsa_agent.session import SessionState
+
+    state = SessionState(project_root=tmp_path, selected_model="gemini", permission_mode="auto", auto_approve=True)
+    state.configure_multiagent(["gemini", "claude"])
+    seen_models = []
+
+    class PickupFailoverClient:
+        api_base = "http://127.0.0.1:8081/v1"
+        api_key = "sk-wsa"
+
+        def stream(self, **kwargs):
+            model = kwargs.get("model") or ""
+            seen_models.append(model)
+            if "gemini" in model:
+                raise ConnectionError(
+                    "API error: upstream error: Gemini Web bridge uses the browser DOM relay (chrome), "
+                    "but no Gemini tab picked up the prompt in 45s. Open https://gemini.google.com/app "
+                    "in Chrome/Brave with the 'WSA — Web Browser Bridge' extension enabled and click Sync, then retry."
+                )
+            return {"content": "Recovered on Claude after pickup timeout.", "tool_calls": []}
+
+    with mock.patch("time.sleep"):
+        res = agent.execute_agent_loop("Verify build status", state, PickupFailoverClient(), quiet_ui=True)
+    assert res["ok"] is True
+    assert state.model == "claude"
+    assert any("claude" in m for m in seen_models)
+
+
+
 
 
 

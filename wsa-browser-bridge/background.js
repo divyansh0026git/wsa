@@ -243,10 +243,12 @@ async function readLiveTabIdentity(tab, options = {}) {
     };
   }
   try {
-    const res = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: "MAIN",
-      func: async (targetProvider) => {
+    let probeTimer = null;
+    const res = await Promise.race([
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: async (targetProvider) => {
         let isBrave = false;
         try {
           if (navigator.brave && typeof navigator.brave.isBrave === "function") {
@@ -645,6 +647,12 @@ async function readLiveTabIdentity(tab, options = {}) {
         };
       },
       args: [provider],
+      }),
+      new Promise((_, reject) => {
+        probeTimer = setTimeout(() => reject(new Error("tab identity probe timeout")), 2500);
+      }),
+    ]).finally(() => {
+      if (probeTimer) clearTimeout(probeTimer);
     });
     const r = res?.[0]?.result || {};
     const detected = r.isBrave ? "brave" : (inferBrowserFromUA() === "edge" ? "edge" : "chrome");
@@ -670,7 +678,20 @@ async function readLiveTabIdentity(tab, options = {}) {
     cachedTabIdentity = entry;
     return entry;
   } catch {
-    return { provider, site, authUser, isBrave: false, modelBadge: "", accountEmail: "", xsrfToken: null, geminiBl: null };
+    const fallbackPrev = prevCached && prevCached.tabId === tab.id ? prevCached : null;
+    return {
+      provider,
+      site,
+      tabId: tab.id,
+      authUser,
+      isBrave: Boolean(fallbackPrev?.isBrave),
+      modelBadge: fallbackPrev?.modelBadge || "",
+      accountEmail: fallbackPrev?.accountEmail || "",
+      xsrfToken: fallbackPrev?.xsrfToken || null,
+      geminiBl: fallbackPrev?.geminiBl || null,
+      url: fallbackPrev?.url || tab.url || "",
+      ts: now,
+    };
   }
 }
 
@@ -938,7 +959,11 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
       ensureFastPollLoop();
       await restoreActiveRelayJob();
       if (injecting) {
-        await sendBusyHeartbeat(null, { triggerRelay: false });
+        const stillValid = await sendBusyHeartbeat(null, { triggerRelay: false });
+        if (stillValid === false) {
+          await checkAndRelay();
+          return;
+        }
         await pollActiveRelayJob();
         return;
       }
