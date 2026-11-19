@@ -498,7 +498,7 @@ def analyze_prompt_skills(
         selected.append("context7-docs")
     if has_impl and has_software:
         categories.append("Core Engineering")
-        selected.extend(["test-driven-development", "karpathy-skills"])
+        selected.extend(["test-driven-development", "karpathy-skills", "semgrep-guardrails"])
         if "verification-before-completion" not in selected and not has_ui:
             selected.append("verification-before-completion")
 
@@ -775,7 +775,7 @@ def read_skill_content(
     *,
     mode: str = "brief",
     section: str = "",
-    max_chars: int = 8000,
+    max_chars: int = 10500,
 ) -> Tuple[str, List[str]]:
     """Read one or more bundled WSA skills in compressed (`brief`) or `full` mode.
 
@@ -805,7 +805,7 @@ def read_skill_content(
 
     eff_mode = "full" if str(mode or "brief").strip().lower() == "full" else "brief"
     sec_query = str(section or "").strip().lower()
-    per_skill_budget = max(1200, int((max_chars - 240) / max(1, len(resolved))))
+    per_skill_budget = max(1450, int((max_chars - 240) / max(1, len(resolved))))
 
     blocks: List[str] = []
     for slug in resolved:

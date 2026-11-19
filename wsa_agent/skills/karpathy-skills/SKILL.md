@@ -24,7 +24,13 @@ Inspired by `multica-ai/andrej-karpathy-skills`. Counters the four most common A
    - Remove ONLY imports/variables/helpers that YOUR OWN changes made unused; mention pre-existing dead code instead of silently deleting it.
 4. **Goal-Driven Execution (Verifiable Milestones)**:
    - Translate vague goals into concrete, testable acceptance criteria before editing:
-     - "Fix bug" -> write/run reproducing check -> patch root cause -> prove check passes.
-     - "Add feature" -> define edge cases & assertions -> implement -> prove all pass.
+     - "Fix bug" -> trace input-to-failure dataflow -> sweep sibling call sites with `search_files` -> patch root cause -> prove reproducing test passes.
+     - "Add feature / Build software" -> lock file-by-file architecture & schemas first -> implement -> prove unit & integration checks pass.
      - "Refactor" -> verify tests pass before AND after with zero behavioral regressions.
    - For multi-step tasks, state a crisp numbered checklist (`step -> exact verification check`) and verify every item honestly.
+
+## System, Backend & File Architecture Blueprint (Before Coding)
+
+- **File-by-File Topology First**: Map every module's single responsibility, exported functions/types, and dependency direction (zero circular imports) before writing code.
+- **Backend & Data Invariants**: Validate all external inputs/schemas at the boundary, enforce idempotent error envelopes, use parameterized queries/transactions, bound network calls with timeouts, and clean up file handles/processes deterministically.
+- **Security by Default**: Apply OWASP guardrails while coding — server-side auth/RBAC/totals, safe DOM `textContent`, path canonicalization, and zero hardcoded secrets.

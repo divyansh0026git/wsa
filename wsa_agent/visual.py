@@ -136,6 +136,100 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
     }
   });
 
+  function parseRgba(str) {
+    if (!str || str === 'transparent') return [0, 0, 0, 0];
+    var m = String(str).match(/rgba?\(\s*([0-9.]+)[\s,]+([0-9.]+)[\s,]+([0-9.]+)(?:[\s,/]+([0-9.]+))?\s*\)/i);
+    if (!m) return [0, 0, 0, 0];
+    return [parseFloat(m[1]) || 0, parseFloat(m[2]) || 0, parseFloat(m[3]) || 0, m[4] !== undefined ? parseFloat(m[4]) : 1];
+  }
+  function relLuma(rgb) {
+    function ch(v) {
+      var s = Math.max(0, Math.min(255, v)) / 255;
+      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * ch(rgb[0]) + 0.7152 * ch(rgb[1]) + 0.0722 * ch(rgb[2]);
+  }
+
+  var hasFixedBgCanvas = false;
+  document.querySelectorAll('canvas').forEach(function(c) {
+    var cr = c.getBoundingClientRect();
+    if (cr.width >= vw * 0.55 && cr.height >= vh * 0.55) {
+      var ccs = getComputedStyle(c);
+      var pcs = c.parentElement ? getComputedStyle(c.parentElement) : null;
+      if (ccs.position === 'fixed' || ccs.position === 'sticky' || (pcs && (pcs.position === 'fixed' || pcs.position === 'sticky'))) {
+        hasFixedBgCanvas = true;
+      }
+    }
+  });
+
+  var lowContrastTexts = [];
+  document.querySelectorAll('h1,h2,h3,p,dt,dd,th,td').forEach(function(el) {
+    if (lowContrastTexts.length >= 6) return;
+    var cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.1) return;
+    var cls = typeof el.className === 'string' ? el.className : '';
+    if (/(?:^|\s)(?:sr-only|visually-hidden|screen-reader-text)(?:\s|$)/i.test(cls)) return;
+    var r = el.getBoundingClientRect();
+    if (r.width < 16 || r.height < 10 || r.bottom <= 0 || r.top >= vh) return;
+    var txt = String(el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (txt.length < 3) return;
+    var fg = parseRgba(cs.color);
+    if (fg[3] < 0.2) return;
+    var fgL = relLuma(fg);
+    var cur = el;
+    var maxBgAlpha = 0;
+    var solidBg = null;
+    var hasBlur = false;
+    while (cur && cur !== document.documentElement) {
+      var acs = getComputedStyle(cur);
+      var bg = parseRgba(acs.backgroundColor);
+      if (bg[3] > maxBgAlpha) maxBgAlpha = bg[3];
+      if (!solidBg && bg[3] >= 0.55) solidBg = bg;
+      var bf = acs.backdropFilter || acs.webkitBackdropFilter || 'none';
+      if (bf && bf !== 'none') hasBlur = true;
+      cur = cur.parentElement;
+    }
+    if (solidBg && !hasBlur) {
+      var bgL = relLuma(solidBg);
+      var ratio = (Math.max(fgL, bgL) + 0.05) / (Math.min(fgL, bgL) + 0.05);
+      if (ratio < 2.6) {
+        lowContrastTexts.push(cssLabel(el) + ' (low contrast ' + ratio.toFixed(1) + ':1 "' + txt.slice(0, 24) + '")');
+        return;
+      }
+    }
+    if (hasFixedBgCanvas && sh > vh * 1.4 && maxBgAlpha < 0.18 && !hasBlur && (!cs.textShadow || cs.textShadow === 'none')) {
+      if ((window.scrollY > 40 || (r.left < vw * 0.78 && r.right > vw * 0.35)) && fgL < 0.18) {
+        lowContrastTexts.push(cssLabel(el) + ' (unbacked dark text over 3D canvas "' + txt.slice(0, 24) + '")');
+      }
+    }
+  });
+
+  var headerBleeds = [];
+  if (sh > vh * 1.25) {
+    document.querySelectorAll('header, nav, [role="banner"]').forEach(function(hdr) {
+      if (headerBleeds.length >= 3) return;
+      var hcs = getComputedStyle(hdr);
+      if (hcs.display === 'none' || hcs.visibility === 'hidden') return;
+      if (hcs.position !== 'fixed' && hcs.position !== 'sticky') return;
+      var hr = hdr.getBoundingClientRect();
+      if (hr.top > 24 || hr.height < 32 || hr.width < vw * 0.5) return;
+      var hBg = parseRgba(hcs.backgroundColor);
+      var hBf = hcs.backdropFilter || hcs.webkitBackdropFilter || 'none';
+      var maxA = hBg[3];
+      var hasHBlur = Boolean(hBf && hBf !== 'none');
+      if (hdr.firstElementChild) {
+        var ccs = getComputedStyle(hdr.firstElementChild);
+        var cBg = parseRgba(ccs.backgroundColor);
+        if (cBg[3] > maxA) maxA = cBg[3];
+        var cBf = ccs.backdropFilter || ccs.webkitBackdropFilter || 'none';
+        if (cBf && cBf !== 'none') hasHBlur = true;
+      }
+      if (maxA < 0.70 && !hasHBlur) {
+        headerBleeds.push(cssLabel(hdr) + ' (transparent sticky header bleeds scrolled content)');
+      }
+    });
+  }
+
   var marks = [];
   var occludedControls = [];
   var candidates = document.querySelectorAll(
@@ -212,6 +306,8 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
     broken_images: brokenImages.slice(0, 10),
     canvases: canvases.slice(0, 8),
     clipped_texts: clippedTexts.slice(0, 8),
+    low_contrast_texts: lowContrastTexts.slice(0, 6),
+    header_bleeds: headerBleeds.slice(0, 3),
     occluded_controls: occludedControls.slice(0, 8),
     marks: marks
   };
@@ -1036,6 +1132,26 @@ def capture_visual_inspection(
                     primary_png = clean_png
                 lbl = f"{vname.upper()} {vw}x{vh}" + (" [SoM]" if want_som else "")
                 tiles.append((lbl, display_png))
+                sh_val = int(((audit.get("scroll") or {}).get("height") if isinstance(audit, dict) else 0) or 0)
+                if idx == 0 and want_som and not actions and not full_page and sh_val >= int(vh * 2.0):
+                    mid_y = max(int(vh * 0.6), int((sh_val - vh) * 0.45))
+                    cdp.evaluate(f"(function(){{ window.scrollTo(0, {mid_y}); return window.scrollY; }})()")
+                    cdp.drain_events(200)
+                    mid_audit = cdp.evaluate(f"{_AUDIT_AND_SOM_JS}(false, 12, {int(vw)})") or {}
+                    if isinstance(audit, dict) and isinstance(mid_audit, dict):
+                        for a_key, cap_n in (
+                            ("low_contrast_texts", 6),
+                            ("header_bleeds", 3),
+                            ("clipped_texts", 8),
+                            ("occluded_controls", 8),
+                        ):
+                            merged = list(dict.fromkeys([*(audit.get(a_key) or []), *(mid_audit.get(a_key) or [])]))
+                            if merged:
+                                audit[a_key] = merged[:cap_n]
+                    mid_png = cdp.screenshot_png(full_page=False)
+                    tiles.append((f"{vname.upper()} MID-SCROLL {vw}x{vh}", mid_png))
+                    cdp.evaluate("(function(){ window.scrollTo(0, 0); return true; })()")
+                    cdp.drain_events(80)
                 viewport_reports.append({
                     "name": vname,
                     "width": vw,
@@ -1130,6 +1246,10 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
             status_flags.append(f"OCCLUDED={len(audit['occluded_controls'])}")
         if audit.get("clipped_texts"):
             status_flags.append(f"CLIPPED_TEXT={len(audit['clipped_texts'])}")
+        if audit.get("low_contrast_texts"):
+            status_flags.append(f"LOW_CONTRAST={len(audit['low_contrast_texts'])}")
+        if audit.get("header_bleeds"):
+            status_flags.append(f"HEADER_BLEED={len(audit['header_bleeds'])}")
         if status_flags:
             passed = False
         flag_str = " | ".join(status_flags) if status_flags else "layout clean"
@@ -1148,6 +1268,10 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
             lines.append(f"  Occluded controls: {'; '.join(audit['occluded_controls'][:4])}")
         if audit.get("clipped_texts"):
             lines.append(f"  Clipped text: {'; '.join(audit['clipped_texts'][:4])}")
+        if audit.get("low_contrast_texts"):
+            lines.append(f"  Low contrast / canvas overlay: {'; '.join(audit['low_contrast_texts'][:4])}")
+        if audit.get("header_bleeds"):
+            lines.append(f"  Header bleed: {'; '.join(audit['header_bleeds'][:3])}")
         marks = audit.get("marks") or []
         if marks:
             lines.append("  Set-of-Mark legend:")

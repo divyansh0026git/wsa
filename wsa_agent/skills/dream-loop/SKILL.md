@@ -36,6 +36,7 @@ Code alone cannot verify lighting, silhouette, framing, depth separation, or mat
 
 ## Do Not
 
-- Do NOT declare a 3D scene "done" from code inspection alone without a passing `visual_inspect` / `browser_inspect` render.
-- Do NOT use raw unlit primitives (`MeshBasicMaterial` boxes/spheres) as a hero centerpiece unless the brief explicitly calls for geometric minimalism.
+- Do NOT declare a 3D scene "done" from code inspection alone without a passing `visual_inspect` / `browser_inspect` render across both hero (`scrollY=0`) and scrolled mid-page states.
+- Do NOT build "Saturn-toy" primitive collages (a central sphere/blob surrounded by raw `TorusGeometry` rings and `ConeGeometry` spikes) or leave a harsh two-tone horizon split (e.g. pitch-black sky abruptly meeting a bright gray floor mesh). Match `scene.background`, `THREE.FogExp2`, ground-edge fade, and CSS `--bg` into one seamless atmospheric field.
+- Do NOT float unbacked dark text over dark 3D sky/geometry (or light text over bright geometry), and do NOT use transparent sticky headers that let scrolled content bleed behind nav links. Reserve an asymmetric safe zone for the 3D subject and back overlaid text/headers with calibrated frosted surfaces (`backdrop-filter: blur(16px)` + `rgba` surface alpha `>= 0.78`).
 - Do NOT obscure the hero canvas with heavy blurred modals, neon glows, or cluttered floating telemetry overlays.

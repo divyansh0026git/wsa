@@ -31,5 +31,7 @@ Inspired by `img2threejs/img2threejs`. Build hero 3D products and showcase objec
 
 ## Guardrails
 
+- **Ban "Saturn-Toy" LLM Clichés**: Never assemble a hero asset from a central sphere/icosahedron wrapped in raw `TorusGeometry` rings and `ConeGeometry` spikes. Sculpt cohesive, recognizable architectural, optical, or industrial forms with interlocking machined housings, chamfered profiles, custom shader surfaces, and grounded contact shadows.
+- **Asymmetric Composition & UI Safe Zones**: Offset the 3D hero focal mass away from primary editorial copy (e.g. `x: +1.6` to `+2.2` on desktop when text is left-aligned) so geometry never slices behind headlines during scroll.
 - Never invent broken external `.glb`/`.hdr` CDN URLs that fail offline or with CORS; generate procedural geometries and studio `RoomEnvironment` / canvas envMaps locally so assets render 100% reliably.
 - Dispose every procedural geometry, material, and `CanvasTexture` inside `dispose()`.

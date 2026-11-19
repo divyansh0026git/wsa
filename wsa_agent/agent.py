@@ -2256,9 +2256,11 @@ def _run_visual_critic_bridge(
     critic_parts: List[Dict[str, Any]] = [{
         "type": "text",
         "text": (
-            "Inspect the attached UI/visual contact sheet and telemetry. "
-            "Check for blank/collapsed renders, broken proportions/lighting, text clipping, "
-            "overflow, occlusion, poor contrast, or misaligned elements. "
+            "Act as a senior Awwwards / Igloo.inc Visual Art Director and Dream-Loop Critic. "
+            "Inspect the attached UI/visual contact sheet and telemetry critically:\n"
+            "1. 3D & Background Craft: Flag cheap 'Saturn-toy' primitive collages (sphere + torus rings + cones) or harsh two-tone horizon cuts (e.g. pitch-black sky meeting a bright gray floor behind text without unified fog/atmosphere).\n"
+            "2. Text-Over-Canvas Contrast & Safe Zones: Flag unbacked dark text over dark 3D sky/geometry (or light text over bright terrain), low WCAG contrast, or 3D geometry slicing behind headline typography.\n"
+            "3. Navbar & Layout Hygiene: Flag transparent sticky headers where scrolled text/tables bleed behind nav links, text clipping, overflow, or occluded controls.\n"
             "Reference Set-of-Mark badge numbers [1], [2], etc. when visible.\n\n"
             f"Telemetry:\n{str(telemetry_text or '')[:2200]}\n\n"
             'Return ONLY concise JSON: {"pass": true|false, "defects": [{"tile": "...", "mark": "[N]", '
@@ -4087,11 +4089,13 @@ def execute_agent_loop(
                     visual_parts: List[Dict] = [{
                         "type": "text",
                         "text": (
-                            "[Visual Attachment]: Carefully examine every visible detail in the attached "
+                            "[Visual Attachment — Art-Director & Dream-Loop Critique]: Carefully inspect the attached "
                             "screenshot/image(s) ("
                             + ", ".join(im.get("filename", "image") for im in pending_imgs)
-                            + "), correlate Set-of-Mark badges [1][2][3] and telemetry with exact codebase files, "
-                            "and continue execution."
+                            + ") and telemetry (`[1][2][3]` Set-of-Mark badges) as a ruthless senior Awwwards / Igloo.inc Art Director:\n"
+                            "- 3D & Background Cohesion: Reject crude 'Saturn-toy' primitive collages (sphere + torus rings + cones) or harsh two-tone horizon cuts (black sky abruptly meeting a bright floor mesh). Ensure unified `scene.background`, `FogExp2`, and CSS `--bg` continuity.\n"
+                            "- Text-Over-Canvas Readability & Layering: Reject unbacked dark text over dark 3D sky/geometry, 3D geometry slicing behind headlines, or transparent sticky headers that let scrolled content bleed behind nav links.\n"
+                            "If ANY visual, aesthetic, contrast, or layout defect is visible, refine the shaders, lighting/fog, layout safe-zones, or frosted CSS surfaces and re-verify before concluding."
                         ),
                     }]
                     for im in pending_imgs[:4]:

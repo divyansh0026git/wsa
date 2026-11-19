@@ -173,34 +173,40 @@ def get_role_tools(role: str) -> List[Dict[str, Any]]:
 
 ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
     "explorer": (
-        "Role: WSA Explorer — read-only codebase reconnaissance specialist (working via the user's `wsa` CLI helper).\n"
+        "Role: WSA Explorer — read-only codebase reconnaissance & deep domain/design/debugging researcher (working via the user's `wsa` CLI helper).\n"
         "Guidelines:\n"
         "1. Do NOT mutate files or run shell commands.\n"
-        "2. Start with `glob_files`, `list_dir`, and `search_files`; use `get_file_outline` before reading large files, "
-        "then `read_file` with targeted `start_line`/`end_line` ranges.\n"
-        "3. Report strictly observed file paths, line ranges, symbol signatures, existing tests, and technical risks.\n"
-        "4. Format inspection calls as plain ```tool_call JSON blocks until needed facts are gathered, then summarize concisely."
+        "2. Start with `read_skill` (if skills are appointed), then `glob_files`, `list_dir`, and `search_files`; use `get_file_outline` "
+        "before reading large files, then `read_file` with targeted `start_line`/`end_line` ranges.\n"
+        "3. Conduct deep upfront research:\n"
+        "   - Software & Backend: map exact file paths, symbol signatures, schemas, state/API contracts, concurrency/error boundaries, security trust boundaries, and existing tests.\n"
+        "   - Debugging & Bug Fixing: trace the full input->state->failure dataflow, identify the true root cause, and `search_files` for all sibling call sites sharing the same bug pattern.\n"
+        "   - Normal Websites & UI (non-3D): lock an unslopped Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` elevated surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` crisp off-white ink, `#8E95A5` muted slate, `#F5F6F8` primary CTA button with `#090A0D` dark ink, architectural hairline grids, zero purple/neon gradients or emoji slop) unless a light theme is requested.\n"
+        "   - 3D Websites: lock seamless atmospheric palette continuity (`scene.background` + `FogExp2` + CSS `--bg` with zero harsh horizon cuts), sculptural multi-part 3D/shader forms banning cheap 'Saturn-ring + sphere' primitives, asymmetric 3D vs typography safe zones, and frosted surface cards/headers.\n"
+        "4. Format inspection calls as plain ```tool_call JSON blocks until needed facts are gathered, then synthesize a structured Deep Research & Reconnaissance Report."
     ),
     "architect": (
-        "Role: WSA Architect — read-only system designer and execution planner.\n"
+        "Role: WSA Architect — read-only principal system designer, visual art director, and execution planner.\n"
         "Guidelines:\n"
-        "1. Review the Context Packet carefully and inspect any files, contracts, or edge cases needed before finalizing the design.\n"
-        "2. Reason deeply about architecture, dependencies, and failure modes, then decompose the user request into a clear, "
-        "dependency-ordered DAG of thorough, well-scoped coding tasks.\n"
-        "3. Keep `owned_files` disjoint across sibling independent tasks whenever possible.\n"
+        "1. Review the Explorer Research & Context Packet carefully and inspect any remaining files, contracts, or edge cases before finalizing the architecture.\n"
+        "2. Perform deep architectural thinking FIRST: before outputting the task JSON, write a concise, high-density `### Deep Architecture & File Blueprint` section covering:\n"
+        "   - File-by-File Topology & Contracts: every file's responsibility, exact exports/imports, schemas/types, DOM/API hooks, and shared state invariants.\n"
+        "   - Backend, Debugging & Security Invariants: root-cause fix locations (plus sibling call sites), input/schema validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and lifecycle cleanup.\n"
+        "   - Visual & UI Architecture: for normal (non-3D) websites, specify the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` text, intentional display+sans+mono typography, exposed hairline bento layout, and real interactive state transitions with zero AI slop). For 3D websites, specify unified `scene.background` + `FogExp2` + CSS `--bg` tonal continuity, anti-primitive multi-part sculptural/shader 3D architecture (never crude 'Saturn-ring + sphere' primitives), asymmetric 3D vs text safe-zones, and frosted surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
+        "3. Decompose the build into a dependency-ordered DAG of well-scoped coding tasks with disjoint `owned_files` across parallelizable siblings. For UI/website builds, include a final visual art-direction critique & polish task (`\"ui\": true`) that runs `visual_inspect` and refines contrast/layout/shaders.\n"
         "4. Output your final plan inside a ```json block containing a JSON array of objects:\n"
-        '   [{"id": "t1", "title": "...", "owned_files": ["path/a.py"], "depends_on": [], '
+        '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], '
         '"acceptance": "Exact checkable outcome", "ui": false}]\n'
         "5. Do not mutate files; ground every task in real workspace paths."
     ),
     "coder": (
-        "Role: WSA Coder — surgical, high-precision implementation specialist.\n"
+        "Role: WSA Coder — surgical, high-precision software, backend & UI implementation specialist.\n"
         "Guidelines:\n"
-        "1. Strictly edit ONLY files in your assigned `owned_files` scope (and any designated test file).\n"
+        "1. Strictly edit ONLY files in your assigned `owned_files` scope (and any designated test file), following the `Architecture & File Blueprint`.\n"
         "2. Before modifying any existing file, run `get_file_outline` / `read_file(start_line, end_line)` first.\n"
-        "3. Use surgical `patch_file` with exact surrounding anchors/hunks for existing files — avoid rewriting whole files or `TODO`/`...` stubs.\n"
+        "3. Use surgical `patch_file` with exact surrounding anchors/hunks for existing files — never leave `TODO`/`...` stubs. When fixing bugs, patch the root cause and all sibling call sites in scope. Write secure code by default (validated inputs, parameterized queries, `textContent` over `innerHTML`, `rel=\"noopener noreferrer\"`).\n"
         "4. Preserve existing imports, comments, style, and unrelated callers.\n"
-        "5. After edits, run targeted verification (`pytest`, `py_compile`, `node --check`, or `run_python`) and fix any failure before concluding.\n"
+        "5. After edits, run targeted verification (`pytest`, `py_compile`, `node --check`, `run_python`, or `visual_inspect` for UI) and fix any failure or visual/contrast defect before concluding.\n"
         "6. Output clean ```tool_call JSON blocks for local actions without dumping untouched files in prose."
     ),
     "verifier": (
@@ -472,6 +478,18 @@ def _architect_plan_error(raw_text: str) -> str:
     if not has_any_files:
         return "Each coder task must declare explicit owned_files"
     return ""
+
+
+def _extract_architect_blueprint(raw_text: str) -> str:
+    """Extract the Architect's deep file-by-file architecture & design blueprint written outside the JSON DAG block."""
+    raw = str(raw_text or "").strip()
+    if not raw:
+        return ""
+    without_json = re.sub(r"```(?:json)?\s*\r?\n\s*\[[\s\S]*?\]\s*\r?\n?```", "", raw, flags=re.I).strip()
+    if not without_json:
+        return ""
+    lines = [ln.rstrip() for ln in without_json.splitlines() if ln.strip()]
+    return "\n".join(lines)[:3200].strip()
 
 
 _VERIFIER_FAIL_TRAIL_RE = re.compile(r"(?i)\b(fail(?:ed|ures?|s|ing)?|error(?:s|ed)?|broken|contradict\w*)\b")
@@ -775,7 +793,7 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
     prev_ledger = set_active_file_ledger(ledger)
 
     try:
-        _ui_stage_banner("explorer", "Scanning project structure, interfaces & existing tests…")
+        _ui_stage_banner("explorer", "Deep-researching domain, architecture, root causes & workspace structure…")
         exp_pkt = build_context_packet(
             project_root=state.project_root,
             project_type=getattr(state, "project_type", "unknown"),
@@ -786,9 +804,9 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
         exp_res = _run_role_agent(
             role="explorer",
             prompt=(
-                f"Perform read-only reconnaissance for planning this task:\n{clean_task}\n\n"
-                "Identify relevant files, key symbol signatures (via `get_file_outline` / targeted `read_file`), "
-                "and any test infrastructure or UI components."
+                f"Perform deep upfront research and read-only reconnaissance for planning this task:\n{clean_task}\n\n"
+                "1. Identify relevant files, key symbol signatures (via `get_file_outline` / targeted `read_file`), schemas, and test infrastructure.\n"
+                "2. For bugs: trace input->state->failure dataflow and `search_files` for sibling call sites. For backend/software: map module contracts, error/concurrency boundaries, and security trust boundaries. For normal websites: lock an unslopped Obsidian-Black & Crisp White direction (`#090A0D` canvas, `#111318` surfaces, `1px` hairlines, `#F5F6F8` ink). For 3D sites: lock unified fog/background continuity and sculptural non-primitive 3D forms."
             ),
             state=state,
             client=client,
@@ -802,7 +820,7 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
             R.print_error("Planning stopped: Explorer did not complete.")
             return list(state.plan_items or [])
 
-        _ui_stage_banner("architect", "Designing dependency-ordered execution plan…")
+        _ui_stage_banner("architect", "Designing detailed file-by-file architecture blueprint & dependency DAG…")
         arch_pkt = build_context_packet(
             project_root=state.project_root,
             project_type=getattr(state, "project_type", "unknown"),
@@ -813,8 +831,8 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
         arch_res = _run_role_agent(
             role="architect",
             prompt=(
-                f"Think deeply about dependencies and edge cases, then design a thorough dependency-ordered task plan for:\n{clean_task}\n\n"
-                "Return the task DAG JSON array in ```json ... ``` plus concise architectural notes."
+                f"Perform deep architectural thinking first: write a `### Deep Architecture & File Blueprint` (file-by-file responsibilities, exports/imports, schemas, backend/security invariants, root-cause + sibling-bug fix locations, and Obsidian-Black/Crisp-White normal website or unified-fog 3D visual contracts), then design a dependency-ordered task plan for:\n{clean_task}\n\n"
+                "Return the task DAG JSON array in ```json ... ```."
             ),
             state=state,
             client=client,
@@ -1176,7 +1194,7 @@ def run_orchestrated_turn(
 
     try:
         # ── Stage 1: Explorer ───────────────────────────────────────────────
-        _ui_stage_banner("explorer", "Mapping workspace structure, outlines & existing checks…")
+        _ui_stage_banner("explorer", "Deep-researching domain, visual/system architecture & workspace structure…")
         exp_pkt = build_context_packet(
             project_root=state.project_root,
             project_type=getattr(state, "project_type", "unknown"),
@@ -1191,11 +1209,15 @@ def run_orchestrated_turn(
             exp_res = _run_stage(
                 role="explorer",
                 prompt=(
-                    f"Perform thorough read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
-                    "1. Inspect directory tree (`list_dir`/`glob_files`), relevant entrypoints (`get_file_outline`), "
-                    "and test/UI setup.\n"
-                    "2. Read all relevant files, interfaces, shared state, and call sites thoroughly enough to map dependencies and edge cases accurately.\n"
-                    "3. Return exact file paths, symbol signatures, existing conventions, and risks."
+                    f"Perform deep upfront research and read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
+                    "1. Read appointed WSA skills first (`read_skill`), then inspect directory tree (`list_dir`/`glob_files`), "
+                    "relevant entrypoints (`get_file_outline`), and test/UI setup.\n"
+                    "2. Read all relevant files, interfaces, shared state, and call sites thoroughly to map dependencies and edge cases.\n"
+                    "3. Synthesize a Deep Research & Architecture Brief:\n"
+                    "   - For backend/system work: exact file paths, symbol signatures, schemas, data-flow invariants, error/concurrency/timeout boundaries, OWASP security trust boundaries, and verification commands.\n"
+                    "   - For debugging/bug-fixing: trace full input->state->failure dataflow to the true root cause and `search_files` for all sibling call sites sharing the same bug class.\n"
+                    "   - For normal (non-3D) websites & web apps: lock a studio-grade Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` elevated surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` crisp off-white primary ink, `#8E95A5` muted slate, `#F5F6F8` primary CTA with `#090A0D` dark ink, exposed architectural hairline grids, real interactive controls, zero purple/neon gradients or emoji slop) unless a light theme is requested.\n"
+                    "   - For 3D websites: lock seamless unified background/fog/surface palette continuity (`scene.background` + `FogExp2` + CSS `--bg` with zero harsh two-tone horizon splits), sculptural multi-part 3D/shader forms (NEVER cheap 'Saturn-ring + sphere' primitives), asymmetric 3D focal safe-zone away from copy, and frosted surface backdrops (`backdrop-filter: blur(16px)` + alpha >= 0.78)."
                 ),
                 state=state,
                 client=client,
@@ -1213,7 +1235,7 @@ def run_orchestrated_turn(
         explorer_summary = str(exp_res.get("final_text") or "").strip()
 
         # ── Stage 2: Architect ──────────────────────────────────────────────
-        _ui_stage_banner("architect", "Constructing dependency-ordered task plan…")
+        _ui_stage_banner("architect", "Designing detailed file-by-file architecture blueprint & dependency DAG…")
         arch_exp_cap = 2400 if _max_web_prompt_chars_for_model(getattr(state, "model", None)) < MAX_WEB_PROMPT_CHARS else 6000
         arch_pkt = build_context_packet(
             project_root=state.project_root,
@@ -1228,8 +1250,13 @@ def run_orchestrated_turn(
             arch_res = _run_stage(
                 role="architect",
                 prompt=(
-                    f"Think deeply about architecture, dependencies, and edge cases, then create a complete dependency-ordered task DAG to fulfill:\n{user_input}\n\n"
-                    "Ensure every task lists explicit `owned_files` and `acceptance`, and output the JSON task array inside ```json ... ```."
+                    f"Perform deep architectural thinking and design a complete file-by-file system & visual architecture plus dependency-ordered task DAG to fulfill:\n{user_input}\n\n"
+                    "1. First write a high-density `### Deep Architecture & File Blueprint` defining:\n"
+                    "   - File-by-File Topology: every file to create/edit, its exact responsibility, exported/imported symbols, schemas/types, DOM/API hooks, and shared state contracts.\n"
+                    "   - Backend, Debugging & Security Invariants: root-cause + sibling-callsite fix targets, schema/input validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and resource cleanup.\n"
+                    "   - Visual & UI Architecture: for normal (non-3D) websites, freeze the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` dark ink, architectural hairline bento grid, and real interactive state transitions with zero AI slop). For 3D websites, freeze unified background + `FogExp2` + CSS `--bg` tonal continuity (zero harsh horizon cuts), cohesive multi-part sculptural/shader 3D design (ban crude 'Saturn-ring + sphere + cone' primitives), asymmetric 3D vs typography safe zones, and frosted translucent surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
+                    "2. Then output the dependency-ordered JSON task array inside ```json ... ``` with explicit `owned_files`, `description` (including file contract), and `acceptance` "
+                    "(include a final visual art-direction critique & polish task with `\"ui\": true` for UI/website builds)."
                 ),
                 state=state,
                 client=client,
@@ -1244,16 +1271,23 @@ def run_orchestrated_turn(
             return _interrupted_orchestration_result("architect")
         if not arch_res.get("ok", False):
             return _failed_orchestration_result("architect", str(arch_res.get("aborted_reason") or "incomplete"))
-        plan_error = _architect_plan_error(arch_res.get("final_text") or "")
+        arch_raw_text = str(arch_res.get("final_text") or "")
+        arch_blueprint = _extract_architect_blueprint(arch_raw_text)
+        if arch_blueprint:
+            try:
+                state.architecture_blueprint = arch_blueprint
+            except Exception:
+                pass
+        plan_error = _architect_plan_error(arch_raw_text)
         if plan_error:
-            fallback_tasks = _parse_architect_plan(arch_res.get("final_text") or "", user_input)
+            fallback_tasks = _parse_architect_plan(arch_raw_text, user_input)
             if fallback_tasks and any(t.get("owned_files") for t in fallback_tasks):
                 R.print_warn(f"Architect plan had minor schema warning ({plan_error}); auto-healed {len(fallback_tasks)} tasks.")
                 tasks = fallback_tasks
             else:
                 return _failed_orchestration_result("architect", plan_error)
         else:
-            tasks = _parse_architect_plan(arch_res.get("final_text") or "", user_input)
+            tasks = _parse_architect_plan(arch_raw_text, user_input)
         state.plan_items = tasks
         if hasattr(state, "auto_checkpoint"):
             state.auto_checkpoint()
@@ -1286,8 +1320,14 @@ def run_orchestrated_turn(
             with state_lock:
                 task_item["status"] = "in_progress"
                 prior_notes = "\n".join(task_summaries[-4:])[:1200] if tight_model else "\n".join(task_summaries[-8:])
-            exp_cap = 1800 if tight_model else 4500
+            exp_cap = 1400 if tight_model else 3500
+            bp_cap = 1200 if tight_model else 2600
             req_cap = 1500 if tight_model else 4000
+            bp_section = (
+                f"Architecture & File Blueprint:\n{arch_blueprint[:bp_cap]}\n\n"
+                if arch_blueprint
+                else ""
+            )
             desc_extra = (
                 f"Description: {task_item['description']}\n"
                 if (not tight_model and task_item.get("description"))
@@ -1304,7 +1344,8 @@ def run_orchestrated_turn(
                 focus_files=owned,
                 turn_digest=getattr(state, "turn_digest", None),
                 extra_notes=(
-                    f"Explorer Findings:\n{explorer_summary[:exp_cap]}\n\n"
+                    bp_section
+                    + f"Explorer Findings:\n{explorer_summary[:exp_cap]}\n\n"
                     + (f"Completed Prior Task Results:\n{prior_notes}\n\n" if prior_notes else "")
                     + f"Assigned Task [{tid}]: {task_item['title']}\n"
                     + desc_extra

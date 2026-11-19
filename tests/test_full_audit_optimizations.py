@@ -783,6 +783,70 @@ def test_composer_unsubmitted_exhausted_fails_over_in_multiagent_mode(tmp_path):
     assert state.model == "venice"
 
 
+def test_orchestrator_deep_architecture_blueprint_and_visual_contrast_audit():
+    """Verify deep research/blueprint extraction in orchestrator, normal/3D UI baseline, backend/debugging rules, and visual contrast/header-bleed flags."""
+    from wsa_agent import task_skills
+    from wsa_agent.subagents import ROLE_SYSTEM_PROMPTS, _extract_architect_blueprint
+    from wsa_agent.visual import _AUDIT_AND_SOM_JS, format_visual_report
+
+    assert "Deep Architecture & File Blueprint" in ROLE_SYSTEM_PROMPTS["architect"]
+    assert "Saturn" in ROLE_SYSTEM_PROMPTS["architect"]
+    assert "Deep Research" in ROLE_SYSTEM_PROMPTS["explorer"]
+    assert "#090A0D" in ROLE_SYSTEM_PROMPTS["explorer"]
+    assert "#090A0D" in ROLE_SYSTEM_PROMPTS["architect"]
+    assert "#F5F6F8" in prompts.SYSTEM_PROMPT
+    assert "#F5F6F8" in prompts.CLAUDE_SYSTEM_PROMPT
+    assert "sibling call sites" in prompts.SYSTEM_PROMPT
+    assert "sibling call sites" in ROLE_SYSTEM_PROMPTS["coder"]
+
+    imp_txt, _ = task_skills.read_skill_content("impeccable,karpathy-skills")
+    assert "#090A0D" in imp_txt
+    assert "System, Backend & File Architecture Blueprint" in imp_txt
+
+    backend_appt = task_skills.analyze_prompt_skills("Implement a FastAPI backend service with database endpoints")
+    assert {"karpathy-skills", "test-driven-development", "semgrep-guardrails"}.issubset(set(backend_appt.skills))
+
+    sample_arch = (
+        "### Deep Architecture & File Blueprint\n"
+        "- index.html: semantic shell & frosted glass overlays\n"
+        "- js/stage.js: unified FogExp2 atmospheric continuum\n\n"
+        "```json\n"
+        '[{"id": "t1", "title": "Build stage", "owned_files": ["js/stage.js"], "depends_on": [], "acceptance": "ok", "ui": true}]\n'
+        "```"
+    )
+    bp = _extract_architect_blueprint(sample_arch)
+    assert "### Deep Architecture & File Blueprint" in bp
+    assert "js/stage.js: unified FogExp2" in bp
+    assert '"owned_files"' not in bp
+
+    assert "lowContrastTexts" in _AUDIT_AND_SOM_JS
+    assert "headerBleeds" in _AUDIT_AND_SOM_JS
+    assert "hasFixedBgCanvas" in _AUDIT_AND_SOM_JS
+
+    report = format_visual_report({
+        "ok": True,
+        "tiles": ["DESKTOP 1440x900 [SoM]", "DESKTOP MID-SCROLL 1440x900"],
+        "viewports": [{
+            "name": "desktop",
+            "width": 1440,
+            "height": 900,
+            "pixels": {"ok": True, "std_luma": 48.0, "unique_buckets": 64, "blank": False},
+            "audit": {
+                "overflow_x": 0,
+                "low_contrast_texts": ['p.material-desc (unbacked dark text over 3D canvas "A quiet foundation")'],
+                "header_bleeds": ["header.site-header (transparent sticky header bleeds scrolled content)"],
+            },
+        }],
+        "console_errors": [],
+        "page_exceptions": [],
+        "failed_requests": [],
+    })
+    assert "LOW_CONTRAST=1" in report
+    assert "HEADER_BLEED=1" in report
+    assert "Visual checks: fail" in report
+
+
+
 
 
 
