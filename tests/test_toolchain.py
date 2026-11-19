@@ -409,3 +409,80 @@ def test_toolchain_directive_includes_host_runtime_inventory_and_verifiers(tmp_p
     for cmd in ("cargo check", "go vet ./...", "php -l index.php", "dotnet test", "bundle exec rspec", "mix test", "dart test", "swift test", "zig build test", "pnpm test"):
         assert _is_verification_command("run_command", {"command": cmd}, "Exit code: 0"), cmd
 
+
+def test_bootstrap_fast_path_and_auto_heal_missing_wsa_packages(monkeypatch):
+    from wsa_agent import bootstrap
+
+    monkeypatch.setattr(bootstrap, "_BOOTSTRAPPED_OK", False)
+    res = bootstrap.ensure_wsa_dependencies(quiet=True)
+    assert res["ok"] is True and res["missing"] == [] and res["installed"] == []
+
+    # Simulate missing websocket-client and pytest, followed by successful pip install
+    state = {"installed": False, "cmds": []}
+
+    def fake_probe(mod_name, req_attr=None):
+        if not state["installed"] and mod_name in ("websocket", "pytest"):
+            return False
+        return True
+
+    def fake_run(cmd, **kwargs):
+        state["cmds"].append(list(cmd))
+        state["installed"] = True
+        return SimpleNamespace(returncode=0, stdout="Successfully installed", stderr="")
+
+    monkeypatch.setattr(bootstrap, "_BOOTSTRAPPED_OK", False)
+    monkeypatch.setattr(bootstrap, "_probe_module", fake_probe)
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+    monkeypatch.delenv("WSA_NO_AUTO_BOOTSTRAP", raising=False)
+
+    res2 = bootstrap.ensure_wsa_dependencies(quiet=True)
+    assert res2["ok"] is True
+    assert "websocket-client>=1.6" in res2["installed"]
+    assert "pytest>=7.4" in res2["installed"]
+    assert len(state["cmds"]) == 1
+    assert state["cmds"][0][1:4] == ["-m", "pip", "install"]
+
+
+def test_bootstrap_handles_missing_pip_and_pep668_user_fallback(monkeypatch):
+    from wsa_agent import bootstrap
+
+    calls = []
+    state = {"ok": False}
+
+    def fake_probe(mod_name, req_attr=None):
+        return state["ok"] or mod_name != "PIL.Image"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[1:3] == ["-m", "pip"] and "--user" not in cmd:
+            if len(calls) == 1:
+                return SimpleNamespace(returncode=1, stdout="", stderr="No module named pip")
+            return SimpleNamespace(returncode=1, stdout="", stderr="error: externally-managed-environment")
+        if "--user" in cmd:
+            state["ok"] = True
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(bootstrap, "_BOOTSTRAPPED_OK", False)
+    monkeypatch.setattr(bootstrap, "_probe_module", fake_probe)
+    monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+    monkeypatch.delenv("WSA_NO_AUTO_BOOTSTRAP", raising=False)
+
+    res = bootstrap.ensure_wsa_dependencies(quiet=True)
+    assert res["ok"] is True
+    assert any(c[1:3] == ["-m", "ensurepip"] for c in calls)
+    assert any("--user" in c for c in calls)
+
+
+def test_manifests_and_launchers_cover_all_operational_dependencies():
+    repo_root = Path(__file__).resolve().parents[1]
+    req_txt = (repo_root / "requirements.txt").read_text(encoding="utf-8")
+    pyproj_txt = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    for pkg in ("httpx", "websocket-client", "rich", "prompt_toolkit", "Pillow", "pytest"):
+        assert pkg in req_txt, pkg
+        assert pkg in pyproj_txt, pkg
+    wsa_ps1 = (repo_root / "wsa.ps1").read_text(encoding="utf-8")
+    wsa_bat = (repo_root / "wsa.bat").read_text(encoding="utf-8")
+    assert "ensure_wsa_dependencies" in wsa_ps1
+    assert "if exist" in wsa_bat.lower()
+
+

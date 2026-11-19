@@ -30,6 +30,7 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "websocket-client>=1.6",
     "Pillow>=9.1",
+    "pytest>=7.4",
 ]
 
 [project.optional-dependencies]

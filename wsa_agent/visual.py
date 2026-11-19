@@ -530,6 +530,11 @@ class _HeadlessCDPClient:
         self.failed_requests: List[str] = []
 
     def __enter__(self) -> "_HeadlessCDPClient":
+        try:
+            from .bootstrap import ensure_wsa_dependencies
+            ensure_wsa_dependencies(quiet=True)
+        except Exception:
+            pass
         import websocket  # type: ignore
 
         self._profile_dir = Path(tempfile.mkdtemp(prefix="wsa-cdp-profile-"))

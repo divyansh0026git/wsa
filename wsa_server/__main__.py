@@ -3,7 +3,18 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import threading
+from pathlib import Path
+
+_here = Path(__file__).resolve().parent.parent
+if str(_here) not in sys.path:
+    sys.path.insert(0, str(_here))
+try:
+    from wsa_agent.bootstrap import ensure_wsa_dependencies
+    ensure_wsa_dependencies()
+except Exception:
+    pass
 
 from . import config as _cfg
 from .accounts import get_account_pool

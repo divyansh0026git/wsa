@@ -26,6 +26,9 @@ _here = Path(__file__).resolve().parent.parent
 if str(_here) not in sys.path:
     sys.path.insert(0, str(_here))
 
+from wsa_agent.bootstrap import ensure_wsa_dependencies
+ensure_wsa_dependencies()
+
 from wsa_agent.session import SessionState, ALL_MODELS
 from wsa_agent.client import WSAClient
 from wsa_agent.agent import run_turn

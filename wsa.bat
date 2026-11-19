@@ -5,6 +5,9 @@ set "AGENT_DIR=%~dp0"
 set "PYTHONPATH=%AGENT_DIR%"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-"%AGENT_DIR%.venv\Scripts\python.exe" -m wsa_agent %*
+if exist "%AGENT_DIR%.venv\Scripts\python.exe" (
+    "%AGENT_DIR%.venv\Scripts\python.exe" -m wsa_agent %*
+) else (
+    python -m wsa_agent %*
+)
 endlocal
-
