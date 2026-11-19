@@ -580,5 +580,87 @@ def test_agent_loop_recovers_from_dom_relay_timeout_via_compaction_retry(tmp_pat
     assert calls["n"] == 2
 
 
+def test_run_orchestrated_turn_resumes_saved_plan_skipping_completed_tasks(tmp_path):
+    from wsa_agent import subagents
+    from wsa_agent.session import SessionState
+
+    (tmp_path / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    state = SessionState(project_root=tmp_path, selected_model="gemini", permission_mode="auto", auto_approve=True)
+    state.written_files = {"a.ts"}
+    state.plan_items = [
+        {
+            "id": "t1",
+            "title": "Init",
+            "description": "Done",
+            "owned_files": ["a.ts"],
+            "depends_on": [],
+            "acceptance": "ok",
+            "ui": False,
+            "status": "done",
+        },
+        {
+            "id": "t2",
+            "title": "Wire UI",
+            "description": "Finish",
+            "owned_files": ["b.ts"],
+            "depends_on": ["t1"],
+            "acceptance": "ok",
+            "ui": False,
+            "status": "failed",
+        },
+    ]
+
+    recorded = []
+
+    def fake_run_role_agent(**kwargs):
+        role = str(kwargs.get("role") or "")
+        label = str(kwargs.get("label") or role)
+        recorded.append((role, label))
+        if role == "coder":
+            (tmp_path / "b.ts").write_text("export const b = 2;\n", encoding="utf-8")
+            return {
+                "ok": True,
+                "written_files": ["b.ts"],
+                "tool_calls_count": 2,
+                "final_text": "Implemented b.ts",
+            }
+        if role == "security":
+            return {
+                "ok": True,
+                "written_files": [],
+                "tool_calls_count": 1,
+                "final_text": "0 confirmed defects",
+            }
+        if role == "verifier":
+            return {
+                "ok": True,
+                "written_files": [],
+                "tool_calls_count": 1,
+                "verification_evidence": [{"tool": "run_command", "ok": True}],
+                "final_text": '```json\n{"verdict":"pass","checks":["tsc --noEmit: 0 errors"],"failures":[],"summary":"All checks passed"}\n```',
+            }
+        raise AssertionError(f"Unexpected role invoked during resume: {role}")
+
+    with (
+        mock.patch.object(subagents, "_discover_live_relays", return_value=[]),
+        mock.patch.object(subagents, "_run_role_agent", side_effect=fake_run_role_agent),
+    ):
+        res = subagents.run_orchestrated_turn(
+            "Build a 3D website",
+            state,
+            mock.MagicMock(),
+            resume_saved_plan=True,
+        )
+
+    assert res["ok"] is True
+    roles = [r for r, _ in recorded]
+    assert "explorer" not in roles
+    assert "architect" not in roles
+    assert [lbl for r, lbl in recorded if r == "coder"] == ["coder:t2"]
+    assert "verifier" in roles
+    assert all(item["status"] == "done" for item in state.plan_items)
+
+
+
 
 

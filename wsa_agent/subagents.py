@@ -1230,6 +1230,7 @@ def run_orchestrated_turn(
     *,
     reasons: Optional[List[str]] = None,
     skill_appointment: Optional[SkillAppointment] = None,
+    resume_saved_plan: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute a full adaptive multi-role pipeline:
@@ -1361,107 +1362,134 @@ def run_orchestrated_turn(
     all_written: Set[str] = set()
 
     try:
-        # ── Stage 1: Explorer ───────────────────────────────────────────────
-        _ui_stage_banner("explorer", "Deep-researching domain, visual/system architecture & workspace structure…")
-        exp_pkt = build_context_packet(
-            project_root=state.project_root,
-            project_type=getattr(state, "project_type", "unknown"),
-            ledger=ledger,
-            decisions=getattr(state, "decisions", None),
-            written_files=sorted(state.written_files),
-            verified_files=sorted(state.verified_files),
-            turn_digest=getattr(state, "turn_digest", None),
-            extra_notes=f"Primary user objective:\n{user_input[:4000]}",
+        saved_plan = [
+            dict(t)
+            for t in (getattr(state, "plan_items", None) or [])
+            if isinstance(t, dict) and str(t.get("id") or "").strip()
+        ]
+        can_resume_dag = bool(
+            resume_saved_plan
+            and saved_plan
+            and any(t.get("status") == "done" for t in saved_plan)
+            and any(t.get("status") != "done" for t in saved_plan)
         )
-        while True:
-            exp_res = _run_stage(
-                role="explorer",
-                prompt=(
-                    f"Perform deep upfront research and read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
-                    "1. Read appointed WSA skills first (`read_skill`), then inspect directory tree (`list_dir`/`glob_files`), "
-                    "relevant entrypoints (`get_file_outline`), and test/UI setup. When auditing/upgrading an existing website, you may call `visual_inspect` read-only during recon to capture baseline defects.\n"
-                    "2. Read all relevant files, interfaces, shared state, and call sites thoroughly to map dependencies and edge cases.\n"
-                    "3. Synthesize a Deep Research & Architecture Brief:\n"
-                    "   - For backend/system work: exact file paths, symbol signatures, schemas, data-flow invariants, error/concurrency/timeout boundaries, OWASP security trust boundaries, and verification commands.\n"
-                    "   - For toolchain & dependencies: review the binding Toolchain Directive (or call `detect_toolchain`), confirm the best-fit language/runtime per layer (explicit user language > existing project manifests > capability fit: Node.js + TypeScript + Vite for new websites & 3D sites — never lazy vanilla `js/*.js`; Rust/Go/Python/PHP/C#/Java/Ruby/Swift/Dart/Elixir/Zig for backend/systems/data), and note any missing runtime (`install_runtime`) or library (`install_dependencies`).\n"
-                    "   - For debugging/bug-fixing: trace full input->state->failure dataflow to the true root cause and `search_files` for all sibling call sites sharing the same bug class.\n"
-                    "   - For normal (non-3D) websites & web apps: lock a studio-grade Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` elevated surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` crisp off-white primary ink, `#8E95A5` muted slate, `#F5F6F8` primary CTA with `#090A0D` dark ink, exposed architectural hairline grids, real interactive controls, zero purple/neon gradients or emoji slop) unless a light theme is requested.\n"
-                    "   - For 3D websites: lock seamless unified background/fog/surface palette continuity (`scene.background` + `FogExp2` + CSS `--bg` with zero harsh two-tone horizon splits), sculptural multi-part 3D/shader forms (NEVER cheap 'Saturn-ring + sphere' primitives), asymmetric 3D focal safe-zone away from copy, and frosted surface backdrops (`backdrop-filter: blur(16px)` + alpha >= 0.78)."
-                ),
-                state=state,
-                client=client,
-                context_packet=exp_pkt,
-                max_rounds=24,
+        if can_resume_dag:
+            explorer_summary = "Resumed from saved checkpoint (upstream Explorer & completed DAG tasks preserved on disk)."
+            arch_blueprint = str(getattr(state, "architecture_blueprint", "") or "")
+            tasks = []
+            for item in saved_plan:
+                it_copy = dict(item)
+                if it_copy.get("status") != "done":
+                    it_copy["status"] = "pending"
+                tasks.append(it_copy)
+            state.plan_items = tasks
+            all_written.update(getattr(state, "written_files", set()) or set())
+            R.print_info(
+                f"Resuming saved orchestrated plan ({sum(1 for t in tasks if t.get('status') == 'done')}/{len(tasks)} task(s) already completed)…"
             )
-            if _recover_orchestrated_stage_limit(state, client, exp_res, pending_goal=user_input, stage_label="explorer"):
-                continue
-            break
-        if _is_interrupted_res(exp_res):
-            R.print_warn("Orchestration interrupted during Explorer stage — halting remaining stages.")
-            return _interrupted_orchestration_result("explorer")
-        if not exp_res.get("ok", False):
-            return _failed_orchestration_result("explorer", str(exp_res.get("aborted_reason") or "incomplete"))
-        explorer_summary = str(exp_res.get("final_text") or "").strip()
-
-        # ── Stage 2: Architect ──────────────────────────────────────────────
-        _ui_stage_banner("architect", "Designing detailed file-by-file architecture blueprint & dependency DAG…")
-        arch_exp_cap = 2400 if _max_web_prompt_chars_for_model(getattr(state, "model", None)) < MAX_WEB_PROMPT_CHARS else 6000
-        arch_pkt = build_context_packet(
-            project_root=state.project_root,
-            project_type=getattr(state, "project_type", "unknown"),
-            ledger=ledger,
-            decisions=getattr(state, "decisions", None),
-            written_files=sorted(state.written_files),
-            turn_digest=getattr(state, "turn_digest", None),
-            extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:arch_exp_cap]}",
-        )
-        while True:
-            arch_res = _run_stage(
-                role="architect",
-                prompt=(
-                    f"Perform deep architectural thinking and design a complete file-by-file system & visual architecture plus dependency-ordered task DAG to fulfill:\n{user_input}\n\n"
-                    "1. First write a high-density `### Deep Architecture & File Blueprint` defining:\n"
-                    "   - Toolchain & Dependency Blueprint (binding): lock the chosen language/runtime per layer with a 1-line justification (explicit user language > existing project stack > capability fit; for new websites & 3D sites on a Node.js host, MANDATORY Node.js + TypeScript + Vite with `package.json`, `tsconfig.json`, `vite.config.ts`, `src/**/*.ts` — never lazy vanilla `js/*.js` or Python-generated HTML dumps), native verification commands (`run_tests`, `npx tsc --noEmit`, `npx vite build --base=./`, `cargo check`, `go vet`, `php -l`, `py_compile`), and any `install_runtime` / `install_dependencies` step the first coder slice must run.\n"
-                    "   - File-by-File Topology: every file to create/edit, its exact responsibility, exported/imported symbols, schemas/types, DOM/API hooks, and shared state contracts.\n"
-                    "   - Backend, Debugging & Security Invariants: root-cause + sibling-callsite fix targets, schema/input validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and resource cleanup.\n"
-                    "   - Visual & UI Architecture: for normal (non-3D) websites, freeze the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` dark ink, architectural hairline bento grid, and real interactive state transitions with zero AI slop). For 3D websites, freeze unified background + `FogExp2` + CSS `--bg` tonal continuity (zero harsh horizon cuts), cohesive multi-part sculptural/shader 3D design (ban crude 'Saturn-ring + sphere + cone' primitives), asymmetric 3D vs typography safe zones, and frosted translucent surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
-                    "2. Then output the dependency-ordered JSON task array inside ```json ... ``` with non-empty explicit `owned_files` for real edits, `description` (including file contract), and `acceptance` "
-                    "(NEVER emit a standalone read-only `owned_files: []` baseline audit blocker; include a final visual art-direction critique & polish task with `\"ui\": true` and `owned_files` for UI/website builds)."
-                ),
-                state=state,
-                client=client,
-                context_packet=arch_pkt,
-                max_rounds=16,
-            )
-            if _recover_orchestrated_stage_limit(state, client, arch_res, pending_goal=user_input, stage_label="architect"):
-                continue
-            break
-        if _is_interrupted_res(arch_res):
-            R.print_warn("Orchestration interrupted during Architect stage — halting before execution.")
-            return _interrupted_orchestration_result("architect")
-        if not arch_res.get("ok", False):
-            return _failed_orchestration_result("architect", str(arch_res.get("aborted_reason") or "incomplete"))
-        arch_raw_text = str(arch_res.get("final_text") or "")
-        arch_blueprint = _extract_architect_blueprint(arch_raw_text)
-        if arch_blueprint:
-            try:
-                state.architecture_blueprint = arch_blueprint
-            except Exception:
-                pass
-        plan_error = _architect_plan_error(arch_raw_text)
-        if plan_error:
-            fallback_tasks = _parse_architect_plan(arch_raw_text, user_input)
-            if fallback_tasks and any(t.get("owned_files") for t in fallback_tasks):
-                R.print_warn(f"Architect plan had minor schema warning ({plan_error}); auto-healed {len(fallback_tasks)} tasks.")
-                tasks = fallback_tasks
-            else:
-                return _failed_orchestration_result("architect", plan_error)
+            _ui_render_plan(tasks)
         else:
-            tasks = _parse_architect_plan(arch_raw_text, user_input)
-        state.plan_items = tasks
-        if hasattr(state, "auto_checkpoint"):
-            state.auto_checkpoint()
-        _ui_render_plan(tasks)
+            # ── Stage 1: Explorer ───────────────────────────────────────────────
+            _ui_stage_banner("explorer", "Deep-researching domain, visual/system architecture & workspace structure…")
+            exp_pkt = build_context_packet(
+                project_root=state.project_root,
+                project_type=getattr(state, "project_type", "unknown"),
+                ledger=ledger,
+                decisions=getattr(state, "decisions", None),
+                written_files=sorted(state.written_files),
+                verified_files=sorted(state.verified_files),
+                turn_digest=getattr(state, "turn_digest", None),
+                extra_notes=f"Primary user objective:\n{user_input[:4000]}",
+            )
+            while True:
+                exp_res = _run_stage(
+                    role="explorer",
+                    prompt=(
+                        f"Perform deep upfront research and read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
+                        "1. Read appointed WSA skills first (`read_skill`), then inspect directory tree (`list_dir`/`glob_files`), "
+                        "relevant entrypoints (`get_file_outline`), and test/UI setup. When auditing/upgrading an existing website, you may call `visual_inspect` read-only during recon to capture baseline defects.\n"
+                        "2. Read all relevant files, interfaces, shared state, and call sites thoroughly to map dependencies and edge cases.\n"
+                        "3. Synthesize a Deep Research & Architecture Brief:\n"
+                        "   - For backend/system work: exact file paths, symbol signatures, schemas, data-flow invariants, error/concurrency/timeout boundaries, OWASP security trust boundaries, and verification commands.\n"
+                        "   - For toolchain & dependencies: review the binding Toolchain Directive (or call `detect_toolchain`), confirm the best-fit language/runtime per layer (explicit user language > existing project manifests > capability fit: Node.js + TypeScript + Vite for new websites & 3D sites — never lazy vanilla `js/*.js`; Rust/Go/Python/PHP/C#/Java/Ruby/Swift/Dart/Elixir/Zig for backend/systems/data), and note any missing runtime (`install_runtime`) or library (`install_dependencies`).\n"
+                        "   - For debugging/bug-fixing: trace full input->state->failure dataflow to the true root cause and `search_files` for all sibling call sites sharing the same bug class.\n"
+                        "   - For normal (non-3D) websites & web apps: lock a studio-grade Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` elevated surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` crisp off-white primary ink, `#8E95A5` muted slate, `#F5F6F8` primary CTA with `#090A0D` dark ink, exposed architectural hairline grids, real interactive controls, zero purple/neon gradients or emoji slop) unless a light theme is requested.\n"
+                        "   - For 3D websites: lock seamless unified background/fog/surface palette continuity (`scene.background` + `FogExp2` + CSS `--bg` with zero harsh two-tone horizon splits), sculptural multi-part 3D/shader forms (NEVER cheap 'Saturn-ring + sphere' primitives), asymmetric 3D focal safe-zone away from copy, and frosted surface backdrops (`backdrop-filter: blur(16px)` + alpha >= 0.78)."
+                    ),
+                    state=state,
+                    client=client,
+                    context_packet=exp_pkt,
+                    max_rounds=24,
+                )
+                if _recover_orchestrated_stage_limit(state, client, exp_res, pending_goal=user_input, stage_label="explorer"):
+                    continue
+                break
+            if _is_interrupted_res(exp_res):
+                R.print_warn("Orchestration interrupted during Explorer stage — halting remaining stages.")
+                return _interrupted_orchestration_result("explorer")
+            if not exp_res.get("ok", False):
+                return _failed_orchestration_result("explorer", str(exp_res.get("aborted_reason") or "incomplete"))
+            explorer_summary = str(exp_res.get("final_text") or "").strip()
+
+            # ── Stage 2: Architect ──────────────────────────────────────────────
+            _ui_stage_banner("architect", "Designing detailed file-by-file architecture blueprint & dependency DAG…")
+            arch_exp_cap = 2400 if _max_web_prompt_chars_for_model(getattr(state, "model", None)) < MAX_WEB_PROMPT_CHARS else 6000
+            arch_pkt = build_context_packet(
+                project_root=state.project_root,
+                project_type=getattr(state, "project_type", "unknown"),
+                ledger=ledger,
+                decisions=getattr(state, "decisions", None),
+                written_files=sorted(state.written_files),
+                turn_digest=getattr(state, "turn_digest", None),
+                extra_notes=f"Explorer Reconnaissance Findings:\n{explorer_summary[:arch_exp_cap]}",
+            )
+            while True:
+                arch_res = _run_stage(
+                    role="architect",
+                    prompt=(
+                        f"Perform deep architectural thinking and design a complete file-by-file system & visual architecture plus dependency-ordered task DAG to fulfill:\n{user_input}\n\n"
+                        "1. First write a high-density `### Deep Architecture & File Blueprint` defining:\n"
+                        "   - Toolchain & Dependency Blueprint (binding): lock the chosen language/runtime per layer with a 1-line justification (explicit user language > existing project stack > capability fit; for new websites & 3D sites on a Node.js host, MANDATORY Node.js + TypeScript + Vite with `package.json`, `tsconfig.json`, `vite.config.ts`, `src/**/*.ts` — never lazy vanilla `js/*.js` or Python-generated HTML dumps), native verification commands (`run_tests`, `npx tsc --noEmit`, `npx vite build --base=./`, `cargo check`, `go vet`, `php -l`, `py_compile`), and any `install_runtime` / `install_dependencies` step the first coder slice must run.\n"
+                        "   - File-by-File Topology: every file to create/edit, its exact responsibility, exported/imported symbols, schemas/types, DOM/API hooks, and shared state contracts.\n"
+                        "   - Backend, Debugging & Security Invariants: root-cause + sibling-callsite fix targets, schema/input validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and resource cleanup.\n"
+                        "   - Visual & UI Architecture: for normal (non-3D) websites, freeze the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` dark ink, architectural hairline bento grid, and real interactive state transitions with zero AI slop). For 3D websites, freeze unified background + `FogExp2` + CSS `--bg` tonal continuity (zero harsh horizon cuts), cohesive multi-part sculptural/shader 3D design (ban crude 'Saturn-ring + sphere + cone' primitives), asymmetric 3D vs typography safe zones, and frosted translucent surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
+                        "2. Then output the dependency-ordered JSON task array inside ```json ... ``` with non-empty explicit `owned_files` for real edits, `description` (including file contract), and `acceptance` "
+                        "(NEVER emit a standalone read-only `owned_files: []` baseline audit blocker; include a final visual art-direction critique & polish task with `\"ui\": true` and `owned_files` for UI/website builds)."
+                    ),
+                    state=state,
+                    client=client,
+                    context_packet=arch_pkt,
+                    max_rounds=16,
+                )
+                if _recover_orchestrated_stage_limit(state, client, arch_res, pending_goal=user_input, stage_label="architect"):
+                    continue
+                break
+            if _is_interrupted_res(arch_res):
+                R.print_warn("Orchestration interrupted during Architect stage — halting before execution.")
+                return _interrupted_orchestration_result("architect")
+            if not arch_res.get("ok", False):
+                return _failed_orchestration_result("architect", str(arch_res.get("aborted_reason") or "incomplete"))
+            arch_raw_text = str(arch_res.get("final_text") or "")
+            arch_blueprint = _extract_architect_blueprint(arch_raw_text)
+            if arch_blueprint:
+                try:
+                    state.architecture_blueprint = arch_blueprint
+                except Exception:
+                    pass
+            plan_error = _architect_plan_error(arch_raw_text)
+            if plan_error:
+                fallback_tasks = _parse_architect_plan(arch_raw_text, user_input)
+                if fallback_tasks and any(t.get("owned_files") for t in fallback_tasks):
+                    R.print_warn(f"Architect plan had minor schema warning ({plan_error}); auto-healed {len(fallback_tasks)} tasks.")
+                    tasks = fallback_tasks
+                else:
+                    return _failed_orchestration_result("architect", plan_error)
+            else:
+                tasks = _parse_architect_plan(arch_raw_text, user_input)
+            state.plan_items = tasks
+            if hasattr(state, "auto_checkpoint"):
+                state.auto_checkpoint()
+            _ui_render_plan(tasks)
 
         # ── Stage 3: Scoped Coder Execution (Sequential; parallel fan-out disabled) ──
         live_relays = _discover_live_relays(client)
@@ -1475,9 +1503,13 @@ def run_orchestrated_turn(
         if getattr(state, "dual_lane", False) and len(live_relays) >= 2:
             R.print_warn("Dual-lane execution is serialized: shell tools require isolated workspaces before safe parallel execution.")
 
-        completed_ids: Set[str] = set()
+        completed_ids: Set[str] = {str(t["id"]) for t in tasks if t.get("status") == "done"}
         worker_failures: List[Dict[str, str]] = []
-        task_summaries: List[str] = []
+        task_summaries: List[str] = [
+            f"- [{t['id']}] {t.get('title', '')} -> completed in prior checkpoint; ok=True"
+            for t in tasks
+            if t.get("status") == "done"
+        ]
 
         def _execute_task_slice(
             task_item: Dict[str, Any],
@@ -1677,7 +1709,7 @@ def run_orchestrated_turn(
                     task_summaries.append(f"- [{tid}] {task_item['title']} -> wrote {wf or ['(none)']}; ok={res.get('ok')}")
             return task_item, res
 
-        pending = list(tasks)
+        pending = [t for t in tasks if t.get("status") != "done"]
         interrupted = False
         aborted_reason = ""
         while pending:
