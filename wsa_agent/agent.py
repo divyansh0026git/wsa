@@ -4136,13 +4136,24 @@ def execute_agent_loop(
         # A coding turn can correct a faulty check command and rerun it. Keep
         # all evidence for the independent verifier; do not permanently poison
         # coder completion with a historical failed attempt followed by success.
+        # Read-only exploration/planning and zero-write baseline visual checks
+        # intentionally capture pre-edit defects and must not fail as verification_failed.
         checks = list(verification_evidence.values())
-        unresolved = any(not e["ok"] for e in checks) if role == "verifier" else not checks[-1]["ok"]
-        if any(e["tool"] == "visual_inspect" and not e["ok"] for e in checks):
-            browser_verified_after_ui_edit = False
-            unresolved = True
-        if unresolved:
-            aborted_reason = "verification_failed"
+        if role not in ("explorer", "architect"):
+            is_baseline_visual_only = (
+                role == "coder"
+                and not written_this_turn
+                and not allowed_write_paths
+                and any(not e["ok"] for e in checks)
+                and all(e.get("tool") == "visual_inspect" for e in checks if not e["ok"])
+            )
+            if not is_baseline_visual_only:
+                unresolved = any(not e["ok"] for e in checks) if role == "verifier" else not checks[-1]["ok"]
+                if any(e["tool"] == "visual_inspect" and not e["ok"] for e in checks):
+                    browser_verified_after_ui_edit = False
+                    unresolved = True
+                if unresolved:
+                    aborted_reason = "verification_failed"
     if not quiet_ui and aborted_reason in ("verification_incomplete", "verification_failed", "permission_denied"):
         R.print_warn("Turn incomplete: " + aborted_reason.replace("_", " ") + ".")
     return {

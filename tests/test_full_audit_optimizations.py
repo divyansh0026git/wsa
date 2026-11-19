@@ -977,6 +977,192 @@ def test_rendered_pixel_contrast_audit_catches_dark_text_over_dark_canvas_and_pa
     assert not clean_audit.get("canvas_palette_warnings")
 
 
+def test_visual_inspect_normalizes_string_viewport_presets(tmp_path) -> None:
+    """Verify string presets ('desktop'/'mobile'/'1280x720') never crash capture_visual_inspection."""
+    from wsa_agent import visual
+
+    assert visual._normalize_viewports(None) == [{"name": "desktop", "width": 1440, "height": 900, "mobile": False}]
+    assert visual._normalize_viewports(["desktop"]) == [{"name": "desktop", "width": 1440, "height": 900, "mobile": False}]
+    assert visual._normalize_viewports("mobile") == [{"name": "mobile", "width": 390, "height": 844, "mobile": True}]
+    custom = visual._normalize_viewports(["1280x720", "tablet", {"name": "wide", "width": 1600, "height": 900}])
+    assert custom == [
+        {"name": "1280x720", "width": 1280, "height": 720, "mobile": False},
+        {"name": "tablet", "width": 768, "height": 1024, "mobile": False},
+        {"name": "wide", "width": 1600, "height": 900},
+    ]
+
+    (tmp_path / "index.html").write_text("<h1>Hello</h1>", encoding="utf-8")
+    tiny_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc`\xa8\x00\x00"
+        b"\x00\x04\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    class _FakeCDP:
+        def __init__(self, *a, **kw):
+            self.console_errors = []
+            self.page_exceptions = []
+            self.failed_requests = []
+            self.seen_vps = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def set_color_scheme(self, _):
+            pass
+
+        def set_viewport(self, w, h, mobile=False):
+            self.seen_vps.append((w, h, mobile))
+
+        def navigate(self, *_a, **_kw):
+            pass
+
+        def drain_events(self, *_a):
+            pass
+
+        def evaluate(self, expr):
+            if "_AUDIT" in expr or "function" in expr:
+                return {"overflow_x": 0, "canvases": [], "viewport": {"width": 1440, "height": 900}, "elements": []}
+            return None
+
+        def screenshot_png(self, full_page=False):
+            return tiny_png
+
+    fake_cdp = _FakeCDP()
+    with patch.object(visual, "find_chromium_binary", return_value="chrome"), \
+         patch.object(visual, "_HeadlessCDPClient", return_value=fake_cdp), \
+         patch.object(visual, "analyze_screenshot_pixels", return_value={"ok": True, "std_luma": 24.0, "unique_buckets": 12, "blank": False}), \
+         patch.object(visual, "compose_contact_sheet", return_value=(tiny_png, "image/png", 1440, 900)):
+        out = visual.capture_visual_inspection("index.html", project_root=tmp_path, viewports=["desktop"])
+    assert out["ok"] is True, out
+    assert fake_cdp.seen_vps == [(1440, 900, False)]
+
+
+def test_explorer_and_baseline_visual_inspect_do_not_abort_dag_while_verifier_and_post_edit_still_fail(tmp_path) -> None:
+    """Verify Explorer/baseline visual defects don't abort recon turns while Verifier and post-edit checks stay strict."""
+    from wsa_agent import subagents, visual
+
+    assert "visual_inspect" in subagents.EXPLORER_TOOLS
+    assert "owned_files: []" in subagents.ROLE_SYSTEM_PROMPTS["architect"]
+    assert "owned_files: []" in subagents.CLAUDE_STAGE_DIRECTIVES["architect"]
+
+    (tmp_path / "index.html").write_text("<h1 style='color:#111'>Broken</h1>", encoding="utf-8")
+    tiny_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc`\xa8\x00\x00"
+        b"\x00\x04\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    failing_visual_res = {
+        "ok": True,
+        "tiles": ["DESKTOP 1440x900 [SoM]"],
+        "image_bytes": tiny_png,
+        "image_mime": "image/png",
+        "image_width": 1440,
+        "image_height": 900,
+        "viewports": [{
+            "name": "desktop",
+            "width": 1440,
+            "height": 900,
+            "pixels": {"ok": True, "std_luma": 40.0, "unique_buckets": 30, "blank": False},
+            "audit": {"overflow_x": 0, "low_contrast_texts": ['h1 (rendered contrast 1.2:1 on #090a0d "Broken")']},
+        }],
+        "console_errors": [],
+        "page_exceptions": [],
+        "failed_requests": [],
+    }
+
+    prev_root = tools.get_project_root()
+    tools.set_project_root(tmp_path)
+    try:
+        # 1. Explorer running visual_inspect on broken baseline completes cleanly (ok=True)
+        st_exp = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        exp_client = Mock()
+        exp_client.stream.side_effect = [
+            {"content": '```tool_call\n{"name": "visual_inspect", "arguments": {"target": "index.html"}}\n```'},
+            {"content": "Captured baseline visual defects cleanly."},
+        ]
+        with patch.object(visual, "capture_visual_inspection", return_value=failing_visual_res):
+            exp_out = agent.execute_agent_loop(
+                "Inspect baseline UI",
+                st_exp,
+                exp_client,
+                role="explorer",
+                enforce_verify_gate=False,
+                quiet_ui=True,
+                live_ui=False,
+            )
+        assert exp_out["ok"] is True, exp_out
+
+        # 2. Zero-write baseline diagnostic task under coder (allowed_write_paths=None) also completes ok=True
+        st_base = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        base_client = Mock()
+        base_client.stream.side_effect = [
+            {"content": '```tool_call\n{"name": "visual_inspect", "arguments": {"target": "index.html"}}\n```'},
+            {"content": "Baseline visual defects recorded."},
+        ]
+        with patch.object(visual, "capture_visual_inspection", return_value=failing_visual_res):
+            base_out = agent.execute_agent_loop(
+                "Capture baseline",
+                st_base,
+                base_client,
+                role="coder",
+                allowed_write_paths=None,
+                enforce_verify_gate=True,
+                quiet_ui=True,
+                live_ui=False,
+            )
+        assert base_out["ok"] is True, base_out
+
+        # 3. Verifier seeing failed visual checks still fails strictly
+        st_ver = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        ver_client = Mock()
+        ver_client.stream.side_effect = [
+            {"content": '```tool_call\n{"name": "visual_inspect", "arguments": {"target": "index.html"}}\n```'},
+            {"content": '{"verdict":"fail","checks":["visual fail"],"failures":[{"issue":"low contrast"}],"summary":"fail"}'},
+        ]
+        with patch.object(visual, "capture_visual_inspection", return_value=failing_visual_res):
+            ver_out = agent.execute_agent_loop(
+                "Verify UI",
+                st_ver,
+                ver_client,
+                role="verifier",
+                enforce_verify_gate=False,
+                quiet_ui=True,
+                live_ui=False,
+            )
+        assert ver_out["ok"] is False
+        assert ver_out["aborted_reason"] == "verification_failed"
+
+        # 4. Coder that actually edited index.html and still gets Visual checks: fail must fail verification_failed
+        st_post = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+        post_client = Mock()
+        post_client.stream.side_effect = [
+            {"content": '```tool_call\n{"name": "write_file", "arguments": {"path": "index.html", "content": "<h1 style=color:#111>Still dark</h1>"}}\n```'},
+            {"content": '```tool_call\n{"name": "visual_inspect", "arguments": {"target": "index.html"}}\n```'},
+            {"content": "Done editing."},
+            {"content": "Done editing."},
+            {"content": "Done editing."},
+        ]
+        with patch.object(visual, "capture_visual_inspection", return_value=failing_visual_res):
+            post_out = agent.execute_agent_loop(
+                "Fix index.html",
+                st_post,
+                post_client,
+                role="coder",
+                allowed_write_paths=["index.html"],
+                enforce_verify_gate=False,
+                quiet_ui=True,
+                live_ui=False,
+            )
+        assert post_out["ok"] is False
+        assert post_out["aborted_reason"] == "verification_failed"
+    finally:
+        tools.set_project_root(prev_root)
+
+
 
 
 

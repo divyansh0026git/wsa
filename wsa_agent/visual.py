@@ -29,6 +29,40 @@ DEFAULT_VIEWPORTS: List[Dict[str, Any]] = [
     {"name": "desktop", "width": 1440, "height": 900, "mobile": False},
 ]
 
+_VIEWPORT_PRESETS: Dict[str, Dict[str, Any]] = {
+    "desktop": {"name": "desktop", "width": 1440, "height": 900, "mobile": False},
+    "laptop": {"name": "desktop", "width": 1440, "height": 900, "mobile": False},
+    "tablet": {"name": "tablet", "width": 768, "height": 1024, "mobile": False},
+    "ipad": {"name": "tablet", "width": 768, "height": 1024, "mobile": False},
+    "mobile": {"name": "mobile", "width": 390, "height": 844, "mobile": True},
+    "phone": {"name": "mobile", "width": 390, "height": 844, "mobile": True},
+}
+_VIEWPORT_DIMS_RE = re.compile(r"^\s*(\d{3,4})\s*[xX×]\s*(\d{3,4})\s*$")
+
+
+def _normalize_viewports(viewports: Any) -> List[Dict[str, Any]]:
+    """Normalize dict specs, preset names ('desktop'/'tablet'/'mobile'), or 'WxH' strings into viewport dicts."""
+    if not viewports:
+        return [dict(v) for v in DEFAULT_VIEWPORTS]
+    items = [viewports] if isinstance(viewports, (str, dict)) else list(viewports)
+    out: List[Dict[str, Any]] = []
+    for raw in items[:3]:
+        if isinstance(raw, dict):
+            out.append(dict(raw))
+            continue
+        if isinstance(raw, str):
+            tok = raw.strip().lower()
+            if tok in _VIEWPORT_PRESETS:
+                out.append(dict(_VIEWPORT_PRESETS[tok]))
+                continue
+            m = _VIEWPORT_DIMS_RE.match(raw)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+                out.append({"name": f"{w}x{h}", "width": w, "height": h, "mobile": w <= 520})
+                continue
+            out.append({"name": (raw.strip() or "desktop")[:24], "width": 1440, "height": 900, "mobile": False})
+    return out or [dict(v) for v in DEFAULT_VIEWPORTS]
+
 _DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -1273,7 +1307,7 @@ def capture_visual_inspection(
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
-    vp_list = list(viewports or DEFAULT_VIEWPORTS)[:3]
+    vp_list = _normalize_viewports(viewports)
     tiles: List[Tuple[str, bytes]] = []
     viewport_reports: List[Dict[str, Any]] = []
     primary_png: Optional[bytes] = None

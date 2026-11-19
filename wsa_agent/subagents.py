@@ -53,6 +53,7 @@ EXPLORER_TOOLS: Set[str] = {
     "search_files",
     "glob_files",
     "list_dir",
+    "visual_inspect",
     "inspect_image",
     "recall",
     "web_fetch",
@@ -177,7 +178,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "Guidelines:\n"
         "1. Do NOT mutate files or run shell commands.\n"
         "2. Start with `read_skill` (if skills are appointed), then `glob_files`, `list_dir`, and `search_files`; use `get_file_outline` "
-        "before reading large files, then `read_file` with targeted `start_line`/`end_line` ranges.\n"
+        "before reading large files, then `read_file` with targeted `start_line`/`end_line` ranges. When auditing or upgrading an existing website/UI, run read-only `visual_inspect` during reconnaissance to capture baseline contrast/layout/3D defects.\n"
         "3. Conduct deep upfront research:\n"
         "   - Software & Backend: map exact file paths, symbol signatures, schemas, state/API contracts, concurrency/error boundaries, security trust boundaries, and existing tests.\n"
         "   - Debugging & Bug Fixing: trace the full input->state->failure dataflow, identify the true root cause, and `search_files` for all sibling call sites sharing the same bug pattern.\n"
@@ -193,7 +194,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "   - File-by-File Topology & Shared Contract Matrix: every file's responsibility, exact exports/imports, schemas/types, DOM/API hooks, GLSL attributes/uniforms, and exact shared `--bg` = `scene.background` = `FogExp2` hex values.\n"
         "   - Backend, Debugging & Security Invariants: root-cause fix locations (plus sibling call sites), input/schema validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and lifecycle cleanup.\n"
         "   - Visual & UI Architecture: for normal (non-3D) websites, specify the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` text, intentional display+sans+mono typography, exposed hairline bento layout, and real interactive state transitions with zero AI slop). For 3D websites, specify unified `scene.background` + `FogExp2` + CSS `--bg` tonal continuity, anti-primitive multi-part sculptural/shader 3D architecture (never crude 'Saturn-ring + sphere' primitives), asymmetric 3D vs text safe-zones, and frosted surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
-        "3. Decompose the build into a dependency-ordered DAG of well-scoped coding tasks with disjoint `owned_files` across parallelizable siblings. For UI/website builds, include a final visual art-direction critique & polish task (`\"ui\": true`) that runs `visual_inspect` and refines contrast/layout/shaders.\n"
+        "3. Decompose the build into a dependency-ordered DAG of real implementation tasks with non-empty `owned_files` (disjoint across parallelizable siblings). NEVER emit a standalone read-only baseline audit task (`owned_files: []`) as a blocking DAG dependency — Explorer already handles baseline recon. For UI/website builds, include a final visual art-direction critique & polish task (`\"ui\": true`) with `owned_files` covering the UI/scene files to polish after `visual_inspect`.\n"
         "4. Output your final plan inside a ```json block containing a JSON array of objects:\n"
         '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], '
         '"acceptance": "Exact checkable outcome", "ui": false}]\n'
@@ -720,17 +721,17 @@ def _make_role_event_cb(stage_label: str) -> Callable[[str, Dict[str, Any]], Non
 CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
     "explorer": (
         "Workflow Phase — Explorer: For this stage of our task, perform deep upfront research and strictly read-only reconnaissance.\n"
-        "Start with `read_skill` (if skills are appointed), then stick to read/search JSON blocks (`read_file`, `get_file_outline`, `get_file_info`, `search_files`, `glob_files`, `list_dir`) rather than proposing edits.\n"
+        "Start with `read_skill` (if skills are appointed), then stick to read/search JSON blocks (`read_file`, `get_file_outline`, `get_file_info`, `search_files`, `glob_files`, `list_dir`, plus read-only `visual_inspect` when auditing/upgrading an existing website/UI) rather than proposing edits.\n"
         "Trace full call paths, schemas, input->state->failure bug dataflow + sibling call sites (`search_files`), shared state, and edge cases across relevant files. For normal (non-3D) websites lock an Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` surfaces, `1px rgba(255,255,255,0.08)` hairlines, `#F5F6F8` ink/CTA); for 3D sites lock seamless unified `scene.background` + `FogExp2` + CSS `--bg` continuity and sculptural non-primitive 3D forms (`#` ban 'Saturn-ring + sphere' clichés), then summarize your Deep Research & Reconnaissance Report clearly."
     ),
     "architect": (
         "Workflow Phase — Architect: For this stage, think deeply and write a concrete `### Deep Architecture & File Blueprint` FIRST before emitting the ```json task DAG.\n"
         "Inspect any unclear files or contracts via read-only ```tool_call blocks, then in your `### Deep Architecture & File Blueprint` lock a **`Shared Contract Matrix`** covering: exact file-by-file responsibilities, exported/imported symbols, API/data schemas, GLSL `attribute`/`uniform` names vs JS callers, shared `--bg` = `scene.background` = `FogExp2` hex values, backend/root-cause + sibling-callsite bug targets, OWASP security boundaries, and Obsidian-Black/Crisp-White (`#090A0D`/`#F5F6F8`) or unified-fog frosted-overlay (`backdrop-filter: blur(16px)`, `alpha>=0.78`) UI rules.\n"
-        "Decompose the build into a dependency-ordered DAG of thorough, well-scoped tasks and output the JSON array inside ```json:\n"
+        "Decompose the build into a dependency-ordered DAG of thorough, well-scoped implementation tasks and output the JSON array inside ```json:\n"
         '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], "acceptance": "Exact checkable outcome", "ui": false}]\n'
         "Guidelines:\n"
-        "1. Every coding task must declare explicit `owned_files` (relative workspace paths to create or edit).\n"
-        "2. Keep `owned_files` disjoint across sibling independent tasks whenever possible, and include a final visual art-direction polish task (`\"ui\": true`) for UI/website builds.\n"
+        "1. Every coding task must declare non-empty explicit `owned_files` (relative workspace paths to create or edit). NEVER emit a standalone read-only baseline audit task (`owned_files: []`) as a blocking DAG dependency.\n"
+        "2. Keep `owned_files` disjoint across sibling independent tasks whenever possible, and include a final visual art-direction polish task (`\"ui\": true`) with `owned_files` covering the UI/scene files for UI/website builds.\n"
         "3. Ground every task in real workspace paths and do not emit code edits in this phase."
     ),
     "coder": (
@@ -1342,7 +1343,7 @@ def run_orchestrated_turn(
                 prompt=(
                     f"Perform deep upfront research and read-only reconnaissance for this build/engineering task:\n{user_input}\n\n"
                     "1. Read appointed WSA skills first (`read_skill`), then inspect directory tree (`list_dir`/`glob_files`), "
-                    "relevant entrypoints (`get_file_outline`), and test/UI setup.\n"
+                    "relevant entrypoints (`get_file_outline`), and test/UI setup. When auditing/upgrading an existing website, you may call `visual_inspect` read-only during recon to capture baseline defects.\n"
                     "2. Read all relevant files, interfaces, shared state, and call sites thoroughly to map dependencies and edge cases.\n"
                     "3. Synthesize a Deep Research & Architecture Brief:\n"
                     "   - For backend/system work: exact file paths, symbol signatures, schemas, data-flow invariants, error/concurrency/timeout boundaries, OWASP security trust boundaries, and verification commands.\n"
@@ -1386,8 +1387,8 @@ def run_orchestrated_turn(
                     "   - File-by-File Topology: every file to create/edit, its exact responsibility, exported/imported symbols, schemas/types, DOM/API hooks, and shared state contracts.\n"
                     "   - Backend, Debugging & Security Invariants: root-cause + sibling-callsite fix targets, schema/input validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and resource cleanup.\n"
                     "   - Visual & UI Architecture: for normal (non-3D) websites, freeze the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` dark ink, architectural hairline bento grid, and real interactive state transitions with zero AI slop). For 3D websites, freeze unified background + `FogExp2` + CSS `--bg` tonal continuity (zero harsh horizon cuts), cohesive multi-part sculptural/shader 3D design (ban crude 'Saturn-ring + sphere + cone' primitives), asymmetric 3D vs typography safe zones, and frosted translucent surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
-                    "2. Then output the dependency-ordered JSON task array inside ```json ... ``` with explicit `owned_files`, `description` (including file contract), and `acceptance` "
-                    "(include a final visual art-direction critique & polish task with `\"ui\": true` for UI/website builds)."
+                    "2. Then output the dependency-ordered JSON task array inside ```json ... ``` with non-empty explicit `owned_files` for real edits, `description` (including file contract), and `acceptance` "
+                    "(NEVER emit a standalone read-only `owned_files: []` baseline audit blocker; include a final visual art-direction critique & polish task with `\"ui\": true` and `owned_files` for UI/website builds)."
                 ),
                 state=state,
                 client=client,
