@@ -1030,11 +1030,11 @@ def _prepare_user_turn_content(user_input: str, project_root: Path) -> Tuple[Any
 
 _DEFERRED_TAIL_RE = re.compile(
     r"\b(?:"
-    r"next,?\s+(?:i\s+will|i'll|let\s+me)"
-    r"|now\s+(?:i\s+will|i'll|let\s+me)"
+    r"next,?\s+(?:i\s+will|i(?:'|’)ll|let\s+me)"
+    r"|now\s+(?:i\s+will|i(?:'|’)ll|let\s+me)"
     r"|let\s+me\s+now"
     r"|i\s+will\s+now\s+(?:read|inspect|search|check|edit|patch|update|implement|fix|run|test)"
-    r"|i'll\s+now\s+(?:read|inspect|search|check|edit|patch|update|implement|fix|run|test)"
+    r"|i(?:'|’)ll\s+now\s+(?:read|inspect|search|check|edit|patch|update|implement|fix|run|test)"
     r"|let(?:'s|s| me)\s+(?:inspect|read|check)\s+(?:the|those|these|remaining)"
     r"|let\s+me\s+(?:emit|call|run|read|batch|do|start)"
     r"|let(?:'s|s)\s+(?:do|run|start|batch|read|emit)"
@@ -1043,6 +1043,23 @@ _DEFERRED_TAIL_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_FAKE_TOOL_REQUEST_RE = re.compile(
+    r"(?:"
+    r"\[Tool\s+execution\s+requested\]"
+    r"|\b(?:are|is)\s+in\s+flight\b"
+    r"|\b(?:have|has)\s+been\s+requested\s+(?:through|via)\s+wsa\b"
+    r"|\bno\s+files\s+have\s+been\s+modified\s+yet\b"
+    r"|\bthe\s+next\s+step\s+is\s+to\s+(?:apply|edit|patch|implement|fix|write)\b"
+    r"|\bi(?:'|’)ll\s+apply\s+(?:the\s+)?(?:changes|edits|fixes|patches)\s+(?:only\s+)?after\b"
+    r"|\bafter\s+the\s+[^\n.]{1,80}\s+results\s+return\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_fake_tool_request(content: Optional[str]) -> bool:
+    """Detect prose claiming tools were requested / in-flight when no fenced tool_call block was emitted."""
+    return bool(isinstance(content, str) and content.strip() and _FAKE_TOOL_REQUEST_RE.search(content))
 _LAZY_PUNT_RE = re.compile(
     r"\b(?:"
     r"remaining\s+files\s+follow\s+the\s+same\s+pattern"
@@ -1732,6 +1749,16 @@ def _maybe_anti_laziness_nudge(
 
     if not isinstance(content, str) or not content.strip() or continue_nudges_used >= 2:
         return None
+
+    has_fake_tool_req = _looks_like_fake_tool_request(content)
+    if has_fake_tool_req:
+        return (
+            "continue",
+            "[Continue Execution — Missing Tool Blocks]: Your last reply stated tool actions were "
+            "requested/in flight without emitting any fenced ```tool_call JSON blocks, so WSA executed nothing. "
+            "Emit the actual ```tool_call JSON block(s) now (`read_file` / `patch_file` / `write_file` / `visual_inspect`) "
+            "and stop right after the closing ```.",
+        )
 
     work_verified = bool(not code_written or verified_after_last_edit)
     non_empty_lines = [ln.strip() for ln in content.splitlines() if ln.strip()]

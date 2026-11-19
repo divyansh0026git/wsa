@@ -1309,6 +1309,133 @@ def test_intermediate_dag_slice_defers_downstream_visual_defects_while_enforcing
         tools.set_project_root(prev_root)
 
 
+def test_disable_webgl_suppresses_expected_context_creation_errors_while_preserving_real_js_errors(tmp_path) -> None:
+    """Verify disable_webgl=True suppresses expected WebGL creation console logs while keeping real JS errors strict."""
+    from wsa_agent import visual
+
+    (tmp_path / "index.html").write_text("<h1>Fallback</h1>", encoding="utf-8")
+    tiny_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc`\xa8\x00\x00"
+        b"\x00\x04\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    class _FallbackCDP:
+        def __init__(self, errs):
+            self.console_errors = list(errs)
+            self.page_exceptions = []
+            self.failed_requests = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def set_color_scheme(self, _):
+            pass
+
+        def set_viewport(self, w, h, mobile=False):
+            pass
+
+        def navigate(self, *_a, **_kw):
+            pass
+
+        def drain_events(self, *_a):
+            pass
+
+        def evaluate(self, expr):
+            if "_AUDIT" in expr or "function" in expr:
+                return {"overflow_x": 0, "canvases": [], "viewport": {"width": 1440, "height": 900}, "elements": []}
+            return None
+
+        def screenshot_png(self, full_page=False):
+            return tiny_png
+
+    webgl_only = ["THREE.WebGLRenderer: A WebGL context could not be created. Reason: disabled by command line"]
+    mixed_errs = [*webgl_only, "TypeError: Cannot read properties of null (reading 'addEventListener')"]
+
+    with patch.object(visual, "find_chromium_binary", return_value="chrome"), \
+         patch.object(visual, "analyze_screenshot_pixels", return_value={"ok": True, "std_luma": 22.0, "unique_buckets": 10, "blank": False}), \
+         patch.object(visual, "compose_contact_sheet", return_value=(tiny_png, "image/png", 1440, 900)):
+        with patch.object(visual, "_HeadlessCDPClient", return_value=_FallbackCDP(webgl_only)):
+            res_ok = visual.capture_visual_inspection("index.html", project_root=tmp_path, disable_webgl=True)
+        assert res_ok["ok"] is True
+        assert res_ok["console_errors"] == []
+        assert len(res_ok["suppressed_webgl_notices"]) == 1
+        rep_ok = visual.format_visual_report(res_ok)
+        assert "WebGL-Disabled Fallback Notices: 1" in rep_ok
+        assert rep_ok.rstrip().endswith("\nVisual checks: pass")
+
+        with patch.object(visual, "_HeadlessCDPClient", return_value=_FallbackCDP(mixed_errs)):
+            res_err = visual.capture_visual_inspection("index.html", project_root=tmp_path, disable_webgl=True)
+        assert len(res_err["console_errors"]) == 1
+        assert "TypeError" in res_err["console_errors"][0]
+        assert len(res_err["suppressed_webgl_notices"]) == 1
+        rep_err = visual.format_visual_report(res_err)
+        assert "Console/JS Errors (1):" in rep_err
+        assert rep_err.rstrip().endswith("\nVisual checks: fail")
+
+
+def test_fake_tool_request_prose_triggers_continue_nudge_and_zero_write_existing_file_slice_retries_and_fails_closed(tmp_path) -> None:
+    """Verify fake in-flight tool prose nudges continue and mutating slices on existing files cannot pass with 0 writes."""
+    from wsa_agent import subagents
+
+    t6_prose = (
+        "The baseline capture and contract reads are in flight. I’ll use the returned output to preserve selector semantics.\n"
+        "[Tool execution requested] The next step is to apply the CSS changes after the baseline and contract-read results return. "
+        "No files have been modified yet."
+    )
+    t7_prose = (
+        "The T7 inspection and baseline verification have been requested through WSA. "
+        "I’ll apply changes only after the exact CSP/importmap and form-hook contracts are available."
+    )
+    for sample in (t6_prose, t7_prose):
+        nudge = agent._maybe_anti_laziness_nudge(
+            content=sample,
+            written_this_turn=set(),
+            verified_after_last_edit=True,
+            tests_exist=False,
+            round_num=0,
+            verify_nudges_used=0,
+            continue_nudges_used=0,
+            free_mode=False,
+            tool_calls_count=2,
+        )
+        assert nudge is not None and nudge[0] == "continue"
+        assert "Missing Tool Blocks" in nudge[1]
+
+    # Existing CSS file already present on disk; fake-prose 0-write coder triggers fresh-chat retry and fails closed
+    (tmp_path / "styles").mkdir()
+    (tmp_path / "styles" / "main.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+
+    st = SessionState(project_root=tmp_path, permission_mode="auto", auto_approve=True)
+    plan = [
+        {"id": "t6", "title": "Upgrade CSS", "owned_files": ["styles/main.css"], "depends_on": [], "acceptance": "css updated", "ui": True},
+    ]
+    coder_attempts = []
+
+    def fake_worker(**kwargs):
+        r = kwargs.get("role")
+        if r == "architect":
+            return {"ok": True, "final_text": json.dumps(plan)}
+        if r == "coder":
+            coder_attempts.append((kwargs.get("new_chat_override"), "no edits were written yet" in kwargs.get("prompt", "").lower()))
+            return {"ok": True, "final_text": t6_prose, "written_files": [], "tool_calls_count": 2}
+        return {"ok": True, "final_text": "recon"}
+
+    with patch.object(subagents, "_run_role_agent", side_effect=fake_worker), \
+         patch.object(subagents, "_discover_live_relays", return_value=[]), \
+         patch.object(subagents, "_clear_poisoned_thread_for_fresh_chat"), \
+         patch.object(st, "auto_checkpoint"):
+        out = subagents.run_orchestrated_turn("Upgrade existing stylesheet", st, Mock())
+
+    assert len(coder_attempts) == 2
+    assert coder_attempts[1] == (True, True)
+    assert out["ok"] is False
+    assert any("no_edits_emitted" in str(f.get("issue", "")) for f in out["verdict"]["failures"])
+
+
 
 
 

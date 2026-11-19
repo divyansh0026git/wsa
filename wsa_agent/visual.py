@@ -63,6 +63,28 @@ def _normalize_viewports(viewports: Any) -> List[Dict[str, Any]]:
             out.append({"name": (raw.strip() or "desktop")[:24], "width": 1440, "height": 900, "mobile": False})
     return out or [dict(v) for v in DEFAULT_VIEWPORTS]
 
+_EXPECTED_DISABLE_WEBGL_ERR_RE = re.compile(
+    r"(?i)(?:webgl\s+context\s+could\s+not\s+be\s+created"
+    r"|error\s+creating\s+webgl\s+context"
+    r"|failed\s+to\s+create\s+webgl\s+context"
+    r"|disabled\s+by\s+enterprise\s+policy\s+or\s+command\s+line)"
+)
+
+
+def _split_webgl_disabled_errors(console_errors: List[str], disable_webgl: bool) -> Tuple[List[str], List[str]]:
+    """Separate expected WebGL context-creation logs from unexpected JS/runtime errors when WebGL is disabled."""
+    if not disable_webgl or not console_errors:
+        return list(console_errors), []
+    real: List[str] = []
+    suppressed: List[str] = []
+    for err in console_errors:
+        if _EXPECTED_DISABLE_WEBGL_ERR_RE.search(str(err or "")):
+            suppressed.append(err)
+        else:
+            real.append(err)
+    return real, suppressed
+
+
 _DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -1383,7 +1405,10 @@ def capture_visual_inspection(
                 after_png = cdp.screenshot_png(full_page=False)
                 tiles.append(("AFTER INTERACTION", after_png))
 
-            console_errors = list(cdp.console_errors)
+            console_errors, suppressed_webgl_notices = _split_webgl_disabled_errors(
+                list(cdp.console_errors),
+                bool(disable_webgl),
+            )
             page_exceptions = list(cdp.page_exceptions)
             failed_requests = list(cdp.failed_requests)
 
@@ -1415,6 +1440,7 @@ def capture_visual_inspection(
             "actions": action_log,
             "diff_pct": diff_pct,
             "console_errors": console_errors,
+            "suppressed_webgl_notices": suppressed_webgl_notices,
             "page_exceptions": page_exceptions,
             "failed_requests": failed_requests,
         }
@@ -1512,5 +1538,8 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
         lines.append(f"Failed Network Requests ({len(res['failed_requests'])}):")
         for fr in res["failed_requests"][:6]:
             lines.append(f"  - {fr}")
+    suppressed = list(res.get("suppressed_webgl_notices") or [])
+    if suppressed:
+        lines.append(f"WebGL-Disabled Fallback Notices: {len(suppressed)} expected context-creation log(s) suppressed")
     lines.append("Visual checks: pass" if passed else "Visual checks: fail")
     return "\n".join(lines)

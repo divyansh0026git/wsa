@@ -1562,16 +1562,24 @@ def run_orchestrated_turn(
                 R.print_warn(f"{tid}: browser response timed out before any tool calls. Retrying this task once.")
                 res = _run_stage(**worker_args)
 
+            from .agent import _looks_like_fake_tool_request
+
             wf_accum: List[str] = list(res.get("written_files") or [])
             initial_reason = str(res.get("aborted_reason") or "")
             has_zero_tools = "tool_calls_count" in res and res.get("tool_calls_count") == 0
             budget_poisoned = _has_budget_poison(res)
+            fake_tool_prose = _looks_like_fake_tool_request(res.get("final_text"))
+            is_mutating_slice = bool(owned) and not _is_verification_task(task_item)
             missing_owned = _missing_required_owned_files(state.project_root, task_item)
             needs_fresh_chat = (
                 not res.get("limit_exhausted")
                 and not _is_interrupted_res(res)
                 and initial_reason != "permission_denied"
-                and (budget_poisoned or (has_zero_tools and not wf_accum and bool(missing_owned)))
+                and (
+                    budget_poisoned
+                    or (has_zero_tools and not wf_accum and (bool(missing_owned) or is_mutating_slice))
+                    or (is_mutating_slice and not wf_accum and fake_tool_prose)
+                )
             )
             if needs_fresh_chat:
                 R.print_warn(
@@ -1585,10 +1593,15 @@ def run_orchestrated_turn(
                         "`py_compile`, `pytest`, or `visual_inspect`) on them and summarize the observed results."
                     )
                 else:
-                    target_list = ", ".join(missing_owned) if missing_owned else (", ".join(owned) or tid)
+                    target_list = ", ".join(missing_owned or owned) or tid
+                    state_msg = (
+                        "the following deliverables are not on disk yet"
+                        if missing_owned
+                        else "no edits were written yet to the assigned owned files"
+                    )
                     recovery_note = (
-                        f"Fresh session continuation for `{tid}`: the following deliverables are not on disk yet: "
-                        f"{target_list}. Please implement and verify them using ```tool_call blocks."
+                        f"Fresh session continuation for `{tid}`: {state_msg}: "
+                        f"{target_list}. Emit fenced ```tool_call JSON blocks (`read_file` / `patch_file` / `write_file`) now — never say tools are 'requested' or 'in flight' without the actual ```tool_call blocks."
                     )
                 retry_args = dict(worker_args, prompt=f"{recovery_note}\n\n{worker_prompt}", new_chat_override=True)
                 res = _run_stage(**retry_args)
@@ -1603,15 +1616,17 @@ def run_orchestrated_turn(
 
             still_zero_tools = "tool_calls_count" in res and res.get("tool_calls_count") == 0
             still_poisoned = _has_budget_poison(res)
+            still_fake_prose = _looks_like_fake_tool_request(res.get("final_text"))
             still_missing = _missing_required_owned_files(state.project_root, task_item)
-            if res.get("ok") and not res.get("limit_exhausted") and (
-                (still_zero_tools and still_missing and not wf_accum)
+            if res.get("ok") and not res.get("limit_exhausted") and not wf_accum and (
+                (still_zero_tools and still_missing)
                 or (still_poisoned and still_zero_tools)
+                or (is_mutating_slice and (still_zero_tools or still_fake_prose))
             ):
                 fail_reason = (
                     f"missing_owned_files:{','.join(still_missing[:4])}"
                     if still_missing
-                    else "budget_hallucination_no_tools"
+                    else ("no_edits_emitted" if (still_zero_tools or still_fake_prose) else "budget_hallucination_no_tools")
                 )
                 res = dict(res, ok=False, aborted_reason=fail_reason)
                 R.print_warn(f"{tid}: failed closed ({fail_reason}) — refusing to mark 0-write/hallucinated task done.")
