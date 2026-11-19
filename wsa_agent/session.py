@@ -631,10 +631,6 @@ class SessionState:
         elif active_prov and active_prov != self.model:
             self.active_web_model = ""
         if active_email:
-            if prev_email and active_email.lower() != prev_email.lower():
-                target_p = active_prov or self.model
-                if target_p and target_p not in changed_providers:
-                    changed_providers.append(target_p)
             self.active_account_email = active_email
         if active_site:
             self.active_site = active_site
@@ -805,6 +801,10 @@ class SessionState:
         legacy = str((self.role_threads or {}).get(r) or "").strip()
         if legacy and is_provider_thread_url(legacy) and (infer_provider_from_site(legacy) or prov) == prov:
             return legacy
+        if str(getattr(self, "thread_mode", "single") or "single").strip().lower() == "single":
+            main_url = str((self.chat_urls or {}).get(prov) or self.active_chat_url or "").strip()
+            if main_url and is_provider_thread_url(main_url):
+                return main_url
         return ""
 
     def set_role_chat_url(self, role: str, url: str, model: Optional[str] = None) -> None:
@@ -819,6 +819,9 @@ class SessionState:
             prov = infer_provider_from_site(val) or prov
             self.chat_urls[f"{prov}:role:{r}"] = val
             self.role_threads[r] = val
+            if str(getattr(self, "thread_mode", "single") or "single").strip().lower() == "single":
+                self.active_chat_url = val
+                self.chat_urls[prov] = val
         elif not val:
             self.clear_role_chat_url(r, model=prov)
 

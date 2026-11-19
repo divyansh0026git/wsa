@@ -599,8 +599,7 @@ class WSAHandler(BaseHTTPRequestHandler):
         force_new_chat = req.get("new_chat") if isinstance(req.get("new_chat"), bool) else None
         hint_chat_url = str(req.get("chat_url") or "").strip()
         if force_new_chat is not True and session_id and _is_provider_thread_url(hint_chat_url, provider):
-            if not seed_session_hint_url(session_id, hint_chat_url, provider=provider, relay_id=target_relay_id):
-                force_new_chat = True
+            seed_session_hint_url(session_id, hint_chat_url, provider=provider, relay_id=target_relay_id)
         if force_new_chat is True and session_id:
             clear_session_relay_chats(
                 session_id=session_id,
@@ -621,6 +620,7 @@ class WSAHandler(BaseHTTPRequestHandler):
             provider=provider,
             force_new_chat=force_new_chat,
             relay_id=target_relay_id,
+            hint_chat_url=hint_chat_url,
         )
         images = full_images
         stream = req.get("stream", False)

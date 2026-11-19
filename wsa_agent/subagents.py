@@ -872,8 +872,20 @@ def _run_role_agent(
     res = execute_agent_loop(stage_prompt, state, client, **loop_kwargs)
     if str(role or "").lower() == "architect" and isinstance(res, dict) and res.get("ok"):
         from .toolchain import validate_architect_toolchain_plan
-        parsed_tasks = _parse_architect_plan(str(res.get("final_text") or ""), prompt)
-        tc_err = validate_architect_toolchain_plan(parsed_tasks, prompt, getattr(state, "project_root", Path.cwd()))
+        target_task_text = ""
+        m_fulfill = re.search(r"to fulfill:\n(.*?)\n\n1\.", prompt, re.DOTALL)
+        if m_fulfill:
+            target_task_text = m_fulfill.group(1).strip()
+        else:
+            m_plan = re.search(r"task plan for:\n(.*?)\n\nReturn the task DAG", prompt, re.DOTALL)
+            if m_plan:
+                target_task_text = m_plan.group(1).strip()
+        if not target_task_text:
+            target_task_text = str(getattr(state, "pending_goal", "") or "")
+        if not target_task_text:
+            target_task_text = prompt
+        parsed_tasks = _parse_architect_plan(str(res.get("final_text") or ""), target_task_text)
+        tc_err = validate_architect_toolchain_plan(parsed_tasks, target_task_text, getattr(state, "project_root", Path.cwd()))
         if tc_err:
             R.print_warn(f"Architect toolchain gate: {tc_err}")
             retry_kwargs = dict(loop_kwargs)
@@ -1343,14 +1355,12 @@ def run_orchestrated_turn(
                 and _has_budget_poison(stage_res)
             ):
                 poison_retried = True
-                R.print_warn(f"{stage_label}: hallucinated tool exhaustion — resetting to a clean fresh chat and retrying once.")
-                _clear_poisoned_thread_for_fresh_chat(state, client)
+                R.print_warn(f"{stage_label}: hallucinated tool exhaustion — retrying once in the SAME chat (preserving conversation context).")
                 cur_args = dict(
                     cur_args,
                     prompt=(
-                        f"Fresh session continuation: {recovery_action}\n\n{base_prompt}"
+                        f"Session continuation: {recovery_action}\n\n{base_prompt}"
                     ),
-                    new_chat_override=True,
                 )
                 continue
             return stage_res
@@ -1656,10 +1666,12 @@ def run_orchestrated_turn(
                 )
             )
             if needs_fresh_chat:
+                # Keep the user's pinned web chat: it already holds the plan, approved concept image,
+                # and prior task context. Switching to a fresh chat forces re-sending everything.
                 R.print_warn(
-                    f"{tid}: web chat stalled/hallucinated tool exhaustion — resetting to a clean fresh chat and retrying once."
+                    f"{tid}: web chat stalled/hallucinated tool exhaustion — retrying once in the SAME chat "
+                    "(keeping your existing conversation context)."
                 )
-                _clear_poisoned_thread_for_fresh_chat(state, client)
                 if wf_accum and not missing_owned:
                     recovery_note = (
                         f"Fresh session continuation for `{tid}`: files already created on disk "
@@ -1677,7 +1689,7 @@ def run_orchestrated_turn(
                         f"Fresh session continuation for `{tid}`: {state_msg}: "
                         f"{target_list}. Emit fenced ```tool_call JSON blocks (`read_file` / `patch_file` / `write_file`) now — never say tools are 'requested' or 'in flight' without the actual ```tool_call blocks."
                     )
-                retry_args = dict(worker_args, prompt=f"{recovery_note}\n\n{worker_prompt}", new_chat_override=True)
+                retry_args = dict(worker_args, prompt=f"{recovery_note}\n\n{worker_prompt}")
                 res = _run_stage(**retry_args)
                 wf_accum = sorted(set(wf_accum) | set(res.get("written_files") or []))
                 if (

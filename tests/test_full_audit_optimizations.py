@@ -298,7 +298,7 @@ def test_orchestrator_fresh_chat_recovery_on_zero_write_missing_owned_files(tmp_
                     "budget_hallucinated": True,
                     "final_text": "Task t1 could not be written (0 calls remaining).",
                 }
-            assert kwargs.get("new_chat_override") is True
+            assert kwargs.get("new_chat_override") is not True  # retry stays in the user's pinned chat
             assert "Fresh session continuation" in kwargs["prompt"]
             (tmp_path / "a.js").write_text("export const a = 1;\n", encoding="utf-8")
             return {"ok": True, "tool_calls_count": 2, "written_files": ["a.js"], "final_text": "Built a.js"}
@@ -325,8 +325,7 @@ def test_orchestrator_fresh_chat_recovery_on_zero_write_missing_owned_files(tmp_
     assert res["ok"] is True
     assert sum(1 for s, _, _ in calls if s == "coder:t1") == 2
     assert sum(1 for s, _, _ in calls if s == "coder:t2") == 1
-    assert state.chat_urls.get("gemini") is None
-    assert client.clear_session_chats.called
+    assert state.chat_urls.get("gemini") == "https://gemini.google.com/app/poisoned1"
 
 
 def test_orchestrator_fails_closed_when_retry_still_missing_owned_files(tmp_path):
@@ -1431,7 +1430,8 @@ def test_fake_tool_request_prose_triggers_continue_nudge_and_zero_write_existing
         out = subagents.run_orchestrated_turn("Upgrade existing stylesheet", st, Mock())
 
     assert len(coder_attempts) == 2
-    assert coder_attempts[1] == (True, True)
+    assert coder_attempts[1][0] is not True  # Retry stays in the user's pinned chat
+    assert coder_attempts[1][1] is True
     assert out["ok"] is False
     assert any("no_edits_emitted" in str(f.get("issue", "")) for f in out["verdict"]["failures"])
 

@@ -208,6 +208,19 @@ def _relay_provider_auth_user(entry: Optional[dict], provider: str = "gemini") -
     return str(val).strip() if val not in (None, "") else ""
 
 
+def _relay_provider_url(entry: Optional[dict], provider: str = "gemini") -> str:
+    """Return live browser tab URL on a relay entry for `provider`, or ''."""
+    if not isinstance(entry, dict):
+        return ""
+    prov = _normalize_provider(provider)
+    p_info = (entry.get("providers") or {}).get(prov)
+    if isinstance(p_info, dict):
+        u = str(p_info.get("url") or "").strip()
+        if u:
+            return u
+    return ""
+
+
 def _record_invalidated_chat_url_locked(url: str, *, account_email: str = "", explicit: bool = False) -> None:
     """Remember a thread URL evicted by account/relay switching so stale client hints are rejected."""
     norm = str(url or "").strip().rstrip("/")
@@ -231,17 +244,26 @@ def _is_chat_url_stale_for_relay_locked(url: str, *, provider: str = "gemini", r
     if not norm:
         return False
     prov = _normalize_provider(provider)
+    target_id = str(relay_id or _dom_relay.get("active_relay_id") or "")
+    entry = (_dom_relay.get("relays") or {}).get(target_id) or {}
+    # If the live browser tab for this provider is currently at this exact URL, it is NEVER stale!
+    cur_tab_url = _relay_provider_url(entry, prov).strip().rstrip("/")
+    if cur_tab_url and cur_tab_url == norm:
+        return False
     inv = (_dom_relay.get("invalidated_chat_urls") or {}).get(norm)
     if not isinstance(inv, dict):
         return False
-    if inv.get("explicit") or inv.get("account_email") == "*":
-        return True
+    cur_email = _relay_provider_email(entry, prov).strip().lower()
     old_email = str(inv.get("account_email") or "").strip().lower()
+    # If the current account email matches the old email, it belongs to the same account and is not stale
+    if cur_email and old_email and old_email != "*" and cur_email == old_email:
+        return False
+    if inv.get("explicit") or inv.get("account_email") == "*":
+        if cur_email and old_email and old_email != "*" and cur_email == old_email:
+            return False
+        return True
     if not old_email:
         return True
-    target_id = str(relay_id or _dom_relay.get("active_relay_id") or "")
-    entry = (_dom_relay.get("relays") or {}).get(target_id) or {}
-    cur_email = _relay_provider_email(entry, prov).strip().lower()
     return cur_email != old_email
 
 
@@ -812,6 +834,17 @@ def seed_session_hint_url(
     url = str(hint_chat_url or "").strip()
     if not sid or not _is_provider_thread_url(url, prov):
         return False
+    with _dom_relay_lock:
+        norm = url.rstrip("/")
+        inv = _dom_relay.setdefault("invalidated_chat_urls", {})
+        if norm in inv:
+            target_id = str(relay_id or _dom_relay.get("active_relay_id") or "")
+            entry = (_dom_relay.get("relays") or {}).get(target_id) or {}
+            cur_tab_url = _relay_provider_url(entry, prov).strip().rstrip("/")
+            cur_email = _relay_provider_email(entry, prov).strip().lower()
+            old_email = str(inv[norm].get("account_email") or "").strip().lower()
+            if (cur_tab_url and cur_tab_url == norm) or (cur_email and (not old_email or old_email == "*" or old_email == cur_email)):
+                inv.pop(norm, None)
     if is_chat_url_stale_for_relay(url, provider=prov, relay_id=relay_id):
         return False
     s_key = _session_relay_key(sid, prov)
@@ -841,12 +874,11 @@ def seed_session_hint_url(
             sess_auth = str(cur_s.get("auth_user") or "").strip()
             if sess_auth and cur_auth and sess_auth != cur_auth:
                 return False
-        if not cur_s.get("chat_url"):
-            cur_s["chat_url"] = url
-            if cur_email and not cur_s.get("account_email"):
-                cur_s["account_email"] = cur_email
-            if cur_auth and not cur_s.get("auth_user"):
-                cur_s["auth_user"] = cur_auth
+        cur_s["chat_url"] = url
+        if cur_email:
+            cur_s["account_email"] = cur_email
+        if cur_auth:
+            cur_s["auth_user"] = cur_auth
         return True
 
 
@@ -1051,6 +1083,7 @@ def prepare_session_relay_prompt(
     provider: str = "gemini",
     force_new_chat: Optional[bool] = None,
     relay_id: str = "",
+    hint_chat_url: str = "",
 ) -> tuple:
     """Decide whether `session_id` can continue cleanly in the same browser chat thread.
 
@@ -1083,6 +1116,18 @@ def prepare_session_relay_prompt(
         active_relay_entry = dict((_dom_relay.get("relays") or {}).get(active_relay_id) or {})
     last_sig = sess.get("last_sig")
     saved_chat_url = str(sess.get("chat_url") or "").strip()
+    if not saved_chat_url and _is_provider_thread_url(hint_chat_url, prov):
+        saved_chat_url = hint_chat_url
+    if not saved_chat_url:
+        tab_url = _relay_provider_url(active_relay_entry, prov).strip()
+        if _is_provider_thread_url(tab_url, prov):
+            saved_chat_url = tab_url
+            with _dom_relay_lock:
+                sessions = _dom_relay.setdefault("sessions", {})
+                if sid:
+                    cur_s = sessions.setdefault(sid, {})
+                    cur_s["chat_url"] = tab_url
+                    cur_s["provider"] = prov
     if not last_sig and not saved_chat_url:
         _stash_pending(True)
         return full_prompt, full_prompt, full_images, True, ""
@@ -1139,9 +1184,10 @@ def prepare_session_relay_prompt(
     if anchor_idx < 0 or anchor_idx >= len(non_sys) - 1:
         # If no assistant anchor was found in `non_sys` (e.g. session resume or single-chat stage transition), resume pinned thread.
         has_thread_url = _is_provider_thread_url(saved_chat_url, prov)
-        if has_thread_url and non_sys and non_sys[-1].get("role") == "user":
+        if has_thread_url and non_sys:
+            trailing_slice = non_sys if anchor_idx < 0 else non_sys[anchor_idx + 1:]
             tail_delta, tail_images = messages_to_delta_prompt(
-                [non_sys[-1]],
+                trailing_slice,
                 messages,
                 tools,
                 provider=prov,
@@ -1161,6 +1207,21 @@ def prepare_session_relay_prompt(
         return full_prompt, full_prompt, full_images, True, ""
     delta_msgs = non_sys[anchor_idx + 1 :]
     if anchor_idx == last_asst_idx and any(m.get("role") == "assistant" for m in delta_msgs):
+        if saved_chat_url:
+            sub_delta = [m for m in delta_msgs if m.get("role") != "assistant"]
+            if sub_delta:
+                d_p, d_img = messages_to_delta_prompt(
+                    sub_delta,
+                    messages,
+                    tools,
+                    provider=prov,
+                    include_tools_spec=tools_changed,
+                    role_directive=(role_directive if (role_changed or tools_changed) else ""),
+                )
+                if d_p.strip():
+                    log(f"DOM relay session [{sid}]: continuing pinned project chat {saved_chat_url} (ignoring intermediate assistant in delta)")
+                    _stash_pending(False)
+                    return d_p, full_prompt, d_img, False, saved_chat_url
         log(f"DOM relay session [{sid}]: starting new_chat (unexpected assistant message in delta)")
         _stash_pending(True)
         return full_prompt, full_prompt, full_images, True, ""
