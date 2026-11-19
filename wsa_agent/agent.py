@@ -1360,9 +1360,21 @@ def _is_verification_command(name: str, args: Dict[str, Any], result: str) -> bo
         low_cmd = cmd.lower()
         runner_re = re.compile(
             r"\b(?:pytest|unittest|py_compile|compileall|mypy|pyright|ruff|flake8|"
-            r"vitest|jest|playwright|tsc|eslint|cargo\s+test|go\s+test)\b"
+            r"vitest|jest|playwright|tsc|eslint|phpunit|rspec|ctest)\b"
+            r"|\bcargo\s+(?:test|check|clippy|build)\b"
+            r"|\bgo\s+(?:test|vet|build)\b"
+            r"|\bdotnet\s+(?:test|build)\b"
+            r"|\bphp\s+-l\b"
+            r"|\bcomposer\s+(?:test|check)\b"
+            r"|\bbundle\s+exec\s+(?:rspec|rake)\b|\brake\s+test\b|\bruby\s+-c\b"
+            r"|\bmix\s+(?:test|compile)\b"
+            r"|\b(?:dart|flutter)\s+(?:test|analyze)\b"
+            r"|\bswift\s+(?:test|build)\b"
+            r"|\b(?:mvn|mvnw|gradle|gradlew)(?:\.cmd|\.bat)?\s+[^\n]*\b(?:test|check|compile|verify)\b"
+            r"|\bzig\s+build(?:\s+test)?\b"
+            r"|\bcmake\s+--build\b"
             r"|\bnode\s+(?:--check|-c\b|-e\b|\S+\.(?:m?js|cjs))"
-            r"|\bnpm\s+(?:run\s+)?(?:test|build|lint|typecheck|check)\b"
+            r"|\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check)\b"
             r"|\bnpx\s+\S+"
             r"|(?:python(?:\.exe)?|py)\s+(?:-m\s+|-c\s+|\S+\.py)",
             re.IGNORECASE,
@@ -1376,8 +1388,20 @@ def _is_verification_command(name: str, args: Dict[str, Any], result: str) -> bo
         )
         if not runner_re.search(cmd):
             return False
-        if non_verify_re.search(cmd) and not re.search(
-            r"\b(?:pytest|unittest|py_compile|compileall|mypy|pyright|ruff|flake8|vitest|jest|node\s+--check|tsc)\b",
+        # Do not scan inline `-e` / `-c` script bodies (or structured argv runner invocations)
+        # for shell utility names like `;ps` or `;type` that appear as JS/Python identifiers.
+        has_argv_runner = bool(
+            isinstance(args.get("argv"), list)
+            and args.get("argv")
+            and re.match(
+                r"^(?:node|python3?|py|pytest|cargo|go|dotnet|php|composer|ruby|bundle|rake|mix|dart|flutter|swift|mvn|mvnw|gradle|gradlew|zig|cmake|ctest|tsc|vitest|jest|npm|pnpm|yarn|bun|npx)(?:\.(?:exe|cmd|bat))?$",
+                Path(str(args["argv"][0])).name,
+                re.IGNORECASE,
+            )
+        )
+        shell_probe = re.sub(r"""(?:\bnode\s+-e|\b(?:python3?|py)\s+-c)\s+[\s\S]*$""", "", cmd, flags=re.IGNORECASE)
+        if not has_argv_runner and non_verify_re.search(shell_probe) and not re.search(
+            r"\b(?:pytest|unittest|py_compile|compileall|mypy|pyright|ruff|flake8|vitest|jest|node\s+(?:--check|-e)|python3?\s+-c|tsc|cargo\s+(?:test|check|clippy)|go\s+(?:test|vet)|dotnet\s+(?:test|build)|php\s+-l|phpunit|rspec|mix\s+test|dart\s+(?:test|analyze)|swift\s+test|zig\s+build|ctest)\b",
             low_cmd,
         ):
             return False
@@ -1404,8 +1428,10 @@ _READ_REPEAT_TOOLS = frozenset({
 })
 _PROJECT_CHECK_CMD_RE = re.compile(
     r"\b(?:pytest|unittest|py_compile|compileall|mypy|pyright|ruff|flake8|"
-    r"vitest|jest|playwright|tsc|eslint|cargo\s+test|go\s+test)\b"
-    r"|\bnpm\s+(?:run\s+)?(?:test|build|lint|typecheck|check)\b",
+    r"vitest|jest|playwright|tsc|eslint|phpunit|rspec|ctest|"
+    r"cargo\s+(?:test|check|clippy|build)|go\s+(?:test|vet|build)|dotnet\s+(?:test|build)|"
+    r"mix\s+(?:test|compile)|(?:dart|flutter)\s+(?:test|analyze)|swift\s+(?:test|build)|zig\s+build)\b"
+    r"|\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check)\b",
     re.IGNORECASE,
 )
 
@@ -2443,6 +2469,19 @@ def execute_agent_loop(
                     outgoing_content = f"{user_content}\n\n{block}"
             if not quiet_ui:
                 R.print_skill_appointment(active_appointment)
+        from .toolchain import build_toolchain_directive, explicit_languages, task_wants_backend, task_wants_frontend
+        if (
+            (active_appointment and (active_appointment.skills or active_appointment.requires_security_pass))
+            or task_wants_frontend(user_input)
+            or task_wants_backend(user_input)
+            or bool(explicit_languages(user_input))
+        ):
+            _tc_main = build_toolchain_directive(user_input, state.project_root, role="main")
+            if _tc_main:
+                if isinstance(outgoing_content, list):
+                    outgoing_content = [*outgoing_content, {"type": "text", "text": _tc_main[:1300]}]
+                else:
+                    outgoing_content = f"{outgoing_content}\n\n{_tc_main[:1300]}"
     messages.append({"role": "user", "content": outgoing_content})
 
     new_messages: List[Dict] = [{"role": "user", "content": user_content}]

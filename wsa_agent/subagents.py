@@ -936,8 +936,8 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
             role="explorer",
             prompt=(
                 f"Perform deep upfront research and read-only reconnaissance for planning this task:\n{clean_task}\n\n"
-                "1. Identify relevant files, key symbol signatures (via `get_file_outline` / targeted `read_file`), schemas, and test infrastructure.\n"
-                "2. For bugs: trace input->state->failure dataflow and `search_files` for sibling call sites. For backend/software: map module contracts, error/concurrency boundaries, and security trust boundaries. For normal websites: lock an unslopped Obsidian-Black & Crisp White direction (`#090A0D` canvas, `#111318` surfaces, `1px` hairlines, `#F5F6F8` ink). For 3D sites: lock unified fog/background continuity and sculptural non-primitive 3D forms."
+                "1. Identify relevant files, key symbol signatures (via `get_file_outline` / targeted `read_file`), schemas, and test infrastructure (check the Toolchain Directive or call `detect_toolchain` for installed vs missing runtimes/packages).\n"
+                "2. For bugs: trace input->state->failure dataflow and `search_files` for sibling call sites. For backend/software: map module contracts, best-fit language/toolchain per layer, error/concurrency boundaries, and security trust boundaries. For normal websites: lock an unslopped Obsidian-Black & Crisp White direction (`#090A0D` canvas, `#111318` surfaces, `1px` hairlines, `#F5F6F8` ink). For 3D sites: lock unified fog/background continuity and sculptural non-primitive 3D forms."
             ),
             state=state,
             client=client,
@@ -962,7 +962,7 @@ def run_plan_command(task_text: str, state: SessionState, client: WSAClient) -> 
         arch_res = _run_role_agent(
             role="architect",
             prompt=(
-                f"Perform deep architectural thinking first: write a `### Deep Architecture & File Blueprint` (file-by-file responsibilities, exports/imports, schemas, backend/security invariants, root-cause + sibling-bug fix locations, and Obsidian-Black/Crisp-White normal website or unified-fog 3D visual contracts), then design a dependency-ordered task plan for:\n{clean_task}\n\n"
+                f"Perform deep architectural thinking first: write a `### Deep Architecture & File Blueprint` (binding Toolchain & Dependency Blueprint per layer, file-by-file responsibilities, exports/imports, schemas, backend/security invariants, root-cause + sibling-bug fix locations, and Obsidian-Black/Crisp-White normal website or unified-fog 3D visual contracts), then design a dependency-ordered task plan for:\n{clean_task}\n\n"
                 "Return the task DAG JSON array in ```json ... ```."
             ),
             state=state,
@@ -1364,6 +1364,7 @@ def run_orchestrated_turn(
                     "2. Read all relevant files, interfaces, shared state, and call sites thoroughly to map dependencies and edge cases.\n"
                     "3. Synthesize a Deep Research & Architecture Brief:\n"
                     "   - For backend/system work: exact file paths, symbol signatures, schemas, data-flow invariants, error/concurrency/timeout boundaries, OWASP security trust boundaries, and verification commands.\n"
+                    "   - For toolchain & dependencies: review the binding Toolchain Directive (or call `detect_toolchain`), confirm the best-fit language/runtime per layer (explicit user language > existing project manifests > capability fit: TypeScript/Vite or ES-module JS for UI, Rust/Go/Python/PHP/C#/Java/Ruby/Swift/Dart/Elixir/Zig for backend/systems/data), and note any missing runtime (`install_runtime`) or library (`install_dependencies`).\n"
                     "   - For debugging/bug-fixing: trace full input->state->failure dataflow to the true root cause and `search_files` for all sibling call sites sharing the same bug class.\n"
                     "   - For normal (non-3D) websites & web apps: lock a studio-grade Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` elevated surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` crisp off-white primary ink, `#8E95A5` muted slate, `#F5F6F8` primary CTA with `#090A0D` dark ink, exposed architectural hairline grids, real interactive controls, zero purple/neon gradients or emoji slop) unless a light theme is requested.\n"
                     "   - For 3D websites: lock seamless unified background/fog/surface palette continuity (`scene.background` + `FogExp2` + CSS `--bg` with zero harsh two-tone horizon splits), sculptural multi-part 3D/shader forms (NEVER cheap 'Saturn-ring + sphere' primitives), asymmetric 3D focal safe-zone away from copy, and frosted surface backdrops (`backdrop-filter: blur(16px)` + alpha >= 0.78)."
@@ -1401,6 +1402,7 @@ def run_orchestrated_turn(
                 prompt=(
                     f"Perform deep architectural thinking and design a complete file-by-file system & visual architecture plus dependency-ordered task DAG to fulfill:\n{user_input}\n\n"
                     "1. First write a high-density `### Deep Architecture & File Blueprint` defining:\n"
+                    "   - Toolchain & Dependency Blueprint (binding): lock the chosen language/runtime per layer with a 1-line justification (explicit user language > existing project stack > capability fit; TypeScript/Vite or ES-module JS for UI, never Python-generated HTML dumps), native verification commands (`run_tests`, `tsc --noEmit`, `node --check`, `cargo check`, `go vet`, `php -l`, `py_compile`), and any `install_runtime` / `install_dependencies` step the first coder slice must run.\n"
                     "   - File-by-File Topology: every file to create/edit, its exact responsibility, exported/imported symbols, schemas/types, DOM/API hooks, and shared state contracts.\n"
                     "   - Backend, Debugging & Security Invariants: root-cause + sibling-callsite fix targets, schema/input validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and resource cleanup.\n"
                     "   - Visual & UI Architecture: for normal (non-3D) websites, freeze the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` dark ink, architectural hairline bento grid, and real interactive state transitions with zero AI slop). For 3D websites, freeze unified background + `FogExp2` + CSS `--bg` tonal continuity (zero harsh horizon cuts), cohesive multi-part sculptural/shader 3D design (ban crude 'Saturn-ring + sphere + cone' primitives), asymmetric 3D vs typography safe zones, and frosted translucent surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
@@ -1512,7 +1514,7 @@ def run_orchestrated_turn(
                 else ""
             )
             desc_text = f"Task Description:\n{task_item['description']}\n\n" if task_item.get("description") else ""
-            has_downstream_ui = bool(not task_item.get("ui")) and any(
+            has_downstream_ui = any(
                 t.get("id") != tid
                 and t.get("status") not in ("done", "failed")
                 and (

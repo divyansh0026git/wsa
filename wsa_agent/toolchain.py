@@ -342,13 +342,21 @@ def recommend_stack(task_text: str, root: Path, binaries: Optional[Dict[str, Opt
 
 
 def build_toolchain_directive(task_text: str, root: Path, role: str = "coder") -> str:
-    """Compact, binding stack directive for stage prompts."""
+    """Compact, binding stack directive for stage prompts (injected before round 0 & during architecture planning)."""
     try:
-        rec = recommend_stack(task_text, root)
+        bins = probe_binaries()
+        rec = recommend_stack(task_text, root, bins)
     except Exception:
         return ""
     stack = rec["stack"]
+    present = sorted(k for k in RUNTIME_INSTALLERS if runtime_present(k, bins))
+    absent = sorted(k for k in RUNTIME_INSTALLERS if k not in present)
     lines = ["### Toolchain Directive (binding)"]
+    lines.append(
+        "- Host runtimes installed: "
+        + (", ".join(present) or "none")
+        + (f" | Installable via `install_runtime`: {', '.join(absent)}." if absent else ".")
+    )
     if rec["ui_language"]:
         lines.append(f"- UI/frontend: {rec['ui_language']}. Never build UI as generated-HTML string dumps.")
     if rec["server_language"]:

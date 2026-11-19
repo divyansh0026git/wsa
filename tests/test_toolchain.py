@@ -393,3 +393,19 @@ def test_install_runtime_is_permission_gated_and_scoped():
     assert "install_runtime" in subagents.CODER_TOOLS and "install_runtime" in subagents.VERIFIER_TOOLS
     assert "install_runtime" not in subagents.ARCHITECT_TOOLS and "install_runtime" not in subagents.SECURITY_TOOLS
     assert "install_runtime" in {t["function"]["name"] for t in tools.TOOL_DEFINITIONS}
+
+
+def test_toolchain_directive_includes_host_runtime_inventory_and_verifiers(tmp_path):
+    from wsa_agent.agent import _is_verification_command
+    d = toolchain.build_toolchain_directive("build a high-performance Rust service", tmp_path, role="architect")
+    assert "Host runtimes installed:" in d
+    assert "Backend/core language: Rust" in d
+    # Inline node -e / python -c containing JS/Python identifiers like `;ps` or `;type` must count as verification
+    assert _is_verification_command(
+        "run_command",
+        {"argv": ["node", "-e", "const assert=require('node:assert/strict');let ps={ok:1};let type='Points';assert.equal(ps.ok,1);"]},
+        "PASS\nExit code: 0",
+    )
+    for cmd in ("cargo check", "go vet ./...", "php -l index.php", "dotnet test", "bundle exec rspec", "mix test", "dart test", "swift test", "zig build test", "pnpm test"):
+        assert _is_verification_command("run_command", {"command": cmd}, "Exit code: 0"), cmd
+
