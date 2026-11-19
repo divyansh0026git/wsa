@@ -857,6 +857,18 @@ def skill_read_directive(
             f"• [post-build security pass]: After website code is written, read `{sec_list}` via `read_skill` "
             "and fix any XSS, DOM injection, auth/IDOR, CSP/CORS, validation, or secret issues before concluding."
         )
+    try:
+        from .toolchain import SKILL_DOMAIN_TOOLCHAINS, SKILL_TO_DOMAIN
+        doms = list(dict.fromkeys(SKILL_TO_DOMAIN[n] for n in all_names if n in SKILL_TO_DOMAIN))
+        if doms:
+            primary_dom = "3d-motion" if "3d-motion" in doms else doms[0]
+            tspec = SKILL_DOMAIN_TOOLCHAINS[primary_dom]
+            lines.append(
+                f"• [assigned toolchain — {primary_dom}]: **{tspec['primary_language']}** "
+                f"(verify: {tspec['verify']})."
+            )
+    except Exception:
+        pass
     lines.append(
         "Need another skill? Call `read_skill(name=\"catalog\")` to browse all 18 WSA skills."
     )
@@ -865,9 +877,15 @@ def skill_read_directive(
 
 def list_skills_catalog() -> str:
     """Format a compact, scannable catalog of all bundled WSA skills for `read_skill(name='catalog')`."""
+    try:
+        from .toolchain import SKILL_DOMAIN_TOOLCHAINS
+    except Exception:
+        SKILL_DOMAIN_TOOLCHAINS = {}
     lines = [f"[OK] WSA Bundled Skills Catalog ({len(SKILL_SPECS)} skills across {len(CATEGORY_LABELS)} domains):"]
     for cat_key, cat_label in CATEGORY_LABELS.items():
-        lines.append(f"\n## {cat_label}")
+        tc_info = SKILL_DOMAIN_TOOLCHAINS.get(cat_key, {})
+        tc_suffix = f" — Assigned Toolchain: {tc_info['primary_language']}" if tc_info.get("primary_language") else ""
+        lines.append(f"\n## {cat_label}{tc_suffix}")
         for spec in SKILL_SPECS:
             if spec.category != cat_key:
                 continue

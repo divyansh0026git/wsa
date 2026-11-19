@@ -202,7 +202,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "   - File-by-File Topology & Shared Contract Matrix: every file's responsibility, exact exports/imports, schemas/types, DOM/API hooks, GLSL attributes/uniforms, and exact shared `--bg` = `scene.background` = `FogExp2` hex values.\n"
         "   - Backend, Debugging & Security Invariants: root-cause fix locations (plus sibling call sites), input/schema validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and lifecycle cleanup.\n"
         "   - Visual & UI Architecture: for normal (non-3D) websites, specify the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` text, intentional display+sans+mono typography, exposed hairline bento layout, and real interactive state transitions with zero AI slop). For 3D websites, specify unified `scene.background` + `FogExp2` + CSS `--bg` tonal continuity, anti-primitive multi-part sculptural/shader 3D architecture (never crude 'Saturn-ring + sphere' primitives), asymmetric 3D vs text safe-zones, and frosted surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
-        "2b. Toolchain Decision (binding): state the best-fit language/runtime per layer from ANY ecosystem (TypeScript/Vite for UI, Rust/Go for systems & services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when the task fits); explicit user language > existing project stack > capability fit, with a one-line justification. Define module boundaries/architecture before coding and list any runtime (`install_runtime`) or packages (`install_dependencies`) the first coder task must install.\n"
+        "2b. Toolchain Decision (binding): state the best-fit language/runtime per layer from ANY ecosystem (Node.js + TypeScript + Vite for new websites & 3D sites — never lazy vanilla `js/*.js` or Python-generated HTML dumps; Rust/Go for systems & services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when the task fits); explicit user language > existing project stack > capability fit, with a one-line justification. Define module boundaries/architecture before coding and list any runtime (`install_runtime`) or packages (`install_dependencies`) the first coder task must install.\n"
         "3. Decompose the build into a dependency-ordered DAG of real implementation tasks with non-empty `owned_files` (disjoint across parallelizable siblings). NEVER emit a standalone read-only baseline audit task (`owned_files: []`) as a blocking DAG dependency — Explorer already handles baseline recon. For UI/website builds, include a final visual art-direction critique & polish task (`\"ui\": true`) with `owned_files` covering the UI/scene files to polish after `visual_inspect`.\n"
         "4. Output your final plan inside a ```json block containing a JSON array of objects:\n"
         '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], '
@@ -736,7 +736,7 @@ CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
     "architect": (
         "Workflow Phase — Architect: For this stage, think deeply and write a concrete `### Deep Architecture & File Blueprint` FIRST before emitting the ```json task DAG.\n"
         "Inspect any unclear files or contracts via read-only ```tool_call blocks, then in your `### Deep Architecture & File Blueprint` lock a **`Shared Contract Matrix`** covering: exact file-by-file responsibilities, exported/imported symbols, API/data schemas, GLSL `attribute`/`uniform` names vs JS callers, shared `--bg` = `scene.background` = `FogExp2` hex values, backend/root-cause + sibling-callsite bug targets, OWASP security boundaries, and Obsidian-Black/Crisp-White (`#090A0D`/`#F5F6F8`) or unified-fog frosted-overlay (`backdrop-filter: blur(16px)`, `alpha>=0.78`) UI rules.\n"
-        "Decompose the build into a dependency-ordered DAG of thorough, well-scoped implementation tasks and output the JSON array inside ```json. In the blueprint also state a binding **Toolchain Decision** (best-fit language per layer from ANY ecosystem — TypeScript/Vite for UI, Rust/Go for systems & services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when the task or user calls for them; explicit user language > existing stack > capability fit; justify it) plus module boundaries, and any runtime (`install_runtime`) or packages (`install_dependencies`) the first coder task must install:\n"
+        "Decompose the build into a dependency-ordered DAG of thorough, well-scoped implementation tasks and output the JSON array inside ```json. In the blueprint also state a binding **Toolchain Decision** (best-fit language per layer from ANY ecosystem — Node.js + TypeScript + Vite for new websites & 3D sites, never lazy vanilla `js/*.js` or Python-generated pages; Rust/Go for systems & services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when the task or user calls for them; explicit user language > existing stack > capability fit; justify it) plus module boundaries, and any runtime (`install_runtime`) or packages (`install_dependencies`) the first coder task must install:\n"
         '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], "acceptance": "Exact checkable outcome", "ui": false}]\n'
         "Guidelines:\n"
         "1. Every coding task must declare non-empty explicit `owned_files` (relative workspace paths to create or edit). NEVER emit a standalone read-only baseline audit task (`owned_files: []`) as a blocking DAG dependency.\n"
@@ -835,9 +835,10 @@ def _run_role_agent(
     stage_prompt = _attach_context_to_prompt(prompt, context_packet)
     if str(role or "").lower() in ("explorer", "architect", "coder", "verifier"):
         from .toolchain import build_toolchain_directive
-        _tc = build_toolchain_directive(prompt, getattr(state, "project_root", Path.cwd()), role)
+        _skills = tuple(getattr(state, "loaded_skills", ()) or ())
+        _tc = build_toolchain_directive(prompt, getattr(state, "project_root", Path.cwd()), role, skills=_skills)
         if _tc:
-            stage_prompt = f"{stage_prompt}\n\n{_tc[:1300]}"
+            stage_prompt = f"{stage_prompt}\n\n{_tc[:1500]}"
     # Inject ledger working-set digest so subagents have file-tracking context before first tool call
     _ledger_ref = getattr(state, "file_ledger", None)
     _ws_digest = _ledger_ref.render_working_set_digest(max_chars=1200) if isinstance(_ledger_ref, FileContextLedger) else ""
@@ -868,7 +869,25 @@ def _run_role_agent(
         loop_kwargs["new_chat_override"] = new_chat_override
     if defer_visual_gate:
         loop_kwargs["defer_visual_gate"] = True
-    return execute_agent_loop(stage_prompt, state, client, **loop_kwargs)
+    res = execute_agent_loop(stage_prompt, state, client, **loop_kwargs)
+    if str(role or "").lower() == "architect" and isinstance(res, dict) and res.get("ok"):
+        from .toolchain import validate_architect_toolchain_plan
+        parsed_tasks = _parse_architect_plan(str(res.get("final_text") or ""), prompt)
+        tc_err = validate_architect_toolchain_plan(parsed_tasks, prompt, getattr(state, "project_root", Path.cwd()))
+        if tc_err:
+            R.print_warn(f"Architect toolchain gate: {tc_err}")
+            retry_kwargs = dict(loop_kwargs)
+            retry_kwargs["new_chat_override"] = False
+            retry_kwargs["chat_url_override"] = str(res.get("chat_url") or chat_url or "")
+            retry_prompt = (
+                f"[Toolchain Gate — {tc_err}]\n\n"
+                "Rewrite your complete `### Deep Architecture & File Blueprint` and ```json task DAG now so every task "
+                "uses the mandatory language, manifest files, source extensions, and native verification commands specified above."
+            )
+            res2 = execute_agent_loop(retry_prompt, state, client, **retry_kwargs)
+            if isinstance(res2, dict) and res2.get("ok") and _extract_json_block(str(res2.get("final_text") or ""), list):
+                res = res2
+    return res
 
 
 # ── Public Orchestration Entry Points ───────────────────────────────────────
@@ -1364,7 +1383,7 @@ def run_orchestrated_turn(
                     "2. Read all relevant files, interfaces, shared state, and call sites thoroughly to map dependencies and edge cases.\n"
                     "3. Synthesize a Deep Research & Architecture Brief:\n"
                     "   - For backend/system work: exact file paths, symbol signatures, schemas, data-flow invariants, error/concurrency/timeout boundaries, OWASP security trust boundaries, and verification commands.\n"
-                    "   - For toolchain & dependencies: review the binding Toolchain Directive (or call `detect_toolchain`), confirm the best-fit language/runtime per layer (explicit user language > existing project manifests > capability fit: TypeScript/Vite or ES-module JS for UI, Rust/Go/Python/PHP/C#/Java/Ruby/Swift/Dart/Elixir/Zig for backend/systems/data), and note any missing runtime (`install_runtime`) or library (`install_dependencies`).\n"
+                    "   - For toolchain & dependencies: review the binding Toolchain Directive (or call `detect_toolchain`), confirm the best-fit language/runtime per layer (explicit user language > existing project manifests > capability fit: Node.js + TypeScript + Vite for new websites & 3D sites — never lazy vanilla `js/*.js`; Rust/Go/Python/PHP/C#/Java/Ruby/Swift/Dart/Elixir/Zig for backend/systems/data), and note any missing runtime (`install_runtime`) or library (`install_dependencies`).\n"
                     "   - For debugging/bug-fixing: trace full input->state->failure dataflow to the true root cause and `search_files` for all sibling call sites sharing the same bug class.\n"
                     "   - For normal (non-3D) websites & web apps: lock a studio-grade Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` elevated surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` crisp off-white primary ink, `#8E95A5` muted slate, `#F5F6F8` primary CTA with `#090A0D` dark ink, exposed architectural hairline grids, real interactive controls, zero purple/neon gradients or emoji slop) unless a light theme is requested.\n"
                     "   - For 3D websites: lock seamless unified background/fog/surface palette continuity (`scene.background` + `FogExp2` + CSS `--bg` with zero harsh two-tone horizon splits), sculptural multi-part 3D/shader forms (NEVER cheap 'Saturn-ring + sphere' primitives), asymmetric 3D focal safe-zone away from copy, and frosted surface backdrops (`backdrop-filter: blur(16px)` + alpha >= 0.78)."
@@ -1402,7 +1421,7 @@ def run_orchestrated_turn(
                 prompt=(
                     f"Perform deep architectural thinking and design a complete file-by-file system & visual architecture plus dependency-ordered task DAG to fulfill:\n{user_input}\n\n"
                     "1. First write a high-density `### Deep Architecture & File Blueprint` defining:\n"
-                    "   - Toolchain & Dependency Blueprint (binding): lock the chosen language/runtime per layer with a 1-line justification (explicit user language > existing project stack > capability fit; TypeScript/Vite or ES-module JS for UI, never Python-generated HTML dumps), native verification commands (`run_tests`, `tsc --noEmit`, `node --check`, `cargo check`, `go vet`, `php -l`, `py_compile`), and any `install_runtime` / `install_dependencies` step the first coder slice must run.\n"
+                    "   - Toolchain & Dependency Blueprint (binding): lock the chosen language/runtime per layer with a 1-line justification (explicit user language > existing project stack > capability fit; for new websites & 3D sites on a Node.js host, MANDATORY Node.js + TypeScript + Vite with `package.json`, `tsconfig.json`, `vite.config.ts`, `src/**/*.ts` — never lazy vanilla `js/*.js` or Python-generated HTML dumps), native verification commands (`run_tests`, `npx tsc --noEmit`, `npx vite build --base=./`, `cargo check`, `go vet`, `php -l`, `py_compile`), and any `install_runtime` / `install_dependencies` step the first coder slice must run.\n"
                     "   - File-by-File Topology: every file to create/edit, its exact responsibility, exported/imported symbols, schemas/types, DOM/API hooks, and shared state contracts.\n"
                     "   - Backend, Debugging & Security Invariants: root-cause + sibling-callsite fix targets, schema/input validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and resource cleanup.\n"
                     "   - Visual & UI Architecture: for normal (non-3D) websites, freeze the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` dark ink, architectural hairline bento grid, and real interactive state transitions with zero AI slop). For 3D websites, freeze unified background + `FogExp2` + CSS `--bg` tonal continuity (zero harsh horizon cuts), cohesive multi-part sculptural/shader 3D design (ban crude 'Saturn-ring + sphere + cone' primitives), asymmetric 3D vs typography safe zones, and frosted translucent surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"

@@ -1111,7 +1111,7 @@ def _looks_like_tool_unavailable_misconception(content: Optional[str]) -> bool:
 
 
 _NON_VERIFY_EXTS = {".md", ".txt", ".rst", ".csv", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-_UI_VERIFY_EXTS = {".html", ".htm", ".css", ".js", ".jsx", ".tsx", ".svelte", ".vue"}
+_UI_VERIFY_EXTS = {".html", ".htm", ".css", ".js", ".ts", ".jsx", ".tsx", ".svelte", ".vue"}
 _BUDGET_NUDGE_MARKERS = ("there is no 0-call cap here", "`wsa` parses plain markdown")
 
 
@@ -1130,6 +1130,17 @@ def _has_renderable_ui_entry(project_root: Optional[Path], ui_written: List[str]
     if any(Path(p).suffix.lower() in {".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte"} for p in ui_written):
         return True
     root = Path(project_root)
+    idx_file = root / "index.html"
+    if idx_file.is_file() and not (root / "dist" / "index.html").is_file():
+        try:
+            html_txt = idx_file.read_text(encoding="utf-8", errors="ignore")
+            ts_m = re.search(r"""<script\b[^>]*\bsrc=["']([^"']+\.tsx?)["']""", html_txt, re.I)
+            if ts_m:
+                ts_rel = ts_m.group(1).strip().lstrip("/").lstrip("./")
+                if not (root / ts_rel).is_file():
+                    return False
+        except OSError:
+            pass
     for rel in ("index.html", "public/index.html", "dist/index.html", "src/index.html", "templates/index.html"):
         if (root / rel).is_file():
             return True
@@ -2476,12 +2487,15 @@ def execute_agent_loop(
             or task_wants_backend(user_input)
             or bool(explicit_languages(user_input))
         ):
-            _tc_main = build_toolchain_directive(user_input, state.project_root, role="main")
-            if _tc_main:
-                if isinstance(outgoing_content, list):
-                    outgoing_content = [*outgoing_content, {"type": "text", "text": _tc_main[:1300]}]
-                else:
-                    outgoing_content = f"{outgoing_content}\n\n{_tc_main[:1300]}"
+            _tc_main = build_toolchain_directive(
+                user_input,
+                state.project_root,
+                role="main",
+                skills=(active_appointment.skills if active_appointment else ()),
+            )
+            if _tc_main and messages and messages[0].get("role") == "system":
+                extra_context_block = (f"{extra_context_block.strip()}\n\n{_tc_main[:1500]}").strip()
+                messages[0] = _make_system_msg()
     messages.append({"role": "user", "content": outgoing_content})
 
     new_messages: List[Dict] = [{"role": "user", "content": user_content}]

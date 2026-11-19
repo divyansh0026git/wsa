@@ -486,3 +486,75 @@ def test_manifests_and_launchers_cover_all_operational_dependencies():
     assert "if exist" in wsa_bat.lower()
 
 
+@pytest.mark.parametrize("prompt,expected_lang,bad_file,good_files", [
+    (
+        "Make a 3D website of the solar system with premium animations",
+        "TypeScript",
+        ["index.html", "js/main.js"],
+        ["package.json", "tsconfig.json", "vite.config.ts", "index.html", "src/main.ts"],
+    ),
+    (
+        "Design and build a native Windows desktop application for system monitoring",
+        "csharp",
+        ["app.py"],
+        ["Monitor.csproj", "Program.cs"],
+    ),
+    (
+        "Create an Android application for fitness tracking with a clean UI",
+        "java",
+        ["main.py"],
+        ["build.gradle.kts", "app/src/main/java/MainActivity.kt"],
+    ),
+    (
+        "Build a native macOS menu bar application for productivity",
+        "swift",
+        ["menubar.py"],
+        ["Package.swift", "Sources/App.swift"],
+    ),
+    (
+        "Build a high-performance memory-safe log parser engine",
+        "rust",
+        ["parser.py"],
+        ["Cargo.toml", "src/main.rs"],
+    ),
+    (
+        "Create a high-concurrency gRPC microservice for telemetry ingestion",
+        "go",
+        ["service.py"],
+        ["go.mod", "cmd/server/main.go"],
+    ),
+])
+def test_workload_selection_and_anti_lazy_architect_gate(prompt, expected_lang, bad_file, good_files, tmp_path):
+    rec = toolchain.recommend_stack(prompt, tmp_path, BINS_ALL)
+    if expected_lang == "TypeScript":
+        assert rec["ui_language"] == "TypeScript"
+    else:
+        assert rec["server_key"] == expected_lang, (prompt, rec)
+    bad_plan = [{"id": "t1", "title": "Init", "owned_files": bad_file, "depends_on": []}]
+    good_plan = [{"id": "t1", "title": "Init", "owned_files": good_files, "depends_on": []}]
+    err = toolchain.validate_architect_toolchain_plan(bad_plan, prompt, tmp_path, BINS_ALL)
+    assert err != "", f"Expected rejection for lazy plan {bad_file} on {prompt!r}"
+    assert toolchain.validate_architect_toolchain_plan(good_plan, prompt, tmp_path, BINS_ALL) == ""
+
+
+def test_ai_ml_workload_selects_python_and_passes_gate(tmp_path):
+    prompt = "Train a deep learning neural network and LLM RAG pipeline for document analysis"
+    rec = toolchain.recommend_stack(prompt, tmp_path, BINS_ALL)
+    assert rec["server_key"] == "python"
+    plan = [{"id": "t1", "title": "Pipeline", "owned_files": ["pyproject.toml", "src/pipeline.py"], "depends_on": []}]
+    assert toolchain.validate_architect_toolchain_plan(plan, prompt, tmp_path, BINS_ALL) == ""
+
+
+def test_all_18_skills_are_mapped_to_authoritative_toolchains(tmp_path):
+    from wsa_agent import task_skills
+    assert len(task_skills.SKILL_SPECS) == 18
+    for spec in task_skills.SKILL_SPECS:
+        assert spec.name in toolchain.SKILL_TO_DOMAIN, spec.name
+        dom = toolchain.SKILL_TO_DOMAIN[spec.name]
+        assert dom in toolchain.SKILL_DOMAIN_TOOLCHAINS
+    d_3d = toolchain.skill_toolchain_directive(("threejs-skills", "dream-loop", "unslop"), root=tmp_path, task_text="3D solar system")
+    assert "TypeScript (Node.js + Vite + Three.js + GSAP + GLSL)" in d_3d
+    assert "@types/three" in d_3d
+
+
+

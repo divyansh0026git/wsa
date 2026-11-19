@@ -12,7 +12,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # ─── Language registry ────────────────────────────────────────────────────────
 # markers: manifest files proving the project uses it. bins: executables required to build/run.
@@ -44,42 +44,61 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
 
 # Explicit user wording always wins over heuristics (and over an existing project's stack).
 _EXPLICIT: List[Tuple[str, str]] = [
-    (r"\brust(?:lang)?\b|\bcargo\b|\btokio\b|\bactix\b|\baxum\b", "rust"),
-    (r"\bgolang\b|\bgo\s+lang\b|\b(?:in|using|with|use|written\s+in)\s+go\b", "go"),
+    (r"\brust(?:lang)?\b|\bcargo\b|\btokio\b|\bactix\b|\baxum\b|\btauri\b", "rust"),
+    (r"\bgolang\b|\bgo\s+lang\b|\b(?:in|using|with|use|written\s+in)\s+go\b|\bgin-gonic\b", "go"),
     (r"\bphp\b|\blaravel\b|\bsymfony\b|\bwordpress\b|\bcomposer\b", "php"),
     (r"\bruby\b|\brails\b|\bsinatra\b", "ruby"),
-    (r"\bjava\b(?!\s*script)|\bspring\s*boot\b|\bkotlin\b|\bandroid\b|\bgradle\b|\bmaven\b", "java"),
-    (r"\bc#|\bcsharp\b|\.net\b|\bdotnet\b|\basp\.net\b|\bblazor\b|\bunity\b", "csharp"),
+    (r"\bjava\b(?!\s*script)|\bspring\s*boot\b|\bkotlin\b|\bandroid\b|\bjetpack\s*compose\b|\bgradle\b|\bmaven\b", "java"),
+    (r"\bc#|\bcsharp\b|\.net\b|\bdotnet\b|\basp\.net\b|\bblazor\b|\bunity\b|\bwinui\b|\bwpf\b|\bwinforms\b", "csharp"),
     (r"\bc\+\+|\bcpp\b|\bunreal\b|\bfirmware\b|\bembedded\b|\barduino\b", "cpp"),
-    (r"\bswift(?:ui)?\b|\bios\b|\bmacos\s+app\b", "swift"),
+    (r"\bswift(?:ui)?\b|\bappkit\b|\bcocoa\b|\bxcode\b|\bios\s+app(?:lication)?\b|\biphone\s+app\b|\bipad\s+app\b|\bmac(?:os)?\s+(?:desktop\s+|menu\s*bar\s+|native\s+)?app(?:lication)?\b", "swift"),
     (r"\bdart\b|\bflutter\b", "dart"),
     (r"\belixir\b|\bphoenix\b", "elixir"),
     (r"\bzig\b", "zig"),
-    (r"\bpython\b|\bdjango\b|\bflask\b|\bfastapi\b|\bpandas\b|\bnumpy\b|\bpytorch\b|\bjupyter\b", "python"),
+    (r"\bpython\b|\bdjango\b|\bflask\b|\bfastapi\b|\bpandas\b|\bnumpy\b|\bpytorch\b|\btensorflow\b|\bscikit-learn\b|\bjupyter\b", "python"),
     (r"\btypescript\b|\bnode(?:\.?js)?\b|\bnext\.?js\b|\bexpress\b|\bvite\b|\breact\b|\bvue\b|\bsvelte\b|\bastro\b|\bnest(?:js)?\b", "node"),
 ]
 
 # Capability-based picks when the user does not name a language: (regex, language, reason)
 _CAPABILITY: List[Tuple[str, str, str]] = [
-    (r"\b(?:machine\s*learning|ml|deep\s*learning|llm|data\s*(?:analysis|science|pipeline)|etl|notebook|scientific|scraper|crawler|automation|scripting)\b",
-     "python", "Data/ML/automation: Python has the strongest ecosystem."),
-    (r"\b(?:systems?\s+programming|high[\s-]?performance|memory[\s-]?safe|wasm|webassembly|game\s*engine|compiler|parser|crypto(?:graphy)?|low[\s-]?latency)\b",
-     "rust", "Performance/memory-safety critical: Rust."),
-    (r"\b(?:microservices?|high\s*concurrency|network\s*service|devops|cli\s*tool|kubernetes|proxy|load\s*balancer|grpc)\b",
-     "go", "Concurrent network services/CLI tooling: Go (single static binary, fast builds)."),
-    (r"\b(?:cms|shared\s*hosting|blog\s*engine|e-?commerce\s*store)\b", "php", "CMS/commodity-hosting web: PHP."),
-    (r"\b(?:real[\s-]?time\s*chat|fault[\s-]?tolerant|websocket\s*cluster)\b", "elixir", "Soft-realtime fault tolerance: Elixir/BEAM."),
-    (r"\b(?:cross[\s-]?platform\s+mobile|mobile\s+app)\b", "dart", "Cross-platform mobile: Flutter/Dart."),
-    (r"\b(?:enterprise|windows\s*desktop|wpf|winforms)\b", "csharp", "Windows/enterprise desktop: C#/.NET."),
+    (r"\b(?:windows\s+(?:desktop\s+|native\s+|gui\s+)?app(?:lication)?|windows\s*desktop|winui|wpf|winforms|\.exe\s+desktop)\b",
+     "csharp", "Native Windows application: C# / .NET 8+ (`*.csproj`, WinUI/WPF/.NET Desktop)."),
+    (r"\b(?:android\s+(?:mobile\s+|native\s+)?app(?:lication)?|jetpack\s*compose|\bapk\b)\b",
+     "java", "Native Android application: Kotlin / Java with Gradle (`build.gradle.kts`)."),
+    (r"\b(?:mac(?:os)?\s+(?:desktop\s+|native\s+|menu\s*bar\s+)?app(?:lication)?|ios\s+(?:mobile\s+|native\s+)?app(?:lication)?|iphone\s+app|ipad\s+app|apple\s+watch\s+app)\b",
+     "swift", "Native macOS / iOS Apple application: Swift / SwiftUI (`Package.swift`)."),
+    (r"\b(?:cross[\s-]?platform\s+mobile|mobile\s+app(?:\s+for\s+ios\s+and\s+android)?)\b",
+     "dart", "Cross-platform mobile application: Dart / Flutter (`pubspec.yaml`)."),
+    (r"\b(?:machine\s*learning|\bml\b|\bai\s+(?:model|pipeline|agent|inference|training)\b|deep\s*learning|neural\s*network|\bllm\b|\brag\b|embeddings?|computer\s*vision|\bnlp\b|data\s*(?:analysis|science|pipeline)|etl|notebook|scientific|scraper|crawler|automation|scripting)\b",
+     "python", "AI / ML / Data Science / Automation: Python (`pyproject.toml` / `.venv`, PyTorch/scikit-learn/FastAPI)."),
+    (r"\b(?:systems?\s+programming|high[\s-]?performance|memory[\s-]?safe|wasm|webassembly|game\s*engine|compiler|parser|crypto(?:graphy)?|low[\s-]?latency|os\s+kernel|device\s+driver)\b",
+     "rust", "Performance & memory-safety critical systems engineering: Rust (`Cargo.toml`)."),
+    (r"\b(?:microservices?|high\s*concurrency|network\s*service|devops|cli\s*tool|kubernetes|proxy|load\s*balancer|grpc|api\s*gateway|distributed\s*service)\b",
+     "go", "High-concurrency network services & cloud/CLI tooling: Go (`go.mod`, single static binary)."),
+    (r"\b(?:cms|shared\s*hosting|blog\s*engine|e-?commerce\s*store)\b", "php", "CMS / e-commerce web backend: PHP (`composer.json`)."),
+    (r"\b(?:real[\s-]?time\s*chat|fault[\s-]?tolerant|websocket\s*cluster)\b", "elixir", "Soft-realtime fault-tolerant distributed backend: Elixir/BEAM (`mix.exs`)."),
+    (r"\b(?:enterprise\s+(?:backend|api|system)|corporate\s+api)\b", "csharp", "Enterprise backend system: C# / ASP.NET Core (`*.csproj`)."),
 ]
 
+_NATIVE_PLATFORM_APP_RE = re.compile(
+    r"\b(?:windows\s+(?:desktop\s+|native\s+|gui\s+)?app(?:lication)?|windows\s*desktop|winui|wpf|winforms|"
+    r"android\s+(?:mobile\s+|native\s+)?app(?:lication)?|jetpack\s*compose|"
+    r"mac(?:os)?\s+(?:desktop\s+|native\s+|menu\s*bar\s+)?app(?:lication)?|ios\s+(?:mobile\s+|native\s+)?app(?:lication)?|"
+    r"iphone\s+app|ipad\s+app|swiftui|appkit|flutter\s+app|cross[\s-]?platform\s+mobile)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_WEB_TARGET_RE = re.compile(
+    r"\b(?:website|web\s*site|web\s*app|landing\s*page|homepage|three\.?js|webgl|browser\s+app|react|vue|svelte|next\.?js|astro|vite)\b",
+    re.IGNORECASE,
+)
 _FRONTEND_RE = re.compile(
     r"\b(?:website|web\s*site|web\s*app|landing\s*page|homepage|front[\s-]?end|ui|ux|dashboard|portfolio|"
     r"three\.?js|webgl|3d|shader|tailwind|css|html|animation|gsap|component|page|interface|design|redesign|premium|react|vue|svelte|next\.?js|astro)\b",
     re.IGNORECASE,
 )
 _BACKEND_RE = re.compile(
-    r"\b(?:api|backend|server|database|sql|cli|script|pipeline|etl|bot|service|daemon|library|crate|package)\b",
+    r"\b(?:api|backend|server|database|sql|cli|script|pipeline|etl|bot|service|daemon|library|crate|package|"
+    r"app(?:lication)?|desktop|mobile|android|ios|macos|windows|microservice|engine|compiler|parser|model)\b",
     re.IGNORECASE,
 )
 
@@ -225,7 +244,10 @@ def classify_stack(root: Path) -> Dict[str, Any]:
 # ─── Task → language selection ────────────────────────────────────────────────
 
 def task_wants_frontend(text: str) -> bool:
-    return bool(_FRONTEND_RE.search(text or ""))
+    s = text or ""
+    if _NATIVE_PLATFORM_APP_RE.search(s) and not _EXPLICIT_WEB_TARGET_RE.search(s):
+        return False
+    return bool(_FRONTEND_RE.search(s))
 
 
 def task_wants_backend(text: str) -> bool:
@@ -281,8 +303,16 @@ def recommend_stack(task_text: str, root: Path, binaries: Optional[Dict[str, Opt
     if frontend:
         if "node" in explicit or stack["node"] or stack["typescript"]:
             ui_lang = "TypeScript" if stack["typescript"] or not stack["node"] else "JavaScript (ES modules)"
-            notes.append("Node project: keep and extend it." if stack["node"] else
-                         "New UI: scaffold Vite + TypeScript (add three/gsap/tailwind only if the design needs them), not server-side string templates.")
+            notes.append(
+                "Node project: keep and extend it."
+                if stack["node"]
+                else (
+                    "New UI/3D project on a host with Node.js: MANDATORY Node.js + TypeScript + Vite toolchain (`package.json`, `tsconfig.json`, `vite.config.ts`, `src/**/*.ts` or `.tsx`). "
+                    "FORBIDDEN: do NOT fall back to lazy vanilla `js/*.js` or raw CDN importmaps. Task 1 must scaffold `package.json` + `tsconfig.json` + `vite.config.ts`, "
+                    "call `install_dependencies(packages=[\"typescript\", \"vite\", ...], ecosystem=\"node\")` (add `\"three\"`, `\"@types/three\"`, `\"gsap\"` for 3D sites), "
+                    "and verify with `npx tsc --noEmit` + `npx vite build --base=./` (which `visual_inspect` serves from `dist/`)."
+                )
+            )
             if not has_node_rt:
                 notes.append("Node.js missing: call install_runtime(name=\"node\") before scaffolding.")
         elif stack["static_html"]:
@@ -293,7 +323,12 @@ def recommend_stack(task_text: str, root: Path, binaries: Optional[Dict[str, Opt
             notes.append("Backend language was requested explicitly; keep the UI as modern HTML/CSS/ES modules or the framework's templates.")
         elif has_node_rt:
             ui_lang = "TypeScript"
-            notes.append("New UI: scaffold Vite + TypeScript (add three/gsap/tailwind only if the design needs them), not server-side string templates.")
+            notes.append(
+                "New UI/3D project on a host with Node.js: MANDATORY Node.js + TypeScript + Vite toolchain (`package.json`, `tsconfig.json`, `vite.config.ts`, `src/**/*.ts` or `.tsx`). "
+                "FORBIDDEN: do NOT fall back to lazy vanilla `js/*.js` or raw CDN importmaps. Task 1 must scaffold `package.json` + `tsconfig.json` + `vite.config.ts`, "
+                "call `install_dependencies(packages=[\"typescript\", \"vite\", ...], ecosystem=\"node\")` (add `\"three\"`, `\"@types/three\"`, `\"gsap\"` for 3D sites), "
+                "and verify with `npx tsc --noEmit` + `npx vite build --base=./` (which `visual_inspect` serves from `dist/`)."
+            )
         else:
             ui_lang = "JavaScript (ES modules, no-build)"
             notes.append("Node.js is not installed: use no-build ES modules + CSS now, or call install_runtime(name=\"node\") to unlock TypeScript/Vite.")
@@ -341,7 +376,234 @@ def recommend_stack(task_text: str, root: Path, binaries: Optional[Dict[str, Opt
     }
 
 
-def build_toolchain_directive(task_text: str, root: Path, role: str = "coder") -> str:
+# ─── Skill-Domain → Authoritative Toolchain Assignment ────────────────────────
+
+SKILL_DOMAIN_TOOLCHAINS: Dict[str, Dict[str, Any]] = {
+    "ui-design": {
+        "label": "UI & Anti-Slop (Normal Websites, Web Apps & Dashboards)",
+        "skills": ("frontend-design", "unslop", "impeccable", "web-design-guidelines"),
+        "primary_language": "TypeScript (Node.js + Vite)",
+        "required_packages": ("typescript", "vite"),
+        "optional_packages": ("gsap",),
+        "scaffold_files": ("package.json", "tsconfig.json", "vite.config.ts", "index.html", "src/main.ts"),
+        "verify": "`npx tsc --noEmit`, `npx vite build --base=./`, `visual_inspect`",
+        "rule": (
+            "MANDATORY for new websites/UIs when Node.js is available: use Node.js + TypeScript + Vite "
+            "(`package.json`, `tsconfig.json`, `vite.config.ts`, `src/**/*.ts` or `.tsx`). "
+            "Strictly FORBIDDEN: do NOT fall back to lazy vanilla `js/*.js` or Python HTML-string generation. "
+            "For existing projects on disk, preserve and extend the existing workspace stack."
+        ),
+    },
+    "3d-motion": {
+        "label": "3D Websites, WebGL / Three.js, Custom GLSL Shaders & GSAP Motion",
+        "skills": ("threejs-skills", "img2threejs", "gsap-skills", "dream-loop"),
+        "primary_language": "TypeScript (Node.js + Vite + Three.js + GSAP + GLSL)",
+        "required_packages": ("typescript", "vite", "three", "@types/three", "gsap"),
+        "optional_packages": (),
+        "scaffold_files": ("package.json", "tsconfig.json", "vite.config.ts", "index.html", "src/main.ts"),
+        "verify": "`npx tsc --noEmit`, `npx vite build --base=./`, `visual_inspect` (desktop + mobile + `disable_webgl=True`)",
+        "rule": (
+            "MANDATORY for new 3D websites when Node.js is available: use Node.js + TypeScript + Vite + Three.js "
+            "(`three`, `@types/three`) + GSAP (`gsap`) + typed GLSL shader modules (`src/**/*.ts`). "
+            "Strictly FORBIDDEN: do NOT fall back to lazy vanilla `js/*.js` or unbundled CDN scripts. "
+            "Task 1 must scaffold `package.json` + `tsconfig.json` + `vite.config.ts` and call "
+            "`install_dependencies(packages=[\"typescript\", \"vite\", \"three\", \"@types/three\", \"gsap\"], ecosystem=\"node\")`."
+        ),
+    },
+    "debugging-qa": {
+        "label": "Systematic Debugging, Root-Cause Bug Fixing & Live Browser QA",
+        "skills": ("systematic-debugging", "verification-before-completion", "chrome-devtools-qa"),
+        "primary_language": "Target Codebase's Native Language & Compiler/Test Runner",
+        "required_packages": (),
+        "optional_packages": (),
+        "scaffold_files": (),
+        "verify": "`run_tests` (auto-matched runner), native typechecker/compiler (`tsc --noEmit`, `py_compile`, `cargo check`, `go vet`, `php -l`, `dotnet build`), `visual_inspect`/`browser_inspect`",
+        "rule": (
+            "Always debug, reproduce, and verify in the target codebase's own native language and compiler/test runner "
+            "(never write a dummy Python test to verify a TypeScript/JS, Rust, Go, PHP, or C# fix)."
+        ),
+    },
+    "security": {
+        "label": "Adversarial Website Security Auditing, OWASP Guardrails & Skill Safety",
+        "skills": ("security-audit", "semgrep-guardrails", "skill-spector"),
+        "primary_language": "In-Place Native Language Hardening (TypeScript strict DOM / Parameterized Backend)",
+        "required_packages": (),
+        "optional_packages": (),
+        "scaffold_files": (),
+        "verify": "`npx tsc --noEmit` / `npx vite build` / `run_tests` + `visual_inspect` (0 console/CSP errors)",
+        "rule": (
+            "Harden code in its native language: enforce strict TypeScript DOM APIs (`textContent`/`createElement` over `innerHTML`), "
+            "CSP & Referrer-Policy headers/meta, URL scheme allowlists, `rel=\"noopener noreferrer\"`, and parameterized backend queries."
+        ),
+    },
+    "engineering": {
+        "label": "Core Software Engineering, Systems, APIs, Data/ML & TDD",
+        "skills": ("karpathy-skills", "test-driven-development", "grill-and-git-guardrails", "context7-docs"),
+        "primary_language": "Best-Fit Language by Workload (TypeScript/Node for web apps, Rust for systems/CLI/perf, Go for concurrent services, Python for AI/ML/data, PHP/C#/Java/Ruby/Swift/Dart/Elixir/Zig by domain)",
+        "required_packages": (),
+        "optional_packages": (),
+        "scaffold_files": (),
+        "verify": "`run_tests` + native compiler/typechecker (`tsc --noEmit`, `cargo test`, `go test`, `pytest`, `dotnet test`, `phpunit`)",
+        "rule": (
+            "Select the best-fit language by workload (explicit user choice > existing project stack > workload capability fit), "
+            "write failing tests first (TDD), and verify with the ecosystem's native test runner."
+        ),
+    },
+}
+
+SKILL_TO_DOMAIN: Dict[str, str] = {
+    skill: domain
+    for domain, spec in SKILL_DOMAIN_TOOLCHAINS.items()
+    for skill in spec["skills"]
+}
+
+_VANILLA_JS_REQUEST_RE = re.compile(
+    r"\b(?:vanilla\s*(?:js|javascript)|no[\s-]?build|plain\s*(?:html|js|javascript)|"
+    r"without\s*(?:node|npm|vite|bundler|typescript))\b",
+    re.IGNORECASE,
+)
+_THREE_D_TASK_RE = re.compile(
+    r"\b(?:3d|three\.?js|webgl|shader|glsl|planet|solar\s*system|orbit|canvas\s*3d|mesh|geometry)\b",
+    re.IGNORECASE,
+)
+
+
+def requires_typescript_ui_scaffold(
+    task_text: str,
+    root: Path,
+    binaries: Optional[Dict[str, Optional[str]]] = None,
+) -> bool:
+    """True when a new frontend/3D/website build on a Node-capable host must use TypeScript + Vite (not vanilla JS)."""
+    text = str(task_text or "")
+    if not task_wants_frontend(text) or _VANILLA_JS_REQUEST_RE.search(text):
+        return False
+    explicit = explicit_languages(text)
+    if any(l != "node" for l in explicit) and "node" not in explicit:
+        return False
+    bins = binaries if binaries is not None else probe_binaries()
+    if not (bins.get("node") and bins.get("npm")):
+        return False
+    stack = classify_stack(root)
+    return bool(stack["empty"])
+
+
+def skill_toolchain_directive(
+    skills: Sequence[str],
+    root: Optional[Path] = None,
+    task_text: str = "",
+) -> str:
+    """Return a binding Skill-to-Toolchain assignment line block for the appointed skills."""
+    domains: List[str] = []
+    for s in skills or ():
+        dom = SKILL_TO_DOMAIN.get(str(s).strip().lower())
+        if dom and dom not in domains:
+            domains.append(dom)
+    if not domains:
+        return ""
+    lines = ["[WSA Skill-to-Toolchain Assignment (Binding)]:"]
+    has_3d = "3d-motion" in domains or bool(_THREE_D_TASK_RE.search(task_text or ""))
+    for dom in domains:
+        spec = SKILL_DOMAIN_TOOLCHAINS[dom]
+        if dom == "ui-design" and "3d-motion" in domains:
+            continue  # Covered together by the stricter 3d-motion TypeScript+Vite+Three+GSAP rule
+        if dom in ("ui-design", "3d-motion") and root is not None:
+            st = classify_stack(root)
+            if st["static_html"] and not st["node"]:
+                lines.append(
+                    f"• {spec['label']}: Existing static HTML/ES-module workspace detected — extend existing files in place "
+                    "and verify with `node --check` + `visual_inspect`."
+                )
+                continue
+        pkgs = ("typescript, vite, three, @types/three, gsap" if has_3d and dom in ("ui-design", "3d-motion")
+                else ", ".join(spec["required_packages"]))
+        pkg_note = f" (install via `install_dependencies`: {pkgs})" if pkgs else ""
+        lines.append(f"• {spec['label']} -> **{spec['primary_language']}**{pkg_note}. {spec['rule']}")
+    return "\n".join(lines)
+
+
+REQUIRED_LANG_EXTS: Dict[str, Tuple[str, ...]] = {
+    "rust": (".rs",),
+    "go": (".go",),
+    "csharp": (".cs", ".fs", ".xaml", ".csproj"),
+    "java": (".kt", ".kts", ".java", ".gradle"),
+    "swift": (".swift",),
+    "dart": (".dart",),
+    "php": (".php",),
+    "ruby": (".rb",),
+    "elixir": (".ex", ".exs"),
+    "cpp": (".cpp", ".cc", ".cxx", ".c", ".h", ".hpp"),
+    "zig": (".zig",),
+}
+
+
+def validate_architect_toolchain_plan(
+    tasks: List[Dict[str, Any]],
+    task_text: str,
+    root: Path,
+    binaries: Optional[Dict[str, Optional[str]]] = None,
+) -> str:
+    """Reject lazy fallback plans (vanilla `js/*.js` for web/3D, or lazy `.py` when Rust/Go/C#/Kotlin/Swift/Dart/PHP was assigned)."""
+    if not tasks:
+        return ""
+    owned = [
+        str(p).replace("\\", "/").strip().lower()
+        for t in tasks
+        if isinstance(t, dict)
+        for p in (t.get("owned_files") or ())
+        if str(p).strip()
+    ]
+    if not owned:
+        return ""
+    if requires_typescript_ui_scaffold(task_text, root, binaries):
+        has_ts = any(p.endswith((".ts", ".tsx")) for p in owned)
+        has_js = any(
+            p.endswith((".js", ".mjs", ".cjs"))
+            and not Path(p).name.startswith(("vite.config.", "eslint.config.", "postcss.config.", "tailwind.config."))
+            for p in owned
+        )
+        has_pkg = any(Path(p).name == "package.json" for p in owned)
+        has_tsconfig = any(Path(p).name == "tsconfig.json" for p in owned)
+        if has_ts and has_pkg and has_tsconfig and not has_js:
+            return ""
+        reasons: List[str] = []
+        if has_js or not has_ts:
+            reasons.append("plan uses vanilla `.js` modules instead of TypeScript (`src/**/*.ts` or `.tsx`)")
+        if not has_pkg or not has_tsconfig:
+            reasons.append("plan is missing `package.json` and/or `tsconfig.json` in Task 1 `owned_files`")
+        pkgs = '["typescript", "vite", "three", "@types/three", "gsap"]' if _THREE_D_TASK_RE.search(task_text or "") else '["typescript", "vite"]'
+        return (
+            "Lazy Vanilla HTML/CSS/JS Plan Rejected (" + "; ".join(reasons) + "). "
+            "Node.js and npm are installed on this host, so new websites/3D sites MUST use Node.js + TypeScript + Vite: "
+            f"Task 1 must own `package.json`, `tsconfig.json`, `vite.config.ts`, and `index.html` and call "
+            f"`install_dependencies(packages={pkgs}, ecosystem=\"node\")`; all application code must be in `src/**/*.ts` (or `.tsx`), "
+            "never `js/*.js`; and verification must run `npx tsc --noEmit` and `npx vite build --base=./` before `visual_inspect`."
+        )
+
+    # Check non-web platform/backend/systems language assignments in empty projects
+    stack = classify_stack(root)
+    if not stack["empty"]:
+        return ""
+    rec = recommend_stack(task_text, root, binaries)
+    skey = rec.get("server_key") or ""
+    req_exts = REQUIRED_LANG_EXTS.get(skey)
+    if not req_exts:
+        return ""
+    has_assigned_ext = any(p.endswith(req_exts) for p in owned)
+    has_lazy_fallback = any(p.endswith((".py", ".js", ".mjs", ".cjs")) for p in owned)
+    if not has_assigned_ext and has_lazy_fallback:
+        spec = LANGUAGES.get(skey, {})
+        label = spec.get("label", skey)
+        markers = ", ".join(spec.get("markers", ()))
+        verify = spec.get("verify", "`run_tests`")
+        return (
+            f"Lazy Fallback Plan Rejected: this workload requires **{label}** (expected `{', '.join(req_exts)}` files and manifest `{markers}`), "
+            f"not Python/JS fallback files. Rewrite the architecture blueprint and task DAG in **{label}** and verify with {verify} "
+            "(call `install_runtime` first if the compiler/SDK is not on PATH)."
+        )
+    return ""
+
+
+def build_toolchain_directive(task_text: str, root: Path, role: str = "coder", skills: Sequence[str] = ()) -> str:
     """Compact, binding stack directive for stage prompts (injected before round 0 & during architecture planning)."""
     try:
         bins = probe_binaries()
@@ -375,6 +637,10 @@ def build_toolchain_directive(task_text: str, root: Path, role: str = "coder") -
     if rec["missing_runtimes"]:
         lines.append("- Runtime NOT installed: " + ", ".join(rec["missing_runtimes"]) +
                      ". Call `install_runtime(name=...)` first (needs user approval), then scaffold.")
+    if skills:
+        st_block = skill_toolchain_directive(skills, root=root, task_text=task_text)
+        if st_block:
+            lines.append(st_block)
     lines.append("- Architect first: pick the language by task fit, state the reasoning, define module boundaries before coding.")
     lines.append("- Missing module/package/binary? Call `install_dependencies` (libraries) or `install_runtime` (languages/tools) once, "
                  "then re-run. NEVER retry the same failing command unchanged. `detect_toolchain` shows what exists.")

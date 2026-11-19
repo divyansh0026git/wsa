@@ -114,6 +114,16 @@ Shell/code execution still needs approval and cannot be confined by this check.
         return ""
     try:
         owned = {_resolve(p) for p in owned_files}
+        has_ts_or_web = any(
+            str(p).lower().endswith((".ts", ".tsx", ".html", ".css", "package.json", "tsconfig.json"))
+            for p in owned_files
+        )
+        if has_ts_or_web:
+            for cfg_rel in ("package.json", "tsconfig.json", "vite.config.ts", "vite.config.js", "src/vite-env.d.ts"):
+                try:
+                    owned.add(_resolve(cfg_rel))
+                except Exception:
+                    pass
         for path in paths:
             target = _resolve(path)
             if target not in owned or target.is_dir():

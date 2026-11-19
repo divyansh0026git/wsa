@@ -1291,6 +1291,62 @@ def compose_contact_sheet(
         return buf.getvalue(), "image/jpeg", canvas_w, canvas_h
 
 
+def _maybe_prepare_bundled_dist(base_dir: Path) -> Optional[Path]:
+    """For TypeScript/Vite projects (`index.html` referencing `.ts`/`.tsx`), auto-build `dist/` when needed."""
+    index_html = base_dir / "index.html"
+    if not index_html.is_file():
+        return None
+    try:
+        html_txt = index_html.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    ts_m = re.search(r"""<script\b[^>]*\bsrc=["']([^"']+\.tsx?)["']""", html_txt, re.I)
+    if not ts_m and not ((base_dir / "tsconfig.json").is_file() and (base_dir / "dist" / "index.html").is_file()):
+        return None
+    dist_dir = base_dir / "dist"
+    dist_index = dist_dir / "index.html"
+    if ts_m:
+        ts_rel = ts_m.group(1).strip().lstrip("/").lstrip("./")
+        ts_entry = base_dir / ts_rel
+        if not ts_entry.is_file() and not dist_index.is_file():
+            raise FileNotFoundError(
+                f"No index.html found in directory: {base_dir} (TypeScript entry '{ts_rel}' not built to dist/index.html yet)"
+            )
+    has_vite = (base_dir / "node_modules" / "vite").exists() or (base_dir / "node_modules" / ".bin" / "vite").exists()
+    if has_vite:
+        need_build = not dist_index.is_file()
+        if not need_build:
+            try:
+                dist_mtime = dist_index.stat().st_mtime_ns
+                for sub in ("src", "styles", "public"):
+                    sub_dir = base_dir / sub
+                    if sub_dir.is_dir():
+                        for p in sub_dir.rglob("*"):
+                            if p.is_file() and p.stat().st_mtime_ns > dist_mtime:
+                                need_build = True
+                                break
+                if index_html.stat().st_mtime_ns > dist_mtime:
+                    need_build = True
+            except OSError:
+                pass
+        if need_build:
+            npx_bin = shutil.which("npx") or "npx"
+            try:
+                subprocess.run(
+                    [npx_bin, "vite", "build", "--base=./"],
+                    cwd=str(base_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                    check=False,
+                )
+            except Exception:
+                pass
+    if dist_index.is_file():
+        return dist_dir.resolve()
+    return None
+
+
 def _resolve_target_url(target: str, project_root: Path) -> Tuple[str, Optional[Path], str]:
     """Resolve URL or local project file/dir into `(url_or_relpath, static_server_root, cache_key)`."""
     raw = str(target or "").strip()
@@ -1301,11 +1357,20 @@ def _resolve_target_url(target: str, project_root: Path) -> Tuple[str, Optional[
     if not cand.is_relative_to(root):
         raise ValueError("Visual target must be within the project")
     if cand.is_dir():
+        dist_root = _maybe_prepare_bundled_dist(cand)
+        if dist_root is not None:
+            dist_idx = dist_root / "index.html"
+            return "index.html", dist_root, f"local:{dist_idx}"
         index_html = cand / "index.html"
         if not index_html.is_file():
             raise FileNotFoundError(f"No index.html found in directory: {cand}")
         return index_html.relative_to(root).as_posix(), root, f"local:{index_html}"
     if cand.is_file():
+        if cand.name.lower() == "index.html":
+            dist_root = _maybe_prepare_bundled_dist(cand.parent)
+            if dist_root is not None:
+                dist_idx = dist_root / "index.html"
+                return "index.html", dist_root, f"local:{dist_idx}"
         return cand.relative_to(root).as_posix(), root, f"local:{cand}"
     raise FileNotFoundError(f"Visual target not found: {target}")
 
