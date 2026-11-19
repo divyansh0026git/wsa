@@ -59,6 +59,7 @@ EXPLORER_TOOLS: Set[str] = {
     "web_fetch",
     "todo",
     "wait_for",
+    "detect_toolchain",
 }
 
 ARCHITECT_TOOLS: Set[str] = set(EXPLORER_TOOLS)
@@ -79,6 +80,9 @@ CODER_TOOLS: Set[str] = {
     "run_command",
     "run_python",
     "run_tests",
+    "install_dependencies",
+    "install_runtime",
+    "detect_toolchain",
     "start_background",
     "list_background",
     "stop_background",
@@ -110,6 +114,9 @@ VERIFIER_TOOLS: Set[str] = {
     "run_command",
     "run_python",
     "run_tests",
+    "install_dependencies",
+    "install_runtime",
+    "detect_toolchain",
     "list_background",
     "http_request",
     "browser_tabs",
@@ -138,6 +145,7 @@ SECURITY_TOOLS: Set[str] = {
     "run_command",
     "run_python",
     "run_tests",
+    "detect_toolchain",
     "http_request",
     "browser_tabs",
     "browser_inspect",
@@ -194,6 +202,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "   - File-by-File Topology & Shared Contract Matrix: every file's responsibility, exact exports/imports, schemas/types, DOM/API hooks, GLSL attributes/uniforms, and exact shared `--bg` = `scene.background` = `FogExp2` hex values.\n"
         "   - Backend, Debugging & Security Invariants: root-cause fix locations (plus sibling call sites), input/schema validation, parameterized queries, auth/RBAC/XSS/CSRF/link hardening, error boundaries, and lifecycle cleanup.\n"
         "   - Visual & UI Architecture: for normal (non-3D) websites, specify the Obsidian-Black & Crisp White token system (`--bg: #090A0D`, `--surface: #111318`, `--surface-2: #161920`, `1px` `rgba(255,255,255,0.08)` hairlines, `--text: #F5F6F8`, off-white primary CTA `#F5F6F8` with `#090A0D` text, intentional display+sans+mono typography, exposed hairline bento layout, and real interactive state transitions with zero AI slop). For 3D websites, specify unified `scene.background` + `FogExp2` + CSS `--bg` tonal continuity, anti-primitive multi-part sculptural/shader 3D architecture (never crude 'Saturn-ring + sphere' primitives), asymmetric 3D vs text safe-zones, and frosted surfaces (`backdrop-filter: blur(16px)` + alpha >= 0.78).\n"
+        "2b. Toolchain Decision (binding): state the best-fit language/runtime per layer from ANY ecosystem (TypeScript/Vite for UI, Rust/Go for systems & services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when the task fits); explicit user language > existing project stack > capability fit, with a one-line justification. Define module boundaries/architecture before coding and list any runtime (`install_runtime`) or packages (`install_dependencies`) the first coder task must install.\n"
         "3. Decompose the build into a dependency-ordered DAG of real implementation tasks with non-empty `owned_files` (disjoint across parallelizable siblings). NEVER emit a standalone read-only baseline audit task (`owned_files: []`) as a blocking DAG dependency — Explorer already handles baseline recon. For UI/website builds, include a final visual art-direction critique & polish task (`\"ui\": true`) with `owned_files` covering the UI/scene files to polish after `visual_inspect`.\n"
         "4. Output your final plan inside a ```json block containing a JSON array of objects:\n"
         '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], '
@@ -207,7 +216,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "2. Mandatory Read-Before-Write Contract Check: BEFORE modifying or writing code, call `get_file_outline` / `read_file(start_line, end_line)` on target files AND upstream contract/dependency files (exports/imports, CSS `--bg`/tokens, and GLSL `attribute`/`uniform` names) so every integration matches verbatim.\n"
         "3. Use surgical `patch_file` with exact surrounding anchors/hunks for existing files — never leave `TODO`/`...` stubs. When fixing bugs, patch the root cause and all sibling call sites in scope. Write secure code by default (validated inputs, parameterized queries, `textContent` over `innerHTML`, `rel=\"noopener noreferrer\"`).\n"
         "4. Preserve existing imports, comments, style, and unrelated callers.\n"
-        "5. After edits, run targeted verification (`pytest`, `py_compile`, `node --check`, `run_python`, or `visual_inspect` for UI) and fix any failure or visual/contrast defect before concluding.\n"
+        "5. After edits, run targeted verification with the project's native tools (`run_tests` auto-picks pytest/vitest/cargo/go/dotnet/phpunit/rspec/…; `py_compile`, `node --check`/`tsc --noEmit`, `cargo check`, `go vet`, `php -l`; `visual_inspect` for UI) and fix any failure or visual/contrast defect before concluding. If a module or tool is missing (`No module named`, `Cannot find module`, `not recognized`), call `install_dependencies` (libraries) or `install_runtime` (a missing language/tool) once and re-run — never repeat an unchanged failing command.\n"
         "6. Output clean ```tool_call JSON blocks for local actions without dumping untouched files in prose."
     ),
     "verifier": (
@@ -727,7 +736,7 @@ CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
     "architect": (
         "Workflow Phase — Architect: For this stage, think deeply and write a concrete `### Deep Architecture & File Blueprint` FIRST before emitting the ```json task DAG.\n"
         "Inspect any unclear files or contracts via read-only ```tool_call blocks, then in your `### Deep Architecture & File Blueprint` lock a **`Shared Contract Matrix`** covering: exact file-by-file responsibilities, exported/imported symbols, API/data schemas, GLSL `attribute`/`uniform` names vs JS callers, shared `--bg` = `scene.background` = `FogExp2` hex values, backend/root-cause + sibling-callsite bug targets, OWASP security boundaries, and Obsidian-Black/Crisp-White (`#090A0D`/`#F5F6F8`) or unified-fog frosted-overlay (`backdrop-filter: blur(16px)`, `alpha>=0.78`) UI rules.\n"
-        "Decompose the build into a dependency-ordered DAG of thorough, well-scoped implementation tasks and output the JSON array inside ```json:\n"
+        "Decompose the build into a dependency-ordered DAG of thorough, well-scoped implementation tasks and output the JSON array inside ```json. In the blueprint also state a binding **Toolchain Decision** (best-fit language per layer from ANY ecosystem — TypeScript/Vite for UI, Rust/Go for systems & services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when the task or user calls for them; explicit user language > existing stack > capability fit; justify it) plus module boundaries, and any runtime (`install_runtime`) or packages (`install_dependencies`) the first coder task must install:\n"
         '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], "acceptance": "Exact checkable outcome", "ui": false}]\n'
         "Guidelines:\n"
         "1. Every coding task must declare non-empty explicit `owned_files` (relative workspace paths to create or edit). NEVER emit a standalone read-only baseline audit task (`owned_files: []`) as a blocking DAG dependency.\n"
@@ -736,7 +745,7 @@ CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
     ),
     "coder": (
         "Workflow Phase — Coder: Follow the `Architecture & File Blueprint` and perform a mandatory Read-Before-Write Contract Check BEFORE editing via ```tool_call JSON blocks for my local `wsa` CLI.\n"
-        "Always `read_file` upstream dependency files (exports/imports, CSS `--bg`/tokens, and GLSL `attribute`/`uniform` interfaces) plus every target region before writing code; use `patch_file` (`old_string`/`new_string` or `hunks`) for existing files and `write_file` for new/small files without `TODO`/`...` stubs. Fix root causes AND sibling call sites sharing the same bug, write secure-by-default code (`textContent`, validated inputs, parameterized SQL, `rel=\"noopener noreferrer\"`), and run `pytest`/`node --check`/`visual_inspect` until verified cleanly."
+        "Always `read_file` upstream dependency files (exports/imports, CSS `--bg`/tokens, and GLSL `attribute`/`uniform` interfaces) plus every target region before writing code; use `patch_file` (`old_string`/`new_string` or `hunks`) for existing files and `write_file` for new/small files without `TODO`/`...` stubs. Fix root causes AND sibling call sites sharing the same bug, write secure-by-default code (`textContent`, validated inputs, parameterized SQL, `rel=\"noopener noreferrer\"`), and run `pytest`/`node --check`/`tsc --noEmit`/`visual_inspect` until verified cleanly. If a module or tool is missing, call `install_dependencies` (libraries) or `install_runtime` (missing language/tool) once and re-run instead of repeating the failing command."
     ),
     "security": (
         "Workflow Phase — Security Fixer: Perform adversarial web & application security auditing and surgical remediation.\n"
@@ -824,6 +833,11 @@ def _run_role_agent(
     else:
         chat_url = ""
     stage_prompt = _attach_context_to_prompt(prompt, context_packet)
+    if str(role or "").lower() in ("explorer", "architect", "coder", "verifier"):
+        from .toolchain import build_toolchain_directive
+        _tc = build_toolchain_directive(prompt, getattr(state, "project_root", Path.cwd()), role)
+        if _tc:
+            stage_prompt = f"{stage_prompt}\n\n{_tc[:1300]}"
     # Inject ledger working-set digest so subagents have file-tracking context before first tool call
     _ledger_ref = getattr(state, "file_ledger", None)
     _ws_digest = _ledger_ref.render_working_set_digest(max_chars=1200) if isinstance(_ledger_ref, FileContextLedger) else ""

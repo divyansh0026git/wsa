@@ -1313,6 +1313,7 @@ _ERR_RESULT_PREFIXES = (
     "[Self-Preservation",
     "[Safety Error]",
     "[Scope Error]",
+    "[Missing Dependency]",
 )
 
 
@@ -1396,7 +1397,7 @@ _BATCH_READ_ONLY_TOOLS = frozenset({
     "read_file", "get_file_info", "get_file_outline", "inspect_image",
     "glob_files", "list_dir", "search_files", "recall",
     "list_custom_tools", "list_dynamic_rules", "list_background",
-    "todo", "wait_for", "web_fetch",
+    "todo", "wait_for", "web_fetch", "detect_toolchain",
 })
 _READ_REPEAT_TOOLS = frozenset({
     "read_file", "search_files", "glob_files", "list_dir", "get_file_outline", "get_file_info",

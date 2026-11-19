@@ -9,10 +9,11 @@ READ_ONLY_TOOLS = frozenset({
     "read_file", "get_file_info", "get_file_outline", "inspect_image",
     "glob_files", "list_dir", "search_files", "recall", "list_background",
     "list_custom_tools", "list_dynamic_rules", "browser_tabs", "spawn_subagent",
-    "todo", "wait_for", "read_skill",
+    "todo", "wait_for", "read_skill", "detect_toolchain",
 })
 EXECUTION_TOOLS = frozenset({
     "run_command", "run_python", "run_tests", "start_background", "restart_service",
+    "install_dependencies", "install_runtime",
 })
 
 

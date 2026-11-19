@@ -109,6 +109,17 @@ wsa [options] [query ...]
 - **Orchestration & Controls**: `/team [auto|on|off|single-chat|role-chats|dual|single]`, `/plan [task]`, `/verify [scope]`, `/skills [name|scan <path>]`, `/perm [smart|strict|auto]`, `/tools`, `/rules`
 - **Shortcuts**: `Shift+Tab` cycles permission mode, `?` shows keyboard shortcuts, `@path` attaches workspace files, and `Ctrl+C` interrupts the active turn cleanly.
 
+## Best-fit language per task & automatic installs (any language)
+
+WSA no longer defaults to Python. `wsa_agent/toolchain.py` holds a language registry (Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, Java/Kotlin, C#/.NET, C/C++, Swift, Dart/Flutter, Elixir, Zig) and injects a binding **Toolchain Directive** into the Explorer/Architect/Coder/Verifier prompts. Selection order: **language the user names > the project's existing stack (manifests) > capability fit** (TypeScript/Vite for UI, Rust/Go for systems and services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when the task fits). The Architect must record a justified *Toolchain Decision* and module boundaries before any code is written.
+
+- `detect_toolchain` (read-only): installed vs installable runtimes, detected stack, recommended language per layer.
+- `install_dependencies`: libraries via argv-only subprocesses (no shell) for pip (project `.venv`, created if absent), npm/pnpm/yarn/bun, cargo, go, composer, bundler, dotnet (NuGet) and dart pub. Only plain registry names with optional version pins are accepted (no flags, URLs, local paths, or shell metacharacters).
+- `install_runtime`: installs a missing language/tool (node, python, rust, go, php, composer, ruby, java, maven, gradle, dotnet, dart, elixir, zig, cmake, cpp, git, deno, bun) from a fixed allowlist using winget (Windows), brew (macOS) or apt/dnf/pacman with non-interactive `sudo -n` (Linux). Package ids are hard-coded; user text never reaches the command line. After installing, WSA refreshes PATH for the running process and verifies the binary; if it still is not visible it asks you to restart the terminal. Anything outside the allowlist is reported as unsupported with a manual-install link.
+- Both install tools require your approval in smart/strict mode.
+- Loop prevention: when a command's output shows `No module named`, `Cannot find module`, `can't find crate`, `no required module provides package`, `cannot load such file`, a missing vendor/autoload, or `command not found`/`is not recognized`, WSA appends the exact `install_dependencies` / `install_runtime` call to make. `run_tests` returns a `[Missing Dependency]` error (never counted as passing verification) instead of silently falling back.
+- `run_tests` auto-selects the runner from the project: pytest, vitest/jest, cargo, go, dotnet, phpunit, rspec, mix, dart, swift, maven, gradle, zig, ctest.
+
 ## Built-in task skills, read-first workflow & post-build security fixing
 
 WSA bundles **18 curated non-overlapping skills** under `wsa_agent/skills/` across 5 domains:

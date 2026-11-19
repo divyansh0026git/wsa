@@ -803,7 +803,8 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "run_tests",
             "description": (
-                "Run tests (pytest/unittest/vitest/jest) and return structured pass/fail/skip counts and failing test names."
+                "Run tests (pytest/unittest/vitest/jest/cargo/go/dotnet/phpunit/rspec/mix/dart/swift/maven/gradle/zig/ctest; runner auto-matches the project stack) and return structured pass/fail/skip counts and failing test names. "
+                "If the runner is missing, the result names the exact `install_dependencies` call to make."
             ),
             "parameters": {
                 "type": "object",
@@ -811,10 +812,69 @@ TOOL_DEFINITIONS = [
                     "path":      {"type": "string",  "description": "Optional test file, dir, or pytest node ID"},
                     "k":         {"type": "string",  "description": "Optional test name filter expression (-k)"},
                     "args":      {"type": "string",  "description": "Optional extra runner CLI arguments"},
-                    "framework": {"type": "string",  "description": "Optional runner: auto, pytest, unittest, vitest, jest"},
+                    "framework": {"type": "string",  "description": "Optional runner: auto (matches the project stack), pytest, unittest, vitest, jest, cargo, go, dotnet, rspec, mix, dart, swift, maven, gradle, zig, phpunit, ctest"},
                     "timeout":   {"type": "integer", "description": "Timeout in seconds (default: 180, max: 600)"},
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "detect_toolchain",
+            "description": (
+                "Read-only: report which runtimes exist (python, node, npm/pnpm/yarn, tsc, git), the project's detected stack, "
+                "and the recommended language per task (TypeScript/Vite for UI, Python for data/ML/scripts)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "Optional task description to get a stack recommendation for"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_dependencies",
+            "description": (
+                "Install missing LIBRARIES without shell: pip (project .venv, created if absent), npm/pnpm/yarn/bun, cargo, go, composer, "
+                "bundler, dotnet (NuGet), dart pub. Use when output shows `No module named`, `Cannot find module`, `can't find crate`, "
+                "`no required module provides package`, or a missing dev tool such as pytest/tsc/vite. Only plain registry names with "
+                "optional version pins are accepted. For a missing language/tool binary use install_runtime."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "packages":      {"type": "array", "items": {"type": "string"}, "description": "Package names, e.g. [\"pytest\"] or [\"vite\", \"typescript\"]"},
+                    "ecosystem":     {"type": "string", "description": "auto (default), python, node, rust, go, php, ruby, dotnet, dart"},
+                    "dev":           {"type": "boolean", "description": "Node: save as devDependency (tests, bundlers, type checkers)"},
+                    "from_manifest": {"type": "boolean", "description": "Install everything from requirements.txt/pyproject.toml or package.json"},
+                    "timeout":       {"type": "integer", "description": "Timeout in seconds (default: 300, max: 900)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_runtime",
+            "description": (
+                "Install a missing programming language or build tool (node, python, rust, go, php, composer, ruby, java, maven, gradle, "
+                "dotnet, dart, elixir, zig, cmake, cpp, git, deno, bun) via winget/brew/apt/dnf/pacman from a fixed allowlist. "
+                "Needs user approval. Use after `detect_toolchain` or a `command not found` error, then continue with the task."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name":    {"type": "string",  "description": "Runtime key, e.g. rust, go, php, dotnet, node"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default: 900, max: 1800)"},
+                },
+                "required": ["name"],
             },
         },
     },
@@ -1961,7 +2021,10 @@ def _execute_tool_unlocked(name: str, args: dict) -> str:
         if name == "browser_inspect":  return _browser_inspect(**args)
         if name == "browser_interact": return _browser_interact(**args)
         if name == "visual_inspect":   return _visual_inspect(**args)
-        if name == "run_command":      return _run_command(**args)
+        if name == "run_command":      return _with_dependency_hint(_run_command(**args))
+        if name == "detect_toolchain": return _detect_toolchain(**args)
+        if name == "install_dependencies": return _install_dependencies(**args)
+        if name == "install_runtime":  return _install_runtime(**args)
         if name == "delete_file":      return _delete_file(**args)
         if name == "move_file":        return _move_file(**args)
         if name == "copy_file":        return _copy_file(**args)
@@ -1974,10 +2037,10 @@ def _execute_tool_unlocked(name: str, args: dict) -> str:
         if name == "remember":         return _remember(**args)
         if name == "recall":           return _recall(**args)
         if name == "spawn_subagent":   return _spawn_subagent(**args)
-        if name == "run_python":       return _run_python(**args)
-        if name == "run_tests":        return _run_tests(**args)
+        if name == "run_python":       return _with_dependency_hint(_run_python(**args))
+        if name == "run_tests":        return _with_dependency_hint(_run_tests(**args))
         if name == "rollback":         return _rollback(**args)
-        if name == "start_background": return _start_background(**args)
+        if name == "start_background": return _with_dependency_hint(_start_background(**args))
         if name == "list_background":  return _list_background(**args)
         if name == "stop_background":  return _stop_background(**args)
         if name == "restart_service":  return _restart_service(**args)
@@ -5033,6 +5096,21 @@ def _parse_test_output(framework: str, returncode: int, stdout: str, stderr: str
                 if s not in failures:
                     failures.append(s)
 
+    if framework == "cargo" and not counts:
+        for line in combined.splitlines():
+            m = re.match(r"\s*test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored", line)
+            if m:
+                counts["passed"] = counts.get("passed", 0) + int(m.group(1))
+                counts["failed"] = counts.get("failed", 0) + int(m.group(2))
+                counts["skipped"] = counts.get("skipped", 0) + int(m.group(3))
+            if line.strip().startswith("test ") and line.strip().endswith("FAILED"):
+                failures.append(line.strip())
+    if framework == "go":
+        for line in combined.splitlines():
+            if line.strip().startswith("--- FAIL:"):
+                failures.append(line.strip())
+        if failures:
+            counts["failed"] = len(failures)
     if returncode == 5 and framework == "pytest":
         status = "NO TESTS"
     elif returncode == 0:
@@ -5079,8 +5157,9 @@ def _run_tests(
     """Run project test suite cleanly without shell wrapper and return structured pass/fail counts."""
     timeout = max(5, min(int(timeout or 180), 600))
     fw = str(framework or "auto").strip().lower()
-    if fw not in ("auto", "pytest", "unittest", "vitest", "jest"):
-        return f"[Error] Unsupported test framework '{framework}'. Use auto, pytest, unittest, vitest, or jest."
+    from .toolchain import ALL_TEST_FRAMEWORKS, RUNTIME_OF_BIN, RUNTIME_INSTALLERS, runner_argv
+    if fw not in ALL_TEST_FRAMEWORKS:
+        return f"[Error] Unsupported test framework '{framework}'. Use one of: {', '.join(ALL_TEST_FRAMEWORKS)}."
 
     target_arg = str(path or "").strip()
     if target_arg:
@@ -5094,12 +5173,8 @@ def _run_tests(
     py_exe = _detect_python_executable(root_dir)
 
     if fw == "auto":
-        low_path = target_arg.lower()
-        if low_path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
-            pkg = root_dir / "package.json"
-            fw = "vitest" if (pkg.is_file() and "vitest" in pkg.read_text(encoding="utf-8", errors="ignore").lower()) else "jest"
-        else:
-            fw = "pytest"
+        from .toolchain import pick_test_framework
+        fw = pick_test_framework(root_dir, target_arg)
 
     def _build_cmd(runner: str) -> List[str]:
         if runner == "pytest":
@@ -5126,6 +5201,9 @@ def _run_tests(
                 cmd.extend(["-k", str(k)])
             cmd.extend(extra_args)
             return cmd
+        generic = runner_argv(runner, root_dir)
+        if generic:
+            return generic + ([target_arg] if target_arg and runner in ("go", "cargo", "dotnet", "phpunit") else []) + list(extra_args)
         npx = shutil.which("npx") or "npx"
         if runner == "vitest":
             cmd = [npx, "--no-install", "vitest", "run"]
@@ -5140,26 +5218,175 @@ def _run_tests(
 
     try:
         cmd_list = _build_cmd(fw)
+        exe0 = cmd_list[0]
+        if runner_argv(fw, root_dir) and not (shutil.which(exe0) or Path(exe0).is_file()):
+            rt = RUNTIME_OF_BIN.get(Path(exe0).name.lower(), "")
+            fix = (f'install_runtime(name="{rt}")' if rt in RUNTIME_INSTALLERS else "ask the user to install it")
+            return (f"[Missing Dependency] `{exe0}` (needed for the {fw} test runner) is not installed.\n"
+                    f"Call {fix} once, then re-run run_tests. Do not retry until the install succeeds.")
+        if runner_argv(fw, root_dir):
+            cmd_list = [shutil.which(exe0) or exe0, *cmd_list[1:]]
         rc, stdout, stderr, timed_out = _run_subprocess_tree_safe(cmd_list, timeout, cwd=root_dir)
-        if (
-            not timed_out
-            and rc != 0
-            and framework == "auto"
-            and fw == "pytest"
-            and "No module named pytest" in (stderr or "")
-        ):
-            fw = "unittest"
-            cmd_list = _build_cmd("unittest")
-            rc, stdout, stderr, timed_out = _run_subprocess_tree_safe(cmd_list, timeout, cwd=root_dir)
         if timed_out:
             return _format_timeout_output(
                 f"[Error] Test suite ({fw}) timed out after {timeout}s (process tree terminated cleanly).",
                 stdout,
                 stderr,
             )
+        if rc != 0:
+            from .toolchain import detect_missing_dependencies
+            runner_pkgs = {"pytest": ("python", "pytest"), "vitest": ("node", "vitest"), "jest": ("node", "jest")}
+            eco_pkg = runner_pkgs.get(fw)
+            combined = f"{stdout or ''}\n{stderr or ''}"
+            runner_missing = bool(eco_pkg) and (
+                "No module named pytest" in combined
+                or "could not determine executable to run" in combined.lower()
+                or "npm err! 404" in combined.lower()
+            )
+            if runner_missing or (eco_pkg and any(m["package"].lower() == eco_pkg[1] for m in detect_missing_dependencies(combined))):
+                eco, pkg = eco_pkg
+                dev = ", dev=true" if eco == "node" else ""
+                return (
+                    f"[Missing Dependency] Test runner `{pkg}` is not installed for this project.\n"
+                    f"Call install_dependencies(packages=[\"{pkg}\"], ecosystem=\"{eco}\"{dev}) once, then re-run run_tests. "
+                    "Do not retry run_tests until the install succeeds."
+                )
         return _parse_test_output(fw, rc, stdout, stderr)
     except Exception as e:
         return f"[Error] {type(e).__name__}: {e}"
+
+
+def _with_dependency_hint(result: Any) -> Any:
+    """Append an exact `install_dependencies` instruction when tool output shows a missing package."""
+    if not isinstance(result, str) or "[WSA Dependency Hint]" in result or "[Missing Dependency]" in result:
+        return result
+    from .toolchain import format_dependency_hint
+    hint = format_dependency_hint(result)
+    return result + hint if hint else result
+
+
+def _detect_toolchain(task: str = "") -> str:
+    """Report available runtimes, detected project stack, and the best-fit language per layer for `task`."""
+    from .toolchain import (LANGUAGES, RUNTIME_INSTALLERS, detect_os, probe_binaries, recommend_stack, refresh_path,
+                            runtime_present)
+    refresh_path()
+    root_dir = get_project_root()
+    bins = probe_binaries()
+    rec = recommend_stack(str(task or ""), root_dir, bins)
+    stack = rec["stack"]
+    present = sorted(k for k in RUNTIME_INSTALLERS if runtime_present(k, bins))
+    absent = sorted(k for k in RUNTIME_INSTALLERS if k not in present)
+    lines = [f"OS: {detect_os()}", "Installed runtimes: " + (", ".join(present) or "none"),
+             "Installable but missing (install_runtime): " + (", ".join(absent) or "none"),
+             f"Project interpreter: {_detect_python_executable(root_dir)}"]
+    detected = [LANGUAGES[l]["label"] for l in stack["languages"]] + (["static HTML"] if stack["static_html"] else [])
+    lines.append("Detected stack: " + (", ".join(detected) if detected else "none (empty project)"))
+    if stack["node"]:
+        lines.append(f"Node: manager={stack['package_manager']}, bundler={stack['bundler'] or 'none'}, "
+                     f"tests={stack['node_tests'] or 'none'}, scripts={stack['scripts'] or 'none'}")
+    if rec["ui_language"]:
+        lines.append(f"Recommended UI language: {rec['ui_language']}")
+    if rec["server_language"]:
+        lines.append(f"Recommended backend/core language: {rec['server_language']}")
+    lines.extend(f"Note: {n}" for n in rec["notes"])
+    if rec["missing_runtimes"]:
+        lines.append("Needed but not installed: " + ", ".join(rec["missing_runtimes"])
+                     + " -> call install_runtime(name=...) before scaffolding.")
+    return "\n".join(lines)
+
+
+def _install_runtime(name: str = "", timeout: int = 900) -> str:
+    """Install a missing language/runtime via winget/brew/apt/dnf/pacman using a fixed allowlist (approval-gated)."""
+    from .toolchain import RUNTIME_INSTALLERS, RUNTIME_OF_BIN, plan_runtime_install, probe_binaries, refresh_path, runtime_present
+    timeout = max(60, min(int(timeout or 900), 1800))
+    key = RUNTIME_OF_BIN.get(str(name or "").strip().lower(), str(name or "").strip().lower())
+    refresh_path()
+    if key in RUNTIME_INSTALLERS and runtime_present(key):
+        return f"[Already installed] {key} is available on PATH. Nothing to do."
+    cmds, post, err = plan_runtime_install(name)
+    if err or not cmds:
+        return err or "[Error] Nothing to install."
+    root_dir = get_project_root()
+    transcript: List[str] = []
+    for cmd in cmds:
+        label = " ".join(cmd)
+        rc, out, serr, timed_out = _run_subprocess_tree_safe([shutil.which(cmd[0]) or cmd[0], *cmd[1:]], timeout, cwd=root_dir)
+        tail = "\n".join(((out or "") + "\n" + (serr or "")).strip().splitlines()[-10:])
+        if timed_out:
+            return "\n".join(transcript + [f"[Error] `{label}` timed out after {timeout}s (process tree terminated).", tail])
+        if rc != 0:
+            hint = ""
+            if "sudo" in cmd[:1] or "a password is required" in tail.lower():
+                hint = "\nThis needs root: ask the user to run the command above themselves in a terminal."
+            elif cmd[0] == "winget":
+                hint = "\nwinget may need an elevated terminal or a UAC approval; ask the user to approve/re-run."
+            return "\n".join(transcript + [f"[Error] `{label}` failed (exit {rc}):", tail]) + hint
+        transcript.append(f"OK `{label}`")
+    refresh_path()
+    for cmd in post:
+        exe = shutil.which(cmd[0])
+        if not exe:
+            continue
+        rc, out, serr, _ = _run_subprocess_tree_safe([exe, *cmd[1:]], timeout, cwd=root_dir)
+        transcript.append(("OK" if rc == 0 else f"WARN(exit {rc})") + f" `{' '.join(cmd)}`")
+    refresh_path()
+    ok = runtime_present(key, probe_binaries())
+    if ok:
+        return "\n".join(["[Installed]"] + transcript + [f"{key} is now on PATH for WSA; continue with the task."])
+    return "\n".join(["[Installed, restart needed]"] + transcript + [
+        f"{key} installed but is not on this process's PATH yet. Ask the user to restart the terminal/WSA, then continue."])
+
+
+def _install_dependencies(
+    packages: Optional[List[str]] = None,
+    ecosystem: str = "auto",
+    dev: bool = False,
+    from_manifest: bool = False,
+    timeout: int = 300,
+) -> str:
+    """Install registry packages with argv-only subprocesses (no shell) inside the project root."""
+    from .toolchain import detect_missing_dependencies, plan_install, probe_binaries
+    timeout = max(10, min(int(timeout or 300), 900))
+    root_dir = get_project_root()
+    if isinstance(packages, str):
+        packages = [p for p in re.split(r"[\s,]+", packages) if p]
+    py_exe = _detect_python_executable(root_dir)
+    bins = probe_binaries()
+    cmds, err = plan_install(list(packages or []), ecosystem, root_dir, dev=bool(dev),
+                             from_manifest=bool(from_manifest), python_exe=py_exe, binaries=bins)
+    if err or not cmds:
+        return err or "[Error] Nothing to install."
+
+    is_python = any(c[1:3] == ["-m", "pip"] for c in cmds)
+    is_self_repo = (root_dir / "wsa_server" / "__init__.py").is_file() and (root_dir / "wsa_agent").is_dir()
+    transcript: List[str] = []
+    if is_python and py_exe == sys.executable and not is_self_repo:
+        # Never pollute WSA's own interpreter or hit PEP 668 "externally managed" errors: give the project its own venv.
+        rc, out, serr, timed_out = _run_subprocess_tree_safe([sys.executable, "-m", "venv", str(root_dir / ".venv")], timeout, cwd=root_dir)
+        if timed_out or rc != 0:
+            return "[Error] Could not create project .venv: " + ((serr or out or "").strip()[-600:] or "unknown error")
+        transcript.append("Created project virtualenv: .venv")
+        new_py = _detect_python_executable(root_dir)
+        cmds = [[new_py if c[:1] == [py_exe] else c[0], *c[1:]] for c in cmds]
+        py_exe = new_py
+
+    for cmd in cmds:
+        label = " ".join(Path(cmd[0]).name if i == 0 else a for i, a in enumerate(cmd))
+        cmd = [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]
+        rc, out, serr, timed_out = _run_subprocess_tree_safe(cmd, timeout, cwd=root_dir)
+        tail = "\n".join(((out or "") + "\n" + (serr or "")).strip().splitlines()[-12:])
+        if timed_out:
+            return "\n".join(transcript + [f"[Error] `{label}` timed out after {timeout}s (process tree terminated).", tail])
+        if rc != 0:
+            extra = ""
+            if "externally-managed-environment" in tail:
+                extra = "\nThe interpreter is externally managed; run install_dependencies again after a project .venv exists."
+            return "\n".join(transcript + [f"[Error] `{label}` failed (exit {rc}):", tail]) + extra
+        transcript.append(f"OK `{label}`")
+    note = ""
+    if is_python:
+        note = f"\nInterpreter now used by run_tests/run_python: {py_exe}"
+    return "\n".join(["[Installed]"] + transcript) + note + "\nRe-run the check that failed."
 
 
 def _validate_local_http_url(url: str) -> Tuple[bool, str]:

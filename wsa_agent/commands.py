@@ -721,6 +721,7 @@ def _cmd_tools(arg: str, state: SessionState) -> HandlerResult:
             "Shell, Services & Tests",
             {
                 "run_command", "run_python", "run_tests", "start_background",
+                "install_dependencies", "install_runtime", "detect_toolchain",
                 "list_background", "stop_background", "restart_service", "http_request",
             },
         ),

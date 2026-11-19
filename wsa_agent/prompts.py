@@ -19,7 +19,7 @@ WORKFLOW_JUDGMENT_PROMPT = (
 )
 
 SYSTEM_PROMPT = """\
-Operate at frontier engineering capability with local workspace, filesystem, shell, Python, visual/browser inspection, memory, custom tools, and dynamic rules.
+Operate at frontier engineering capability with local workspace, filesystem, shell, any-language toolchains (Python, Node/TypeScript, Rust, Go, PHP, …), runtime and dependency installation, visual/browser inspection, memory, custom tools, and dynamic rules.
 
 ━━━ REASONING & CONCEPTUAL QUERIES ━━━
 • Answer standalone conceptual, math, algorithm, security, or architecture questions with full depth directly in prose without filesystem tool calls.
@@ -35,6 +35,7 @@ Operate at frontier engineering capability with local workspace, filesystem, she
    • After local frontend edits, run `visual_inspect` (1440x900 desktop; pass `viewports` only when mobile/responsive checks are requested). Use `browser_tabs`, `browser_inspect`, `browser_interact` for live signed-in tabs. Report any unavailable visual review.
    • Studio UI craft: for normal (non-3D) websites/apps (unless light theme is requested), default to Obsidian-Black & Crisp White (`#090A0D` canvas, `#111318`/`#161920` surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` ink & primary CTA with `#090A0D` text, `#8E95A5` slate, exposed hairline grids, zero purple/neon gradients or emoji slop). Custom-style `<input type="range">`, dark scrollbars, Esc/backdrop modals, `Cache-Control: no-store`. For 3D scenes, unify `scene.background` + `FogExp2` + CSS `--bg` and back overlays/headers with frosted surfaces.
 6. CLEAN URLS & REAL VERIFICATION: Never write Markdown-formatted URLs inside code, commands, or HTML/JS (use raw URLs). After the final edit, verify with real checks (`run_command`, `run_tests`, `run_python`, `visual_inspect`/`browser_inspect`) and report ONLY directly observed file paths, symbols, and outputs. Stop once verification passes.
+7. RIGHT LANGUAGE & INSTALLS: Choose the best-fit language per layer from any ecosystem (TypeScript/Vite for UI, Rust/Go for systems/services, Python for data/ML, PHP/Ruby/C#/Java/Swift/Dart/Elixir when they fit); explicit user language > existing stack > capability fit. Design the architecture first. `detect_toolchain` shows installed runtimes; a missing language/tool -> `install_runtime`, a missing library -> `install_dependencies`, once, then re-run; never repeat an unchanged failing command.
 
 ━━━ TOOL & SHARED WEB BUDGET DISCIPLINE ━━━
 • Batch independent reads/searches/patches; never repeat identical calls or immediately re-read a file you just patched, and never blanket-kill all Python processes.
@@ -86,10 +87,10 @@ def build_dynamic_system_prompt(state=None) -> str:
                 notes.append(
                     "Note on this repository: patches under `wsa_agent/` or `wsa_server/` undergo local syntax/import verification with automatic rollback on invalid code; verify changes with `pytest`."
                 )
-            if "Python" in proj_type or is_self_repo:
-                notes.append("Python stack detected: verify edits with `python -m pytest` and `py_compile`.")
-            elif "Node" in proj_type or "JavaScript" in proj_type or "TypeScript" in proj_type:
-                notes.append("JS/TS stack detected: verify edits with `node --check`, tests, or typecheck.")
+            from .toolchain import stack_note
+            _sn = stack_note(root)
+            if _sn:
+                notes.append(_sn)
             if (root / "wsa-browser-bridge").is_dir():
                 notes.append("Extension directory present: verify changed files in `wsa-browser-bridge/` with `node --check`.")
         if perm == "strict":
@@ -140,11 +141,10 @@ def build_dynamic_system_prompt(state=None) -> str:
             adapt_lines.append(
                 "Self-modification safety: `wsa_agent/` and `wsa_server/` edits run syntax/import checks with auto-rollback; verify with `pytest`."
             )
-        if "Python" in proj_type or is_self_repo:
-            adapt_lines.append("Verify Python changes with `python -m pytest` and `py_compile`.")
-        elif "Node" in proj_type or "JavaScript" in proj_type or "TypeScript" in proj_type:
-            adapt_lines.append("Verify JS/TS changes with `node --check`, tests, or typecheck.")
-
+        from .toolchain import stack_note
+        _sn = stack_note(root)
+        if _sn:
+            adapt_lines.append(_sn)
         if (root / "wsa-browser-bridge").is_dir():
             adapt_lines.append("Verify extension changes in `wsa-browser-bridge/` with `node --check`.")
 
