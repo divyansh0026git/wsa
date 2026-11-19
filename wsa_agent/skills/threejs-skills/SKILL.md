@@ -22,7 +22,8 @@ Inspired by `CloudAI-X/threejs-skills`. Prevents outdated Three.js APIs, washed-
 
 - Always check `uTime`, `uResolution`, `uPointer`, and `uProgress` uniforms are initialized with matching GLSL types (`float`, `vec2`, `vec3`, `THREE.Color`).
 - Keep fragment shaders branch-light (`mix`/`smoothstep`/`step` over heavy `if` branches), use `precision highp float;` when needed, and respect `THREE.ShaderMaterial` tone mapping/colorspace (`#include <tonemapping_fragment>`, `#include <colorspace_fragment>`).
-- Avoid expensive full-screen post-processing chains unless justified; if using Bloom, set a strict luminance threshold (`threshold >= 0.85`, subtle `strength: 0.25–0.45`) so UI and hero edges stay sharp.
+- **Cinema VFX & Post-Processing (`igloo.inc` Standard)**: For hero/sci-fi 3D builds, wire an `EffectComposer` cinema pipeline: selective `UnrealBloomPass` (`threshold: 0.78–0.88`, crisp emissive corona/highlights without blowing out UI text) + a custom full-screen `ShaderPass` combining subtle radial chromatic aberration (pulsing smoothly on warp camera jumps), fine ACES film grain + optical vignette, and anamorphic solar glare.
+- **Volumetric GPU & Particle VFX**: Render a layered 3D fBm/curl-noise volumetric nebula/atmosphere shader dome (never a flat solid void with static dots), animated 3D plasma/energy geometry (`TubeGeometry` ribbons/prominence arcs with additive flow shaders), GPU `THREE.Points` solar-wind/warp-streak particle fields, instanced micro-debris/ice crystals, and smooth mouse-parallax + inertia choreography.
 
 ## Performance, Interaction & Disposal
 

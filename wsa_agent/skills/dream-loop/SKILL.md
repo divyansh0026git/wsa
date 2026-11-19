@@ -17,26 +17,22 @@ Code alone cannot verify lighting, silhouette, framing, depth separation, or mat
 ## The 4-Phase Dream Loop
 
 1. **Lock the Target Aesthetic First**:
-   - Before writing scene/shader code, write a concise 6-line **Visual Target Spec**: hero subject & silhouette, camera focal length & angle, 3-point + rim/environment lighting mood, exact material response (roughness/metalness/subsurface/glass), color palette (hex), and negative space reserved for typography.
-   - If the user provided a reference screenshot/image, inspect it with `inspect_image` first and lock proportions, camera elevation, and lighting ratios directly from it.
+   - Write a 6-line **Visual Target Spec**: hero subject & silhouette (`igloo.inc` cinema VFX standard), camera rail & angle, 3-point + volumetric rim light, shader/PBR response, hex palette, and negative space.
+   - If reference media exists, inspect it with `inspect_image` first to lock proportions and lighting ratios.
 2. **Build the Scene Cleanly**:
-   - Implement camera framing, environment lighting (`PMREMGenerator` / studio HDRI procedural room), grounded contact shadows, and deliberate hero composition in one clean pass.
-   - Ensure the hero reads unmistakably within the first viewport (`1440x900`) with zero canvas clipping, zero z-fighting, and zero flat unlit surfaces.
+   - Implement camera framing, `PMREMGenerator` environment lighting, volumetric 3D shaders/particles/`EffectComposer` VFX, and hero composition cleanly.
+   - Ensure the hero reads unmistakably in `1440x900` with zero canvas clipping, z-fighting, or flat surfaces.
 3. **Fresh-Context Visual Critique**:
-   - Render the live app and capture screenshots via `visual_inspect` (desktop `1440x900` + key interaction states or camera presets).
-   - Critique strictly as an independent Art Director (forget how hard the code was to write):
-     - **Silhouette & Framing**: Is the hero centered/balanced with intentional breathing room, or cramped/cropped?
-     - **Lighting & Depth**: Are key light, fill, rim highlight, and contact shadow visibly separating foreground from background?
-     - **Materials**: Do metallic, glass, matte, and emissive materials read believably instead of plastic/flat?
-     - **UI Integration**: Does typography sit on calm space with crisp contrast (WCAG AA+) and zero overlap with 3D focal points?
-     - **Runtime Hygiene**: Zero WebGL warnings, zero console errors, smooth frame pacing.
+   - Capture live screenshots via `visual_inspect` (`1440x900` hero + interactive state) and critique as Art Director:
+     - **Silhouette & VFX Depth**: Volumetric layers, shader depth, and framing breathing room?
+     - **Lighting & Materials**: Key, rim, bloom, and believable shader/PBR response?
+     - **Spatial HUD**: Razor-minimal aerospace HUD (1px hairline ticks, monospace kinetic telemetry, scrim safe-zones) — zero rounded SaaS card/pill clutter.
+     - **Runtime Hygiene**: Zero WebGL warnings or console errors.
 4. **Iterate Until Visual Sign-Off**:
-   - Fix the highest-impact visual defects first (lighting/exposure/tone mapping -> silhouette/scale -> material roughness/detail -> UI typography contrast).
-   - Re-capture after edits. Stop only when the live render matches the Visual Target Spec cleanly.
+   - Fix lighting/exposure -> shader VFX/scale -> material detail -> HUD contrast, then re-capture.
 
 ## Do Not
 
-- Never finish 3D scenes without passing `visual_inspect` / `browser_inspect` across hero (`scrollY=0`) and scrolled states.
-- Ban "Saturn-toy" collages (`sphere+Torus+Cone`) & `FogExp2` breaks — match `scene.background`, `FogExp2` & CSS `--bg`.
-- Never bleed headers or unbacked text over 3D: reserve safe-zones & `backdrop-filter: blur(16px)` (`alpha>=0.78`).
-- Never obscure the hero canvas with heavy blurred modals, neon glows, or cluttered telemetry overlays.
+- Never finish 3D scenes without passing `visual_inspect` across hero and interactive states.
+- Ban "Saturn-toy" (`sphere+Torus+Cone`), `FogExp2` breaks (match `scene.background`, `FogExp2` & `--bg`), and SaaS card/pill clutter.
+- Never bleed unbacked text over 3D: keep safe-zones, 1px hairline reticles, or `backdrop-filter: blur(16px)` (`alpha>=0.78`); mute Web Audio by default.
