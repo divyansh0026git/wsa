@@ -585,6 +585,61 @@ async function longDeepThinkingTurnDoesNotTimeoutWhileStreaming() {
   assert.equal(dead.storage.activeRelayJob, undefined, 'truly hung turn with >6m stale progress must fail');
 }
 
+async function autoSyncModeBehaviors() {
+  const h = harness();
+  // 1. Enabled by default
+  const enabledDefault = await h.run('getAutoSyncEnabled()');
+  assert.equal(enabledDefault, true, 'auto-sync must be enabled by default');
+
+  // 2. Can be toggled off and on
+  await h.run('setAutoSyncEnabled(false)');
+  assert.equal(await h.run('getAutoSyncEnabled()'), false, 'auto-sync should toggle off');
+  assert.equal(h.storage.autoSyncEnabled, false);
+  await h.run('setAutoSyncEnabled(true)');
+  assert.equal(await h.run('getAutoSyncEnabled()'), true, 'auto-sync should toggle on');
+  assert.equal(h.storage.autoSyncEnabled, true);
+
+  // 3. autoSyncRelayAndCookies completes without throwing when server reachable
+  const postUrls = [];
+  h.ctx.fetch = async (url) => {
+    postUrls.push(String(url));
+    return { ok: true, json: async () => ({ ok: true }), headers: { get: () => null } };
+  };
+  h.ctx.scanOpenSiteStates = async () => ({
+    hasAnyAiTab: true,
+    ident: { clientId: 'test-client', browser: 'chrome', label: 'Chrome' },
+    providers: { chatgpt: { has_tab: true } },
+    site: 'chatgpt.com',
+    provider: 'chatgpt',
+  });
+  h.ctx.collectAuthBundle = async () => ({
+    ok: true,
+    payload: { sapisid: 'test-sap', cookie: 'test' },
+    snapshot: {
+      hasAnyAiTab: true,
+      ident: { clientId: 'test-client', browser: 'chrome', label: 'Chrome' },
+      providers: { chatgpt: { has_tab: true } },
+      site: 'chatgpt.com',
+      provider: 'chatgpt',
+    },
+  });
+
+  const res = await h.run('autoSyncRelayAndCookies({ force: true })');
+  assert.equal(res.ok, true, 'autoSyncRelayAndCookies must succeed');
+  assert.ok(postUrls.some(u => u.includes('/sync-cookies')), 'auto-sync must POST to /sync-cookies');
+  assert.ok(postUrls.some(u => u.includes('/relay/select')), 'auto-sync must POST to /relay/select');
+  assert.ok(h.storage.lastAutoSync?.ok, 'storage should store lastAutoSync');
+  assert.ok(h.storage.lastAutoSyncAt > 0, 'storage should store lastAutoSyncAt');
+
+  // 4. In-flight mutex blocks concurrent syncs and queues pending catchup
+  h.run('autoSyncInFlight = true');
+  const concurrent = await h.run('autoSyncRelayAndCookies()');
+  assert.equal(concurrent.ok, false);
+  assert.equal(concurrent.pending, true, 'concurrent auto-sync must yield pending');
+  assert.equal(h.run('autoSyncPending'), true);
+  h.run('autoSyncInFlight = false');
+}
+
 (async()=>{
   for (const test of [unavailableImageTransferFailsForEveryRuntime, unchangedProgressRetriesAfterLostPost, submittedStageReportsVerifiedUploadAndTimings, longDeepThinkingTurnDoesNotTimeoutWhileStreaming, acquisitionIsSingleFlight, completionWaitsForAcknowledgement, failedDeliverySurvivesRestart,
     rejectedAndInvalidAcknowledgements, failedErrorDeliverySurvivesRestart, backgroundProvidersAndRestart,
@@ -594,7 +649,7 @@ async function longDeepThinkingTurnDoesNotTimeoutWhileStreaming() {
     resultSurvivesFailedStorageRemoval, heartbeatDoesNotWaitForPageScan,
     alarmHeartbeatsWhilePagePollIsBlocked, cancelledPollCannotResurrectOrOverwriteRequest,
     delayedCompletionCannotOverwriteNewSession, delayedAcknowledgementCannotClearNewRequest,
-    cancelledMutationCannotRaceStorageWrite]) {
+    cancelledMutationCannotRaceStorageWrite, autoSyncModeBehaviors]) {
     await test(); console.log('PASS', test.name);
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});

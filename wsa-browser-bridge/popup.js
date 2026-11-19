@@ -15,6 +15,8 @@ const PROVIDER_META = [
 
 let detectedIsBrave = null;
 let statusPollId = null;
+let tickerIntervalId = null;
+let lastAutoSyncTimestamp = 0;
 
 async function detectIsBrave() {
   if (detectedIsBrave !== null) return detectedIsBrave;
@@ -48,6 +50,24 @@ function formatBrowserName(browser) {
   if (b === "brave") return "Brave";
   if (b === "edge") return "Edge";
   return "Chrome";
+}
+
+function formatRelativeTime(ts) {
+  if (!ts || typeof ts !== "number" || ts <= 0) return "Standby";
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 4) return "Just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  return `${diffHours}h ago`;
+}
+
+function updateRelativeTimeDisplay() {
+  const timeEl = $("autoSyncTime");
+  if (timeEl && lastAutoSyncTimestamp > 0) {
+    timeEl.textContent = formatRelativeTime(lastAutoSyncTimestamp);
+  }
 }
 
 function applyStatusUI(res) {
@@ -128,11 +148,46 @@ function applyStatusUI(res) {
       statusText.textContent = "Streaming";
     } else if (isBound) {
       dot.className = "dot ok";
-      statusText.textContent = `Synced ${openCount}/${totalProviders}`;
+      statusText.textContent = `Auto-Synced ${openCount}/${totalProviders}`;
     } else {
       dot.className = "dot";
       statusText.textContent = "Standby";
     }
+  }
+
+  // Auto-Sync Mode Status & Controls
+  const autoSync = res.autoSync || res.status?.autoSync || {};
+  const isAutoSyncEnabled = autoSync.enabled !== false;
+  const toggle = $("autoSyncToggle");
+  if (toggle && toggle.checked !== isAutoSyncEnabled) {
+    toggle.checked = isAutoSyncEnabled;
+  }
+
+  const autoSyncSub = $("autoSyncSub");
+  const badge = $("autoSyncBadge");
+  const badgeText = $("autoSyncStatusText");
+  const timeEl = $("autoSyncTime");
+
+  if (autoSync.lastSyncAt) {
+    lastAutoSyncTimestamp = autoSync.lastSyncAt;
+  }
+
+  if (!isAutoSyncEnabled) {
+    if (autoSyncSub) autoSyncSub.textContent = "Auto-sync paused";
+    if (badge) badge.className = "autosync-badge paused";
+    if (badgeText) badgeText.textContent = "Paused";
+  } else if (!srvReachable) {
+    if (autoSyncSub) autoSyncSub.textContent = "Waiting for local WSA server";
+    if (badge) badge.className = "autosync-badge warn";
+    if (badgeText) badgeText.textContent = "Offline";
+  } else {
+    if (autoSyncSub) autoSyncSub.textContent = "Continuous background sync";
+    if (badge) badge.className = "autosync-badge ok";
+    if (badgeText) badgeText.textContent = "Active";
+  }
+
+  if (timeEl) {
+    timeEl.textContent = formatRelativeTime(lastAutoSyncTimestamp);
   }
 }
 
@@ -144,45 +199,71 @@ async function refreshStatus() {
   });
 }
 
-$("syncBtn").addEventListener("click", async () => {
-  const btn = $("syncBtn");
-  const isBrave = await detectIsBrave();
-  btn.disabled = true;
-  btn.textContent = "Syncing...";
-  setOutput("");
-
-  chrome.runtime.sendMessage({ type: "SYNC_NOW", isBrave }, (res) => {
-    btn.disabled = false;
-    btn.textContent = "Sync";
-
-    if (chrome.runtime.lastError || !res?.ok) {
-      setOutput(res?.error || chrome.runtime.lastError?.message || "Sync failed", "err");
+// Auto-Sync Toggle Listener
+const toggle = $("autoSyncToggle");
+if (toggle) {
+  toggle.addEventListener("change", async () => {
+    const isBrave = await detectIsBrave();
+    const enabled = Boolean(toggle.checked);
+    chrome.runtime.sendMessage({ type: "SET_AUTOSYNC", enabled, isBrave }, (res) => {
+      if (chrome.runtime.lastError || !res?.ok) return;
       refreshStatus();
-      return;
-    }
-
-    const providers = res.providers || {};
-    const syncedLabels = PROVIDER_META
-      .filter(m => Boolean(providers[m.key]?.has_tab))
-      .map(m => m.label);
-    const browserName = formatBrowserName(res.browser);
-    const summary = syncedLabels.length
-      ? `Synced ${syncedLabels.join(", ")} in ${browserName}`
-      : `Synced ${browserName}`;
-    setOutput(summary, "ok");
-
-    if (res.status) {
-      applyStatusUI(res.status);
-    } else {
-      refreshStatus();
-    }
+    });
   });
-});
+}
+
+// Force Sync Button (Secondary Manual Trigger)
+const syncBtn = $("syncBtn");
+if (syncBtn) {
+  syncBtn.addEventListener("click", async () => {
+    const btn = $("syncBtn");
+    const btnText = $("syncBtnText");
+    const isBrave = await detectIsBrave();
+    btn.disabled = true;
+    if (btnText) btnText.textContent = "Syncing...";
+    setOutput("");
+
+    chrome.runtime.sendMessage({ type: "SYNC_NOW", isBrave }, (res) => {
+      btn.disabled = false;
+      if (btnText) btnText.textContent = "Force Sync Now";
+
+      if (chrome.runtime.lastError || !res?.ok) {
+        setOutput(res?.error || chrome.runtime.lastError?.message || "Sync failed", "err");
+        refreshStatus();
+        return;
+      }
+
+      const providers = res.providers || {};
+      const syncedLabels = PROVIDER_META
+        .filter(m => Boolean(providers[m.key]?.has_tab))
+        .map(m => m.label);
+      const browserName = formatBrowserName(res.browser);
+      const summary = syncedLabels.length
+        ? `Synced ${syncedLabels.join(", ")} in ${browserName}`
+        : `Synced ${browserName}`;
+      setOutput(summary, "ok");
+
+      if (res.autoSync?.lastSyncAt) {
+        lastAutoSyncTimestamp = res.autoSync.lastSyncAt;
+      } else {
+        lastAutoSyncTimestamp = Date.now();
+      }
+
+      if (res.status) {
+        applyStatusUI(res.status);
+      } else {
+        refreshStatus();
+      }
+    });
+  });
+}
 
 if (typeof window !== "undefined" && typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
   refreshStatus();
   statusPollId = setInterval(refreshStatus, 2500);
+  tickerIntervalId = setInterval(updateRelativeTimeDisplay, 1000);
   window.addEventListener("unload", () => {
     if (statusPollId) clearInterval(statusPollId);
+    if (tickerIntervalId) clearInterval(tickerIntervalId);
   });
 }

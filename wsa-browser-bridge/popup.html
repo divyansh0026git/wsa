@@ -239,33 +239,168 @@
       text-overflow: ellipsis;
     }
 
-    .sync-btn {
-      width: 100%;
-      height: 36px;
-      border: none;
-      border-radius: 8px;
-      background: var(--accent);
-      color: #111214;
-      font-size: 13px;
+    .autosync-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+
+    .autosync-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .autosync-title-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .autosync-title {
+      font-size: 12.5px;
       font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+
+    .autosync-sub {
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 36px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
       cursor: pointer;
-      transition: background-color 120ms ease, opacity 120ms ease;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: var(--surface-step);
+      border: 1px solid var(--border-strong);
+      transition: background-color 180ms ease, border-color 180ms ease;
+      border-radius: 20px;
     }
 
-    .sync-btn:hover:not(:disabled) {
-      background: var(--accent-hover);
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 2px;
+      bottom: 2px;
+      background-color: var(--text-muted);
+      transition: transform 180ms ease, background-color 180ms ease;
+      border-radius: 50%;
     }
 
-    .sync-btn:active:not(:disabled) {
-      background: var(--accent-active);
+    input:checked + .slider {
+      background-color: var(--ok);
+      border-color: var(--ok);
     }
 
-    .sync-btn:focus-visible {
-      outline: 2px solid var(--text);
-      outline-offset: 2px;
+    input:checked + .slider:before {
+      transform: translateX(16px);
+      background-color: #111214;
     }
 
-    .sync-btn:disabled {
+    .autosync-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+    }
+
+    .autosync-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .autosync-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10.5px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .autosync-badge.ok {
+      color: var(--ok);
+      background: rgba(91, 185, 116, 0.12);
+    }
+
+    .autosync-badge.warn {
+      color: var(--warn);
+      background: rgba(224, 168, 75, 0.12);
+    }
+
+    .autosync-badge.paused {
+      color: var(--text-muted);
+      background: var(--surface-step);
+    }
+
+    .pulse-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .autosync-badge.ok .pulse-dot {
+      box-shadow: 0 0 6px var(--ok);
+    }
+
+    .sync-action-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .sync-btn-secondary {
+      width: 100%;
+      height: 32px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+
+    .sync-btn-secondary:hover:not(:disabled) {
+      background: var(--surface-step);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .sync-btn-secondary:disabled {
       opacity: 0.6;
       cursor: default;
     }
@@ -385,7 +520,41 @@
     </div>
   </section>
 
-  <button type="button" class="sync-btn" id="syncBtn">Sync</button>
+  <section class="autosync-card" aria-label="Auto-sync mode status">
+    <div class="autosync-header">
+      <div class="autosync-title-wrap">
+        <span class="autosync-title">Auto-Sync Mode</span>
+        <span class="autosync-sub" id="autoSyncSub">Continuous background sync</span>
+      </div>
+      <label class="switch" title="Toggle Auto-Sync Mode">
+        <input type="checkbox" id="autoSyncToggle" checked />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="autosync-meta">
+      <div class="autosync-meta-item">
+        <span class="meta-label">Status</span>
+        <span class="autosync-badge ok" id="autoSyncBadge">
+          <span class="pulse-dot"></span>
+          <span id="autoSyncStatusText">Active</span>
+        </span>
+      </div>
+      <div class="autosync-meta-item">
+        <span class="meta-label">Last sync</span>
+        <span class="meta-val" id="autoSyncTime">Just now</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="sync-action-row">
+    <button type="button" class="sync-btn-secondary" id="syncBtn" title="Force an immediate background re-sync">
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+        <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+        <path d="M8 0v4l3-2-3-2z"/>
+      </svg>
+      <span id="syncBtnText">Force Sync Now</span>
+    </button>
+  </div>
   <div class="output" id="output" aria-live="polite"></div>
   <footer class="footer">Engineered by Divyansh Saraf</footer>
 

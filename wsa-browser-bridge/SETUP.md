@@ -10,9 +10,10 @@ MV3 browser bridge connecting your open **Brave** or **Chrome** tabs (ChatGPT, C
 2. Enable **Developer mode**
 3. Click **Load unpacked** and select `wsa-browser-bridge`
 4. Open `https://chatgpt.com`, `https://claude.ai`, `https://gemini.google.com/app`, `https://chat.deepseek.com`, or `https://venice.ai`, sign in, and pick your exact model & thinking mode directly inside the website UI
-5. Open the **WSA** extension popup and click **Sync**
+5. Open the **WSA** extension popup — **Auto-Sync Mode** is active by default and automatically synchronizes open tabs, models, and cookies with WSA continuously in the background. A "Force Sync Now" button is available as a manual fallback.
 
-The popup auto-detects and displays:
+The popup auto-detects and displays in real time:
+- **Auto-Sync Mode**: Live background status, toggle switch, and dynamic last-synced timestamp
 - **Browser**: Brave or Chrome
 - **Website**: `chatgpt.com`, `claude.ai`, `gemini.google.com`, `chat.deepseek.com`, or `venice.ai`
 - **Account**: Signed-in email / account

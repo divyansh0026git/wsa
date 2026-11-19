@@ -917,40 +917,43 @@ function ensureFastPollLoop() {
 // Start polling & alarms immediately on service worker load (respecting user pause)
 if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
   chrome.alarms.create("dom-relay-poll", { periodInMinutes: 0.5 });
-  chrome.alarms.create("cookie-auto-sync", { periodInMinutes: 5 });
+  chrome.alarms.create("cookie-auto-sync", { periodInMinutes: 1.0 });
   getRelayActive().then(async (active) => {
     if (!active) return;
     await restoreActiveRelayJob();
     ensureFastPollLoop();
   }).catch(() => {});
-  setTimeout(() => { autoSyncCookiesToLocalServer().catch(() => {}); }, 1500);
+  setTimeout(() => {
+    scheduleAutoSync({ reason: "service_worker_init", delayMs: 1200 });
+  }, 1200);
 
   chrome.runtime.onInstalled.addListener(() => {
     chrome.alarms.create("dom-relay-poll", { periodInMinutes: 0.5 });
-    chrome.alarms.create("cookie-auto-sync", { periodInMinutes: 5 });
+    chrome.alarms.create("cookie-auto-sync", { periodInMinutes: 1.0 });
     getRelayActive().then(async (active) => {
       if (!active) return;
       await restoreActiveRelayJob();
       ensureFastPollLoop();
     }).catch(() => {});
-    autoSyncCookiesToLocalServer().catch(() => {});
+    scheduleAutoSync({ reason: "installed", delayMs: 800 });
   });
 
   if (chrome.runtime.onStartup) {
     chrome.runtime.onStartup.addListener(() => {
       chrome.alarms.create("dom-relay-poll", { periodInMinutes: 0.5 });
-      chrome.alarms.create("cookie-auto-sync", { periodInMinutes: 5 });
+      chrome.alarms.create("cookie-auto-sync", { periodInMinutes: 1.0 });
       getRelayActive().then(async (active) => {
         if (!active) return;
         await restoreActiveRelayJob();
         ensureFastPollLoop();
       }).catch(() => {});
+      scheduleAutoSync({ reason: "startup", delayMs: 800 });
     });
   }
 
   chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === "cookie-auto-sync") {
-      await autoSyncCookiesToLocalServer().catch(() => {});
+    if (alarm.name === "cookie-auto-sync" || alarm.name === "auto-sync-poll") {
+      await autoSyncRelayAndCookies().catch(() => {});
       return;
     }
     if (alarm.name === "dom-relay-poll") {
@@ -977,13 +980,52 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
       if (isAiUrl && tab.autoDiscardable !== false) {
         chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
       }
-      if (changeInfo.status === "complete" && isAiUrl) {
+      if (isAiUrl && (changeInfo.status === "complete" || changeInfo.url)) {
         getRelayActive().then(async (active) => {
           if (!active) return;
           await restoreActiveRelayJob();
           ensureFastPollLoop();
         }).catch(() => {});
+        scheduleAutoSync({ reason: "tab_updated", delayMs: 1000 });
       }
+    });
+  }
+
+  if (chrome.tabs?.onActivated) {
+    chrome.tabs.onActivated.addListener((activeInfo) => {
+      try {
+        if (chrome.tabs?.get) {
+          chrome.tabs.get(activeInfo.tabId).then((tab) => {
+            if (tab?.url && detectTabProvider(tab.url)) {
+              scheduleAutoSync({ reason: "tab_activated", delayMs: 800 });
+            }
+          }).catch(() => {});
+        }
+      } catch { /* ignore */ }
+    });
+  }
+
+  if (chrome.tabs?.onRemoved) {
+    chrome.tabs.onRemoved.addListener(() => {
+      scheduleAutoSync({ reason: "tab_removed", delayMs: 1200 });
+    });
+  }
+
+  if (chrome.cookies?.onChanged) {
+    chrome.cookies.onChanged.addListener((changeInfo) => {
+      try {
+        const d = (changeInfo?.cookie?.domain || "").replace(/^\./, "").toLowerCase();
+        const isAiAuthDomain =
+          d === "google.com" || d.endsWith(".google.com") ||
+          d === "claude.ai" || d.endsWith(".claude.ai") ||
+          d === "chatgpt.com" || d.endsWith(".chatgpt.com") ||
+          d === "openai.com" || d.endsWith(".openai.com") ||
+          d === "deepseek.com" || d.endsWith(".deepseek.com") ||
+          d === "venice.ai" || d.endsWith(".venice.ai");
+        if (isAiAuthDomain) {
+          scheduleAutoSync({ reason: "cookie_changed", delayMs: 1500 });
+        }
+      } catch { /* ignore */ }
     });
   }
 
@@ -1090,18 +1132,173 @@ async function collectAuthBundle(options = {}) {
   };
 }
 
-async function autoSyncCookiesToLocalServer() {
-  const bundle = await collectAuthBundle({ allowWithoutTab: true, allowSyncOnly: true });
-  if (!bundle.ok) return;
-  if (!bundle.payload.sapisid && !bundle.snapshot?.hasAnyAiTab) {
+// ── Auto-Sync Engine ──────────────────────────────────────────────────────────
+
+let autoSyncTimer = null;
+let autoSyncInFlight = false;
+let autoSyncPending = false;
+let lastAutoSyncAt = 0;
+let lastAutoSyncStatus = { ok: false, time: 0, error: "" };
+
+async function getAutoSyncEnabled() {
+  try {
+    const r = await chrome.storage.local.get(["autoSyncEnabled"]);
+    return r.autoSyncEnabled !== false;
+  } catch {
+    return true;
+  }
+}
+
+async function setAutoSyncEnabled(val) {
+  try {
+    await chrome.storage.local.set({ autoSyncEnabled: Boolean(val) });
+  } catch { /* ignore */ }
+  if (val) {
+    scheduleAutoSync({ reason: "user_enabled", immediate: true });
+  }
+}
+
+function scheduleAutoSync(opts = {}) {
+  const { reason = "", delayMs = 1200, immediate = false, forceProbe = false } = opts;
+  if (autoSyncTimer) {
+    clearTimeout(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+  if (immediate) {
+    autoSyncRelayAndCookies({ forceProbe, reason }).catch(() => {});
     return;
   }
-  await fetch(`${LOCAL_API}/sync-cookies`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(bundle.payload),
-    signal: AbortSignal.timeout(3000),
-  }).catch(() => {});
+  autoSyncTimer = setTimeout(() => {
+    autoSyncTimer = null;
+    autoSyncRelayAndCookies({ forceProbe, reason }).catch(() => {});
+  }, Math.max(80, delayMs));
+}
+
+async function autoSyncRelayAndCookies(options = {}) {
+  const enabled = await getAutoSyncEnabled();
+  if (!enabled && !options.force) {
+    return { ok: false, skipped: true, reason: "auto-sync disabled" };
+  }
+
+  if (autoSyncInFlight) {
+    autoSyncPending = true;
+    return { ok: false, pending: true };
+  }
+
+  autoSyncInFlight = true;
+  try {
+    const explicitBrowser = normalizeBrowserHint(options.explicitBrowser);
+    if (explicitBrowser) {
+      await chrome.storage.local.set({ detectedBrowser: explicitBrowser }).catch(() => {});
+    }
+
+    const bundle = await collectAuthBundle({
+      forceProbe: Boolean(options.forceProbe),
+      allowWithoutTab: true,
+      allowSyncOnly: true,
+      explicitBrowser,
+    });
+
+    if (!bundle.ok) {
+      lastAutoSyncStatus = { ok: false, time: Date.now(), error: bundle.error || "Failed to inspect auth" };
+      await chrome.storage.local.set({ lastAutoSync: lastAutoSyncStatus }).catch(() => {});
+      return { ok: false, error: bundle.error };
+    }
+
+    const snap = bundle.snapshot;
+    if (!bundle.payload.sapisid && !snap.hasAnyAiTab) {
+      lastAutoSyncStatus = { ok: true, standby: true, time: Date.now(), message: "Standby: No AI tabs open" };
+      await chrome.storage.local.set({ lastAutoSync: lastAutoSyncStatus }).catch(() => {});
+      return { ok: true, standby: true, snapshot: snap };
+    }
+
+    // 1. Sync cookies to local WSA server
+    const sr = await fetch(`${LOCAL_API}/sync-cookies`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bundle.payload),
+      signal: AbortSignal.timeout(3500),
+    }).catch(() => null);
+
+    const serverOnline = Boolean(sr && sr.ok);
+
+    // 2. Select / bind relay with detected provider tabs
+    let boundOk = false;
+    if (serverOnline) {
+      const br = await fetch(`${LOCAL_API}/relay/select`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: snap.ident.clientId,
+          browser: snap.ident.browser,
+          label: snap.ident.label,
+          auth_user: snap.authUser || "0",
+          email: snap.accountEmail || "",
+          site: snap.site || "",
+          provider: snap.provider || "",
+          model_badge: snap.modelBadge || "",
+          providers: snap.providers,
+        }),
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => null);
+
+      const bjson = br ? await br.json().catch(() => null) : null;
+      if (bjson?.ok) {
+        boundOk = true;
+        serverBinding = {
+          isActive: true,
+          activeRelayLabel: bjson.active_relay_label || snap.ident.label,
+          activeRelayId: bjson.active_relay_id || snap.ident.clientId,
+          updatedAt: Date.now(),
+        };
+        await chrome.storage.local.set({ wasBoundRelay: true }).catch(() => {});
+      }
+
+      if (injecting || (await getStoredActiveJob())) {
+        await sendBusyHeartbeat(null, { triggerRelay: false }).catch(() => {});
+      }
+      await checkAndRelay().catch(() => {});
+    }
+
+    lastAutoSyncAt = Date.now();
+    lastAutoSyncStatus = {
+      ok: serverOnline,
+      time: lastAutoSyncAt,
+      serverOnline,
+      bound: boundOk,
+      browser: snap.ident.browser,
+      activeSite: snap.site || "",
+      provider: snap.provider || "",
+      providers: snap.providers,
+      error: serverOnline ? "" : "WSA local server offline",
+    };
+
+    await chrome.storage.local.set({
+      lastAutoSync: lastAutoSyncStatus,
+      lastAutoSyncAt,
+    }).catch(() => {});
+
+    return {
+      ok: true,
+      serverOnline,
+      bound: boundOk,
+      snapshot: snap,
+    };
+  } catch (err) {
+    lastAutoSyncStatus = { ok: false, time: Date.now(), error: err?.message || "Sync error" };
+    await chrome.storage.local.set({ lastAutoSync: lastAutoSyncStatus }).catch(() => {});
+    return { ok: false, error: err?.message };
+  } finally {
+    autoSyncInFlight = false;
+    if (autoSyncPending) {
+      autoSyncPending = false;
+      scheduleAutoSync({ reason: "pending_catchup", delayMs: 1000 });
+    }
+  }
+}
+
+async function autoSyncCookiesToLocalServer() {
+  return await autoSyncRelayAndCookies();
 }
 
 // ── Core Relay Logic ──────────────────────────────────────────────────────────
@@ -2621,64 +2818,44 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
     return true;
   }
 
+  if (msg.type === "SET_AUTOSYNC") {
+    (async () => {
+      await setAutoSyncEnabled(Boolean(msg.enabled));
+      sendResponse({ ok: true, autoSyncEnabled: Boolean(msg.enabled) });
+    })().catch(err => sendResponse({ ok: false, error: err?.message }));
+    return true;
+  }
+
   if (msg.type === "SYNC_NOW") {
     (async () => {
       const explicitBrowser = typeof msg.isBrave === "boolean" ? normalizeBrowserHint(msg.isBrave) : "";
       if (explicitBrowser) {
-        await chrome.storage.local.set({ detectedBrowser: explicitBrowser });
+        await chrome.storage.local.set({ detectedBrowser: explicitBrowser }).catch(() => {});
       }
       await setRelayActive(true, true);
-      const bundle = await collectAuthBundle({ forceProbe: true, allowWithoutTab: true, allowSyncOnly: true, explicitBrowser });
-      if (!bundle.ok) {
-        sendResponse({ ok: false, error: bundle.error });
-        return;
-      }
-      const snap = bundle.snapshot;
-      if (!bundle.payload.sapisid && !snap.hasAnyAiTab) {
-        sendResponse({ ok: false, error: "Open claude.ai, chat.deepseek.com, gemini.google.com, or chatgpt.com first" });
-        return;
-      }
-      const sr = await fetch(`${LOCAL_API}/sync-cookies`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(bundle.payload),
-        signal: AbortSignal.timeout(3500),
-      }).catch(() => null);
-      if (!sr || !sr.ok) {
-        sendResponse({ ok: false, error: "WSA local server is offline (start wsa first)" });
+      const res = await autoSyncRelayAndCookies({
+        force: true,
+        forceProbe: true,
+        explicitBrowser,
+      });
+
+      if (!res.ok && res.error) {
+        sendResponse({ ok: false, error: res.error });
         return;
       }
 
-      const br = await fetch(`${LOCAL_API}/relay/select`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_id: snap.ident.clientId,
-          browser: snap.ident.browser,
-          label: snap.ident.label,
-          auth_user: snap.authUser || "0",
-          email: snap.accountEmail || "",
-          site: snap.site || "",
-          provider: snap.provider || "",
-          model_badge: snap.modelBadge || "",
-          providers: snap.providers,
-        }),
-        signal: AbortSignal.timeout(3000),
-      }).catch(() => null);
-      const bjson = br ? await br.json().catch(() => null) : null;
-      if (bjson?.ok) {
-        serverBinding = {
-          isActive: true,
-          activeRelayLabel: bjson.active_relay_label || snap.ident.label,
-          activeRelayId: bjson.active_relay_id || snap.ident.clientId,
-          updatedAt: Date.now(),
-        };
-        await chrome.storage.local.set({ wasBoundRelay: true });
+      const snap = res.snapshot || (await scanOpenSiteStates({ forceProbe: true, explicitBrowser }));
+      if (!snap.hasAnyAiTab && !res.snapshot?.payload?.sapisid && !snap.hasGeminiTab) {
+        sendResponse({ ok: false, error: "Open claude.ai, chat.deepseek.com, gemini.google.com, or chatgpt.com first" });
+        return;
       }
-      if (injecting || (await getStoredActiveJob())) {
-        await sendBusyHeartbeat(null, { triggerRelay: false }).catch(() => {});
-      }
-      await checkAndRelay().catch(() => {});
+
+      const autoSyncMeta = {
+        enabled: await getAutoSyncEnabled(),
+        lastSyncAt: lastAutoSyncAt,
+        lastStatus: lastAutoSyncStatus,
+      };
+
       sendResponse({
         ok: true,
         browser: snap.ident.browser,
@@ -2687,10 +2864,11 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
         accountEmail: snap.accountEmail || "",
         modelBadge: snap.modelBadge || "",
         providers: snap.providers,
+        autoSync: autoSyncMeta,
         status: {
           relayActive: true,
           injecting,
-          serverReachable: true,
+          serverReachable: res.serverOnline !== false,
           authReady: Boolean(snap.xsrfToken || snap.hasClaudeTab || snap.hasDeepseekTab || snap.hasChatgptTab || snap.hasVeniceTab),
           hasGeminiBl: Boolean(snap.geminiBl),
           clientId: snap.ident.clientId,
@@ -2710,6 +2888,7 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
           hasVeniceTab: snap.hasVeniceTab,
           tabCount: snap.tabCount,
           serverBinding,
+          autoSync: autoSyncMeta,
         },
       });
     })().catch(err => sendResponse({ ok: false, error: err?.message || "Sync failed" }));
@@ -2744,10 +2923,18 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.id) {
         serverReachable = false;
       }
 
+      const autoSyncMeta = {
+        enabled: await getAutoSyncEnabled(),
+        lastSyncAt: lastAutoSyncAt,
+        lastStatus: lastAutoSyncStatus,
+        inFlight: autoSyncInFlight,
+      };
+
       sendResponse({
         relayActive: active,
         injecting,
         serverReachable,
+        autoSync: autoSyncMeta,
         authReady: Boolean(snap.xsrfToken || snap.hasClaudeTab || snap.hasDeepseekTab || snap.hasChatgptTab || snap.hasVeniceTab),
         hasGeminiBl: Boolean(snap.geminiBl),
         clientId: snap.ident.clientId,
