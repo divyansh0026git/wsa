@@ -3617,6 +3617,14 @@ function _domInstallPageRuntimeFn() {
     const probePrefix = expNorm.slice(0, 24).trim();
     const probeTail = expNorm.slice(-24).trim();
     const hasExpectedText = () => {
+      const composerScope = (typeof inputEl.closest === "function" && inputEl.closest("form, [class*='composer' i], fieldset, [data-testid*='composer' i], [class*='input-area' i]")) || (inputEl.parentElement && inputEl.parentElement.parentElement) || document;
+      const hasAttachmentChip = Boolean(
+        composerScope?.querySelector?.(
+          "[data-testid*='attachment'], [class*='attachment'], [aria-label*='pasted' i], [aria-label*='Attachment' i], [data-testid*='file' i], uploader-file-preview, gem-media-attachment, .pasted-text, [data-testid='file-attachment']"
+        ) || inputEl?.querySelector?.("[data-testid*='attachment'], [class*='attachment'], [aria-label*='pasted' i], .pasted-text")
+      );
+      if (hasAttachmentChip && isLongText) return true;
+
       const curRaw = String(inputEl.innerText || inputEl.textContent || "").trim();
       const curNorm = normalizeCompareText(curRaw);
       if (!expNorm) return Boolean(curNorm) || cleanText.length === 0;
@@ -7386,6 +7394,14 @@ function _installWsaDomUtilsFn() {
     const probePrefix = expNorm.slice(0, 24).trim();
     const probeTail = expNorm.slice(-24).trim();
     const hasExpectedText = () => {
+      const composerScope = (typeof editorEl.closest === "function" && editorEl.closest("form, [class*='composer' i], fieldset, [data-testid*='composer' i], [class*='input-area' i]")) || (editorEl.parentElement && editorEl.parentElement.parentElement) || document;
+      const hasAttachmentChip = Boolean(
+        composerScope?.querySelector?.(
+          "[data-testid*='attachment'], [class*='attachment'], [aria-label*='pasted' i], [aria-label*='Attachment' i], [data-testid*='file' i], uploader-file-preview, gem-media-attachment, .pasted-text, [data-testid='file-attachment']"
+        ) || editorEl?.querySelector?.("[data-testid*='attachment'], [class*='attachment'], [aria-label*='pasted' i], .pasted-text")
+      );
+      if (hasAttachmentChip && isLongText) return true;
+
       const curRaw = String(editorEl.innerText || editorEl.textContent || "").trim();
       const curNorm = normalizeCompareText(curRaw);
       if (!expNorm) return Boolean(curNorm) || cleanText.length === 0;

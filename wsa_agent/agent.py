@@ -276,7 +276,7 @@ def _compact_historical_slice(
                     content,
                     head_n=head_n,
                     tail_n=tail_n,
-                    call_hint=f"Call {t_name} again if needed",
+                    call_hint="",
                 )
                 compacted += 1
         elif m.get("role") == "assistant" and m.get("tool_calls"):
@@ -2847,17 +2847,14 @@ def execute_agent_loop(
                 and pending_new_chat_override is not True
                 and not getattr(state, "_force_new_chat_next", False)
             )
-            if (is_delta_continuation or bool(effective_chat_url)) and active_budget < MAX_WEB_PROMPT_CHARS:
-                delta_budget = min(active_budget, 8_200)
-            else:
-                delta_budget = active_budget
+            delta_budget = active_budget
             compacted_n = _compact_messages_for_web_limit(
                 messages,
                 max_chars=delta_budget,
                 delta_mode=is_delta_continuation,
             )
             if active_budget < MAX_WEB_PROMPT_CHARS:
-                compacted_n += _trim_oversized_user_messages(messages, min(delta_budget, 7_600))
+                compacted_n += _trim_oversized_user_messages(messages, delta_budget)
             if compacted_n and not quiet_ui:
                 R.print_info(
                     f"Auto-compacted {compacted_n} tool output(s) to stay within "

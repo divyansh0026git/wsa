@@ -732,7 +732,7 @@ def test_composer_unsubmitted_trims_oversized_user_handoff_message(tmp_path):
 
     assert res["ok"] is True
     assert seen_new_chat == [None, None, True]
-    assert seen_user_lens[0] <= 8_000
+    assert seen_user_lens[0] <= agent.CHATGPT_WEB_PROMPT_CHARS
     assert seen_user_lens[1] < seen_user_lens[0]
     assert seen_user_lens[1] < 7_500
     assert seen_user_lens[2] <= 5_000
