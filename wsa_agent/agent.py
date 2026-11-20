@@ -1214,7 +1214,19 @@ def _sanitize_assistant_tool_prose(content: Optional[str], has_tool_calls: bool)
     cleaned = re.sub(r"(?:\r?\n)?[ \t]*_\s*[\]\*]+\s*$", "", cleaned).strip()
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     if not has_tool_calls:
-        return re.sub(r"(?im)^[ \t]*(?:(?:tool[_-]?calls?|function[_-]?calls?)[ \t]*)+(?:\r?\n|$)", "", cleaned).strip()
+        cleaned = re.sub(r"(?im)^[ \t]*(?:(?:tool[_-]?calls?|function[_-]?calls?)[ \t]*)+(?:\r?\n|$)", "", cleaned).strip()
+        m = re.match(r"^(`{3,}|~{3,})[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n\1$", cleaned)
+        if m:
+            candidate = m.group(2).strip()
+            if re.search(r"(?:^|\n)[ \t]*#{1,6}\s", candidate) or re.search(r"(?:^|\n)[ \t]*\*\s+\*\*", candidate):
+                cleaned = candidate
+        cleaned = re.sub(
+            r'^\s*\{\s*"name"\s*:\s*"[A-Za-z0-9_.-]+"\s*,\s*"?([A-Z][\s\S]*)$',
+            r'\1',
+            cleaned,
+        )
+        cleaned = re.sub(r'"\s*(?=\r?\n[ \t]*#{1,6}\s)', '', cleaned)
+        return cleaned.strip()
 
     non_tool_prose = re.sub(
         r"(?:`{3,}|~{3,})[ \t]*(?:tool[_-]?calls?|function[_-]?calls?)\b[\s\S]*?(?:`{3,}|~{3,})",

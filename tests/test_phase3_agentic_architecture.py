@@ -330,6 +330,32 @@ class TestWorkstream1ServerAndBridgeHardening(unittest.TestCase):
         plain = f'A\n{fence}json\n{{"k": 1}}\n{fence}\nB'
         self.assertEqual(renderer._strip_internal_tags(plain), plain)
 
+    def test_strip_internal_tags_preserves_accidental_fence_wrapping_markdown(self):
+        from wsa_agent import renderer
+        from wsa_agent.agent import _sanitize_assistant_tool_prose
+
+        raw = (
+            "```\n"
+            '{"name": "glob_files", "I hit the tool-call limit for this turn while completing the inspection, so no new patches were written yet.\n\n'
+            "### 1. Build & Port State (Observed)\n"
+            "* **Port 5174 is down:** 'GET http://127.0.0.1:5174/' returned WinError 10061\n\n"
+            "### 2. Art Director Critique\n"
+            "* Solar Luminosity: Photosphere is crisp.\n\n"
+            "Reply with 'continue'\n"
+            "```"
+        )
+        cleaned_renderer = renderer._strip_internal_tags(raw, streaming=False)
+        self.assertNotIn('{"name": "glob_files"', cleaned_renderer)
+        self.assertIn("### 1. Build & Port State (Observed)", cleaned_renderer)
+        self.assertIn("### 2. Art Director Critique", cleaned_renderer)
+        self.assertIn("Reply with 'continue'", cleaned_renderer)
+        self.assertFalse(cleaned_renderer.startswith("```"))
+
+        cleaned_agent = _sanitize_assistant_tool_prose(raw, has_tool_calls=False)
+        self.assertNotIn('{"name": "glob_files"', cleaned_agent)
+        self.assertIn("### 1. Build & Port State (Observed)", cleaned_agent)
+        self.assertIn("### 2. Art Director Critique", cleaned_agent)
+
     def test_sanitize_assistant_prose_strips_dom_bleed_and_premature_report(self):
         from wsa_agent.agent import _sanitize_assistant_tool_prose
         from wsa_server.multimodal import _sanitize_assistant_relay_prose

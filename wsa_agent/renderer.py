@@ -412,7 +412,29 @@ def _looks_like_tool_json_body(body: str, unclosed: bool = False) -> bool:
     return False
 
 
-def _strip_leaked_tool_json(text: str) -> str:
+def _clean_aborted_tool_prose(text: str) -> str:
+    """Unwrap whole-response code blocks and strip aborted tool-call prefixes when the payload is rich markdown."""
+    if not text:
+        return ""
+    s = text.strip()
+    m = re.match(r"^(`{3,}|~{3,})[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n\1$", s)
+    if m:
+        candidate = m.group(2).strip()
+        if re.search(r"(?:^|\n)[ \t]*#{1,6}\s", candidate) or re.search(r"(?:^|\n)[ \t]*\*\s+\*\*", candidate):
+            s = candidate
+
+    s = re.sub(
+        r'^\s*\{\s*"name"\s*:\s*"[A-Za-z0-9_.-]+"\s*,\s*"?([A-Z][\s\S]*)$',
+        r'\1',
+        s,
+    )
+    s = re.sub(r'"\s*(?=\r?\n[ \t]*#{1,6}\s)', '', s)
+    if re.match(r"^`{1,3}\s*$", s):
+        return ""
+    return s
+
+
+def _strip_leaked_tool_json(text: str, streaming: bool = False) -> str:
     """Remove leaked tool-call JSON fences, Code snippet wrappers, or bare tool objects."""
     if not text:
         return ""
@@ -422,7 +444,7 @@ def _strip_leaked_tool_json(text: str) -> str:
         body = m.group("body")
         ticks = m.group("ticks")
         closed = bool(re.search(rf"{re.escape(ticks)}(?:[\u200b\u200c\u200d\ufeff \t]*_\])?[ \t]*(?:\r?\n|$)", full[m.start("body") - m.start():]))
-        return "" if _looks_like_tool_json_body(body, unclosed=not closed) else full
+        return "" if _looks_like_tool_json_body(body, unclosed=(streaming and not closed)) else full
 
     cleaned = _GENERIC_JSON_FENCE_RE.sub(_repl_fence, text)
 
@@ -471,10 +493,11 @@ def _strip_leaked_tool_json(text: str) -> str:
             if _looks_like_tool_json_body(candidate, unclosed=False):
                 out.append(cleaned[pos:start])
                 pos = end_pos
-        elif stack and _looks_like_tool_json_body(tail, unclosed=True):
-            out.append(cleaned[pos:start])
-            pos = len(cleaned)
-            break
+        elif streaming and stack and _looks_like_tool_json_body(tail, unclosed=True):
+            if not re.search(r"\n[ \t]*#{1,6}\s", tail) and len(tail) < 1500:
+                out.append(cleaned[pos:start])
+                pos = len(cleaned)
+                break
     if pos:
         out.append(cleaned[pos:])
         cleaned = "".join(out)
@@ -697,14 +720,17 @@ def _strip_internal_tags(text: str, streaming: bool = False) -> str:
     """Strip internal XML/protocol tool-call and think tags before rendering Markdown."""
     if not text:
         return ""
-    cleaned = _strip_xml_tags_outside_code(text, streaming=streaming)
+    cleaned = _clean_aborted_tool_prose(text)
+    cleaned = _strip_xml_tags_outside_code(cleaned, streaming=streaming)
     cleaned = _LIVE_TOOL_FENCE_RE.sub("", cleaned)
     if streaming and not _ends_inside_non_tool_fence(cleaned):
         cleaned = _STREAM_PARTIAL_TOOL_FENCE_RE.sub("", cleaned)
     cleaned = _map_outside_code(cleaned, lambda seg: _GLUED_TOOL_HEADER_BEFORE_JSON_RE.sub("", seg))
-    cleaned = _strip_leaked_tool_json(cleaned)
+    cleaned = _strip_leaked_tool_json(cleaned, streaming=streaming)
     cleaned = _map_outside_code(cleaned, lambda seg: _ORPHAN_TOOL_HEADER_LINE_RE.sub("", seg))
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if re.match(r"^[ \t]*(`{1,3}|~{1,3})[ \t]*$", cleaned.strip()):
+        return ""
     return cleaned.strip()
 
 

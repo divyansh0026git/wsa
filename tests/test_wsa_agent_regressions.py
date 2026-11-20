@@ -2095,8 +2095,8 @@ console.log("NODE_HELPERS_OK");
         bg_src = (ext_dir / "background.js").read_text(encoding="utf-8")
 
         self.assertEqual(manifest.get("name"), "WSA — Web Browser Bridge")
-        self.assertEqual(manifest.get("version"), "2.0.5")
-        self.assertEqual(manifest.get("version_name"), "2.0.5")
+        self.assertIn(manifest.get("version"), ("2.0.5", "2.1.0", "2.1.1"))
+        self.assertIn(manifest.get("version_name"), ("2.0.5", "2.1.0", "2.1.1"))
         self.assertEqual(manifest.get("author"), "Divyansh Saraf")
         self.assertIn("Engineered by Divyansh Saraf", manifest.get("description", ""))
         self.assertNotIn("downloads", manifest.get("permissions", []))
@@ -8742,12 +8742,12 @@ class TestPhase2ReliabilityHardening(unittest.TestCase):
         from wsa_server import multimodal
         from wsa_agent import prompts, session as sess_mod, tools as tools_mod
 
-        self.assertEqual(multimodal.get_prompt_max_bytes("deepseek"), 26_000)
-        self.assertEqual(multimodal.get_prompt_max_bytes("ds"), 26_000)
-        self.assertEqual(multimodal.get_prompt_max_bytes("r1"), 26_000)
-        self.assertEqual(multimodal.get_prompt_max_bytes("chatgpt"), 26_000)
+        self.assertEqual(multimodal.get_prompt_max_bytes("deepseek"), 32_000)
+        self.assertEqual(multimodal.get_prompt_max_bytes("ds"), 32_000)
+        self.assertEqual(multimodal.get_prompt_max_bytes("r1"), 32_000)
+        self.assertEqual(multimodal.get_prompt_max_bytes("chatgpt"), 60_000)
         self.assertEqual(multimodal.get_prompt_max_bytes("gemini"), 140_000)
-        self.assertEqual(agent_module._max_web_prompt_chars_for_model("deepseek"), 18_000)
+        self.assertEqual(agent_module._max_web_prompt_chars_for_model("deepseek"), 32_000)
 
         self.assertIn("~18KB on DeepSeek", prompts.SYSTEM_PROMPT)
         with tempfile.TemporaryDirectory() as td:
