@@ -461,3 +461,119 @@ def test_judge_workflow_falls_back_cleanly_on_safeguard_pause(tmp_path):
     failing_client.stream.side_effect = ConnectionError("API error: [SAFEGUARD_PAUSED] Claude: safeguards flagged this message")
     dec = agent._judge_workflow("some ambiguous request", state, failing_client, fallback)
     assert dec is fallback
+
+
+def test_parse_workflow_decision_robustly_handles_all_web_agent_formats():
+    """_parse_workflow_decision must handle inline backticks, smart quotes, fenced blocks, trailing periods, <think> tags, and em-dashes."""
+    from wsa_agent.agent import _parse_workflow_decision
+
+    # 1. Exact Claude response from user screenshot (clean JSON with em-dash)
+    claude_ss = (
+        '{"mode":"orchestrate","reason":"Integrating a new third-party repo (colibri) into existing codebase '
+        'needs recon of its structure/deps, ordered setup (clone, install, config, model/GPU wiring), '
+        'and verification \u2014 not a trivial isolated edit","skills":["context7-docs","karpathy-skills",'
+        '"verification-before-completion"],"security_pass":false}'
+    )
+    res = _parse_workflow_decision(claude_ss)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+    assert "verification-before-completion" in res["skills"]
+    assert res["security_pass"] is False
+
+    # 2. Claude inline code formatting (`{...}`)
+    inline_code = f"`{claude_ss}`"
+    res = _parse_workflow_decision(inline_code)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 3. Triple backticks with json language tag
+    fenced = f"```json\n{claude_ss}\n```"
+    res = _parse_workflow_decision(fenced)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 4. Leading and trailing prose around code block
+    wrapped_prose = f"Choosing the scope and skills for the repo setup:\n\n```json\n{claude_ss}\n```\nHope this helps!"
+    res = _parse_workflow_decision(wrapped_prose)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 5. Trailing period (common model error when following prompt ending with dot)
+    with_period = f"{claude_ss}."
+    res = _parse_workflow_decision(with_period)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 6. Smart / typographic quotes
+    smart_quotes = '{\u201cmode\u201d:\u201corchestrate\u201d,\u201creason\u201d:\u201cIntegrate repo\u201d,\u201cskills\u201d:[\u201ccontext7-docs\u201d]}'
+    res = _parse_workflow_decision(smart_quotes)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 7. Trailing commas before closing braces
+    trailing_comma = '{"mode": "orchestrate", "reason": "Setup model", "skills": ["context7-docs",], "security_pass": false,}'
+    res = _parse_workflow_decision(trailing_comma)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 8. <think> tag prefix (DeepSeek R1 / Venice)
+    think_prefix = f"<think>We need to integrate colibri and wire GPU compute.</think>\n{claude_ss}"
+    res = _parse_workflow_decision(think_prefix)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 9. Prose containing embedded JSON
+    embedded_prose = f"Based on our routing check: {claude_ss} Let's proceed."
+    res = _parse_workflow_decision(embedded_prose)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+
+    # 10. Malformed JSON with regex recovery
+    broken_json = '{"mode": "orchestrate", "reason": "Integrating colibri repo into codebase", "skills": ["context7-docs"]'
+    res = _parse_workflow_decision(broken_json)
+    assert res is not None
+    assert res["mode"] == "orchestrate"
+    assert res["skills"] == ["context7-docs"]
+
+
+def test_judge_workflow_extracts_orchestrator_decision_from_claude_response(tmp_path):
+    """_judge_workflow must successfully parse Claude's response when wrapped in inline backticks or thinking."""
+    from wsa_agent import agent
+
+    claude_payload = (
+        '`{"mode":"orchestrate","reason":"Integrating a new third-party repo (colibri) into existing codebase '
+        'needs recon of its structure/deps, ordered setup (clone, install, config, model/GPU wiring), '
+        'and verification \u2014 not a trivial isolated edit","skills":["context7-docs","karpathy-skills",'
+        '"verification-before-completion"],"security_pass":false}`'
+    )
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    fallback = {"mode": "direct", "reasons": ["fallback"]}
+    mock_client = Mock()
+    mock_client.stream.return_value = {
+        "content": claude_payload,
+        "thinking": "Choosing the scope and skills for the repo setup",
+        "upstream_model": {"chat_url": "https://claude.ai/chat/79a6d6ec-bca1-4a84-9633-dd0628118e5d"},
+    }
+
+    decision = agent._judge_workflow("setup colibri in my codebase", state, mock_client, fallback)
+    assert decision["mode"] == "orchestrate"
+    assert "context7-docs" in decision["skills"]
+    assert "karpathy-skills" in decision["skills"]
+    assert "verification-before-completion" in decision["skills"]
+    assert decision["security_pass"] is False
+    assert state.chat_urls.get("claude") == "https://claude.ai/chat/79a6d6ec-bca1-4a84-9633-dd0628118e5d"
+
+
+def test_classify_task_complexity_identifies_repo_setup_and_model_integration(tmp_path):
+    """classify_task_complexity must detect repo setup and model integration as multi-step orchestration."""
+    from wsa_agent.context import classify_task_complexity
+
+    prompt = (
+        "setup colibri https://github.com/JustVugg/colibri.git in my codebase and also i want to ask you "
+        "do i need to download the whole model in my own laptop and do i able to use my gpu compute power fr better running?"
+    )
+    state = SessionState(project_root=tmp_path, selected_model="claude")
+    res = classify_task_complexity(prompt, state)
+    assert res["mode"] == "orchestrate", f"Expected orchestrate, got {res}"
+    assert res["score"] >= 4
+

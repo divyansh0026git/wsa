@@ -603,15 +603,15 @@ _SIMPLE_PROMPT_RE = re.compile(
     re.IGNORECASE,
 )
 _BUILD_VERBS_RE = re.compile(
-    r"\b(?:build|create|implement|re[- ]?design|refactor|architect|develop|upgrade|overhaul|migrate|multi[- ]file|full[- ]stack|end[- ]to[- ]end|extend|expand|enhance|research)\b",
+    r"\b(?:build|create|implement|re[- ]?design|refactor|architect|develop|upgrade|overhaul|migrate|multi[- ]file|full[- ]stack|end[- ]to[- ]end|extend|expand|enhance|research|setup|set\s+up|integrate|integration|clone|install|configure|wire\s*up)\b",
     re.IGNORECASE,
 )
 _LAYER_TERMS_RE = re.compile(
     r"\b(?:backend|frontend|server|client|database|api|routes?|templates?|css|js|javascript|html|tests?|pytest|cli|extension|ui|ux)\b",
     re.IGNORECASE,
 )
-_PROJECT_INTENT_RE = re.compile(r"\b(?:build|create|make|develop|design|implement|i\s+want|i(?:'d|\s+would)\s+like)\b[\s\S]{0,100}\b(?:app(?:lication)?|website|web\s*site|project|platform|dashboard|game|system|service|product|tool)\b", re.I)
-_EXTENSIVE_WORK_RE = re.compile(r"\b(?:fix|debug|investigate|implement|add|develop|build|create|refactor|audit|extend|expand|enhance|research)\b", re.I)
+_PROJECT_INTENT_RE = re.compile(r"\b(?:build|create|make|develop|design|implement|setup|set\s+up|integrate|clone|install|configure|i\s+want|i(?:'d|\s+would)\s+like)\b[\s\S]{0,100}\b(?:app(?:lication)?|website|web\s*site|project|platform|dashboard|game|system|service|product|tool|repo(?:sitory)?|codebase|model|pipeline)\b", re.I)
+_EXTENSIVE_WORK_RE = re.compile(r"\b(?:fix|debug|investigate|implement|add|develop|build|create|refactor|audit|extend|expand|enhance|research|setup|integrate|wire\s*up)\b", re.I)
 _EXTENT_RE = re.compile(r"\b(?:detailed|deep(?:ly)?|comprehensive|complex|multiple|multi[- ]step|end[- ]to[- ]end|entire|complete|full|thorough|feature|features|bugs|issues|functionality|capabilities)\b", re.I)
 _FAST_INFO_RE = re.compile(
     r"^\s*(?:explain|what\s+(?:is|are|does|was|were)|why\s+(?:does|is|are|did|was)|how\s+(?:does|is|do|can|should\s+(?:i|we))|summarize|define|compare|difference\s+between)\b",

@@ -15,7 +15,7 @@ WORKFLOW_JUDGMENT_PROMPT = (
     "• Set `\"security_pass\": true` whenever building/overhauling a website, web app, or auth/security flow.\n"
     "• Never execute tasks or call tools during routing.\n"
     + format_router_skill_index() + "\n"
-    '• Reply ONLY with JSON: {"mode":"orchestrate"|"direct","reason":"short reason","skills":["slug1"],"security_pass":false}.\n'
+    '• Reply ONLY with raw JSON (no markdown backticks, no code fences, no trailing period): {"mode":"orchestrate"|"direct","reason":"short reason","skills":["slug1"],"security_pass":false}\n'
 )
 
 SYSTEM_PROMPT = """\

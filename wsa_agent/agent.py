@@ -4550,6 +4550,155 @@ def run_turn(user_input: str, state: SessionState, client: WSAClient) -> Dict[st
     )
 
 
+def _parse_workflow_decision(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Robustly extract workflow routing decision JSON from any web model response."""
+    if not raw or not isinstance(raw, str):
+        return None
+
+    cleaned = raw.strip()
+    # Strip <think>...</think> tags if present
+    cleaned = re.sub(r"(?is)<think\b[^>]*>.*?</think>", "", cleaned).strip()
+
+    # Normalize smart quotes and em/en dashes
+    quote_map = {
+        "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u00ab": '"', "\u00bb": '"',
+        "\u2018": "'", "\u2019": "'", "\u201a": "'",
+        "\u2014": " - ", "\u2013": " - ",
+    }
+    for orig, rep in quote_map.items():
+        if orig in cleaned:
+            cleaned = cleaned.replace(orig, rep)
+
+    candidates: List[str] = []
+
+    # 1. Triple-backtick fenced blocks
+    for m in re.finditer(r"(?:`{3,}|~{3,})(?:json)?\s*\r?\n([\s\S]*?)(?:`{3,}|~{3,})", cleaned, re.I):
+        candidates.append(m.group(1).strip())
+
+    # 2. Single or multi-tick inline code wrapping (e.g. `{"mode":"orchestrate",...}`)
+    m_inline = re.match(r"^`+([\s\S]*?)`+$", cleaned)
+    if m_inline:
+        candidates.append(m_inline.group(1).strip())
+
+    # 3. Strip leading/trailing ticks and language tags
+    strip_edge_ticks = re.sub(r"^(?:`{1,3}|~{1,3})[a-zA-Z0-9_-]*\s*|\s*(?:`{1,3}|~{1,3})$", "", cleaned).strip()
+    candidates.append(strip_edge_ticks)
+    candidates.append(cleaned)
+
+    def _normalize_dict(d: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(d, dict):
+            return None
+        raw_mode = str(d.get("mode") or "").strip().lower()
+        if "orchestrat" in raw_mode:
+            mode = "orchestrate"
+        elif "direct" in raw_mode or "single" in raw_mode:
+            mode = "direct"
+        else:
+            return None
+
+        reason = d.get("reason")
+        if not reason and isinstance(d.get("reasons"), list):
+            reason = "; ".join(str(r) for r in d["reasons"] if r)
+        elif not reason:
+            reason = str(d.get("explanation") or d.get("summary") or d.get("justification") or f"Model selected {mode} mode")
+        reason = str(reason).strip()
+
+        out: Dict[str, Any] = {
+            "mode": mode,
+            "reasons": [reason[:240]],
+        }
+
+        raw_skills = d.get("skills")
+        if isinstance(raw_skills, str):
+            raw_skills = [s.strip() for s in raw_skills.split(",") if s.strip()]
+        if isinstance(raw_skills, list):
+            valid_skills = [
+                norm for item in raw_skills
+                if isinstance(item, str) and (norm := normalize_skill_name(item))
+            ]
+            if valid_skills:
+                out["skills"] = list(dict.fromkeys(valid_skills))
+
+        sec_pass = d.get("security_pass")
+        if isinstance(sec_pass, bool):
+            out["security_pass"] = sec_pass
+        elif isinstance(sec_pass, str):
+            out["security_pass"] = sec_pass.strip().lower() == "true"
+
+        return out
+
+    # Pass 1: standard json.loads on candidate strings
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            parsed = json.loads(cand)
+            normed = _normalize_dict(parsed)
+            if normed is not None:
+                return normed
+        except Exception:
+            pass
+
+        # Trailing periods or punctuation
+        trimmed = cand.rstrip(". \t\r\n;")
+        if trimmed != cand:
+            try:
+                parsed = json.loads(trimmed)
+                normed = _normalize_dict(parsed)
+                if normed is not None:
+                    return normed
+            except Exception:
+                pass
+
+        # Trailing commas before closing braces/brackets
+        no_trailing_commas = re.sub(r",\s*([}\]])", r"\1", trimmed)
+        if no_trailing_commas != trimmed:
+            try:
+                parsed = json.loads(no_trailing_commas)
+                normed = _normalize_dict(parsed)
+                if normed is not None:
+                    return normed
+            except Exception:
+                pass
+
+    # Pass 2: raw_decode scan for embedded JSON objects inside text
+    decoder = json.JSONDecoder()
+    for cand in candidates:
+        idx = cand.find("{")
+        while idx != -1:
+            try:
+                parsed, _ = decoder.raw_decode(cand, idx)
+                normed = _normalize_dict(parsed)
+                if normed is not None:
+                    return normed
+            except Exception:
+                pass
+            idx = cand.find("{", idx + 1)
+
+    # Pass 3: regex fallback for malformed or truncated JSON
+    mode_m = re.search(r'"mode"\s*:\s*"(orchestrat\w*|direct\w*)"', cleaned, re.I)
+    if not mode_m:
+        mode_m = re.search(r'\bmode\b\s*[:=]\s*["\']?(orchestrat\w*|direct\w*)["\']?', cleaned, re.I)
+    if mode_m:
+        raw_m = mode_m.group(1).lower()
+        mode = "orchestrate" if "orchestrat" in raw_m else "direct"
+        reason_m = re.search(r'"reason"\s*:\s*"((?:[^"\\]|\\.)*)"', cleaned)
+        reason = reason_m.group(1) if reason_m else f"Model selected {mode} mode"
+        fallback_out = {"mode": mode, "reasons": [reason[:240]]}
+        skills_m = re.search(r'"skills"\s*:\s*\[(.*?)\]', cleaned, re.DOTALL)
+        if skills_m:
+            items = re.findall(r'"([^"]+)"', skills_m.group(1))
+            valid = [norm for it in items if (norm := normalize_skill_name(it))]
+            if valid:
+                fallback_out["skills"] = list(dict.fromkeys(valid))
+        sec_m = re.search(r'"security_pass"\s*:\s*(true|false)', cleaned, re.I)
+        if sec_m:
+            fallback_out["security_pass"] = sec_m.group(1).lower() == "true"
+        return fallback_out
+
+    return None
+
+
 def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fallback: Dict) -> Dict:
     """One bounded, tool-free routing & skill-judging decision; never execute classifier tool calls."""
     from .prompts import WORKFLOW_JUDGMENT_PROMPT
@@ -4579,7 +4728,7 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
             prior_ctx = str(getattr(state, "context_summary", "") or "").encode("utf-8", "replace")[:1500].decode("utf-8", "ignore").strip()
             router_user_msg = (
                 "Workflow routing check for the next user request (do not execute the task or call tools; "
-                'reply only with JSON: {"mode":"orchestrate"|"direct","reason":"short scope-based reason","skills":["relevant-slug"],"security_pass":false}):\n\n'
+                'reply only with raw JSON, no markdown backticks or fences: {"mode":"orchestrate"|"direct","reason":"short scope-based reason","skills":["relevant-slug"],"security_pass":false}):\n\n'
                 f"User request:\n{req_txt}"
             )
             if prior_ctx:
@@ -4614,25 +4763,13 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
                         if not state.chat_urls.get(state.model):
                             state.chat_urls[state.model] = c_url
             raw = str(response.get("content") or "").strip()
-            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-            decision = json.loads(raw)
-            if not isinstance(decision, dict) or decision.get("mode") not in ("direct", "orchestrate"):
-                raise ValueError("invalid workflow mode")
-            reason = decision.get("reason")
-            if not isinstance(reason, str) or not reason.strip():
-                raise ValueError("missing workflow reason")
-            out_dec: Dict[str, Any] = {"mode": decision["mode"], "reasons": [reason[:240]]}
-            raw_skills = decision.get("skills")
-            if isinstance(raw_skills, list):
-                valid_skills = [
-                    norm for item in raw_skills
-                    if isinstance(item, str) and (norm := normalize_skill_name(item))
-                ]
-                if valid_skills:
-                    out_dec["skills"] = list(dict.fromkeys(valid_skills))
-            if isinstance(decision.get("security_pass"), bool):
-                out_dec["security_pass"] = decision["security_pass"]
-            return out_dec
+            thinking = str(response.get("thinking") or "").strip()
+            decision = _parse_workflow_decision(raw)
+            if decision is None and thinking:
+                decision = _parse_workflow_decision(thinking)
+            if not decision:
+                raise ValueError(f"unparseable workflow decision payload: {raw[:200]!r}")
+            return decision
         except ProviderLimitError as exc:
             if state.agent_mode == "multiagent" and state.advance_multiagent_queue(state.model):
                 continue
@@ -4643,7 +4780,12 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
         except KeyboardInterrupt:
             _preserve_workflow_state_and_context(state, pending_goal=user_input, record_pending_goal=True)
             return {"stopped": True, "result": {"ok": False, "aborted_reason": "interrupted"}}
-        except (ConnectionError, ValueError, TypeError):
+        except (ConnectionError, ValueError, TypeError) as exc:
+            try:
+                from .session import log_debug
+                log_debug(f"_judge_workflow fallback triggered: {type(exc).__name__}: {exc}")
+            except Exception:
+                pass
             R.print_warn("Workflow judgment unavailable; using local scope detection.")
             return fallback
 
