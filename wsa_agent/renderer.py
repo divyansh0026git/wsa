@@ -1674,7 +1674,7 @@ _TOOL_VERBS = {
     "browser_tabs": "BrowserTabs",
     "browser_inspect": "BrowserInspect",
     "browser_interact": "BrowserAct",
-    "visual_inspect": "VisualInspect",
+    "visual_inspect": "VisualAudit",
     "patch_file": "Update",
     "apply_patch": "Patch",
     "write_file": "Write",
@@ -1700,6 +1700,13 @@ _TOOL_VERBS = {
     "search_files": "Search",
     "spawn_subagent": "Delegate",
     "read_skill": "ReadSkill",
+    "dynamic_architect": "Architect",
+    "dynamic_coder": "Coder",
+    "dynamic_verifier": "Verifier",
+    "dynamic_explorer": "Explorer",
+    "ask_user": "Consult",
+    "todo": "Todo",
+    "wait_for": "Wait",
 }
 
 
@@ -1806,6 +1813,36 @@ def _format_tool_header(name: str, args: Optional[dict]) -> tuple[str, str]:
         target = str(a.get("selector") or a.get("text") or "").strip()
         return verb, f"{act} {target}".strip()
 
+    if name in ("dynamic_architect", "dynamic_coder", "dynamic_verifier", "dynamic_explorer", "ask_user"):
+        q = str(a.get("question") or "").strip()
+        opts = a.get("options") or []
+        opts_count = f" [{len(opts)} opts]" if isinstance(opts, list) and opts else ""
+        if len(q) > 55:
+            q = q[:52].rstrip() + "…"
+        return verb, f"{q}{opts_count}" if q else "checkpoint"
+
+    if name == "visual_inspect":
+        vps = a.get("viewports")
+        names = []
+        if isinstance(vps, list):
+            names = [str(v.get("name", "")) for v in vps if isinstance(v, dict) and v.get("name")]
+        vp_str = f"viewports={','.join(names)}" if names else ""
+        act = a.get("action")
+        act_str = f"action={act}" if act else ""
+        meta = " · ".join(p for p in (vp_str, act_str) if p)
+        return verb, meta or "audit viewports"
+
+    if name == "todo":
+        action = str(a.get("action") or "list")
+        task = str(a.get("task") or a.get("id") or "").strip()
+        if len(task) > 50:
+            task = task[:47].rstrip() + "…"
+        return verb, f"{action} {task}".strip()
+
+    if name == "wait_for":
+        cond = str(a.get("condition") or a.get("port") or a.get("seconds") or "").strip()
+        return verb, cond
+
     for val in a.values():
         sval = re.sub(r"\s+", " ", str(val).strip())
         if sval:
@@ -1876,6 +1913,51 @@ def print_tool_result(
         _print_tree_line(f"{head}{dur}", style=Theme.TOOL_ERR, first=True)
         for extra in lines[1:4]:
             _print_tree_line(extra[:140], style=Theme.DIM)
+        return
+
+    if name in ("dynamic_architect", "dynamic_coder", "dynamic_verifier", "dynamic_explorer", "ask_user"):
+        if "[ABORTED_BY_USER]" in clean:
+            _print_tree_line(f"Workflow paused: user cancelled at checkpoint{dur}", style=Theme.TOOL_ERR, first=True)
+            _print_tree_line(clean[:130], style=Theme.DIM)
+        elif "User selected option" in clean or "User confirmed" in clean or "User response" in clean:
+            _print_tree_line(f"Dynamic Checkpoint Resolved{dur}", style=Theme.TOOL_OK, first=True)
+            _print_tree_line(clean[:140], style=Theme.SECONDARY)
+        else:
+            _print_tree_line(f"{clean[:140]}{dur}", style=Theme.INFO, first=True)
+        return
+
+    if name == "visual_inspect":
+        if is_error:
+            _print_tree_line(f"Visual inspection error: {lines[0] if lines else 'failed'}{dur}", style=Theme.TOOL_ERR, first=True)
+            return
+        passed = "Visual checks: pass" in clean
+        status_tag = "✓ Visual Audit: Clean" if passed else "✗ Visual Audit: Defect"
+        status_style = Theme.TOOL_OK if passed else Theme.TOOL_ERR
+        _print_tree_line(f"{status_tag}{dur}", style=status_style, first=True)
+
+        for ln in lines:
+            if ln.startswith("Viewport ["):
+                _print_tree_line(ln[:130], style=Theme.SECONDARY)
+            elif any(ln.strip().startswith(k) for k in ("Low contrast", "Header bleed", "Broken images", "Occluded controls", "Clipped text", "OVERFLOW_X")):
+                _print_tree_line(ln.strip()[:130], style=Theme.WARN if passed else Theme.TOOL_ERR)
+            elif ln.startswith("Console/JS Errors") and not ln.endswith(": 0"):
+                _print_tree_line(ln[:130], style=Theme.TOOL_ERR)
+            elif ln.startswith("[OK] Visual capture attached"):
+                summary = re.sub(r"^\[OK\]\s*", "", ln).strip()
+                _print_tree_line(summary[:130], style=Theme.DIM)
+        return
+
+    if name == "todo":
+        summary = re.sub(r"^\[OK\]\s*", "", lines[0])[:140] if lines else "Todo updated"
+        _print_tree_line(f"{summary}{dur}", style=Theme.SECONDARY, first=True)
+        for extra in lines[1:4]:
+            if extra.strip():
+                _print_tree_line(extra.strip()[:130], style=Theme.DIM)
+        return
+
+    if name == "wait_for":
+        summary = lines[0][:140] if lines else "Condition met"
+        _print_tree_line(f"{summary}{dur}", style=Theme.TOOL_OK if not is_error else Theme.TOOL_ERR, first=True)
         return
 
     if name == "read_skill":
@@ -2241,14 +2323,30 @@ def print_markdown(text: str) -> None:
     console.print(Padding(_RichMarkdown(str(text or "")), (0, 2, 1, 2)))
 
 
+_ROLE_PHASE_CARDS = {
+    "EXPLORER": ("🔍", "cyan", "Workspace Recon & Deep Research"),
+    "ARCHITECT": ("📐", "yellow", "System Architecture & File Blueprint"),
+    "CODER": ("⚡", "green", "Surgical Patch & Implementation"),
+    "SECURITY": ("🛡️", "red", "Adversarial Security & OWASP Audit"),
+    "VERIFIER": ("🧪", "magenta", "Independent Verification & QA Gate"),
+    "ORCHESTRATOR": ("◆", Theme.ACCENT, "Multi-Phase Workflow Synthesis"),
+}
+
+
 def print_subagent_banner(role: str, label: str) -> None:
-    """Print crisp stage banner for a scoped subagent phase."""
+    """Print crisp, defined stage banner with role-specific glyphs and badge styling."""
     sync_theme()
     role_key = str(role or "subagent").upper()
-    console.print(
-        f"  [{Theme.ACCENT}]◆[/] [bold {Theme.ACCENT}]{escape(role_key)}[/] "
-        f"[{Theme.SECONDARY}]{escape(str(label or ''))}[/]"
+    icon, color, subtitle = _ROLE_PHASE_CARDS.get(
+        role_key,
+        ("◆", Theme.ACCENT, "Specialized Subagent Phase"),
     )
+    console.print()
+    rule_title = f"[bold {color}]{icon}  {escape(role_key)}[/] [{Theme.DIM}]· {escape(subtitle)}[/]"
+    console.print(Rule(title=rule_title, align="left", style=color))
+    if label:
+        console.print(f"  [{Theme.SECONDARY}]{escape(str(label))}[/]")
+    console.print()
 
 
 def print_skill_appointment(appointment) -> None:

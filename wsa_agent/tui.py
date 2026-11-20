@@ -107,6 +107,17 @@ def _inline_select_menu(
                 state["result"] = None
                 event.app.exit(result=None)
 
+            # Direct numeric hotkeys (1..min(9, len(options)))
+            for digit in range(1, min(10, len(options) + 1)):
+                d_char = str(digit)
+                def _make_num_handler(target_idx: int):
+                    def _num_press(event):
+                        state["idx"] = target_idx
+                        state["result"] = options[target_idx]["value"]
+                        event.app.exit(result=state["result"])
+                    return _num_press
+                kb.add(d_char)(_make_num_handler(digit - 1))
+
             def _render_fragments() -> StyleAndTextTuples:
                 cols = R.ui_frame_width()
                 rule_line = "─" * cols
@@ -124,14 +135,17 @@ def _inline_select_menu(
                     focused = i == state["idx"]
                     active = opt["value"] == current_value
                     pointer = f"{chev} " if focused else "  "
-                    num = f"{i + 1:2d}  "
+                    num = f"[{i + 1}] " if focused else f" {i + 1}  "
                     label = opt.get("title", opt["value"])
                     meta = opt.get("meta", "")
-                    suffix = f"  {ok_mark}" if active else ""
+                    swatch = opt.get("swatch", "")
+                    suffix = "  [ACTIVE ✓]" if active else ""
 
                     if focused:
                         frags.append((f"fg:{t.claude} bold", f"  {pointer}"))
-                        frags.append((f"fg:{t.subtle}", num))
+                        frags.append((f"fg:{t.claude} bold", num))
+                        if swatch:
+                            frags.append((f"fg:{swatch}", "■ "))
                         frags.append((f"fg:{t.text} bold", label if compact else f"{label:<{max_title}}"))
                         if meta and not compact:
                             frags.append((f"fg:{t.secondary_text}", f"  {meta}"))
@@ -143,6 +157,8 @@ def _inline_select_menu(
                     else:
                         frags.append(("", f"  {pointer}"))
                         frags.append((f"fg:{t.subtle}", num))
+                        if swatch:
+                            frags.append((f"fg:{swatch}", "■ "))
                         frags.append((f"fg:{t.secondary_text}", label if compact else f"{label:<{max_title}}"))
                         if meta and not compact:
                             frags.append((f"fg:{t.subtle}", f"  {meta}"))
@@ -152,12 +168,17 @@ def _inline_select_menu(
 
                 cur = options[state["idx"]]
                 frags.append(("", "\n"))
-                if cur.get("detail"):
-                    frags.append((f"fg:{t.secondary_text}", f"    {cur['detail']}\n"))
-                if cur.get("extra"):
-                    frags.append((f"fg:{t.subtle}", f"    {cur['extra']}\n"))
+                if cur.get("detail") or cur.get("extra"):
+                    frags.append((f"fg:{t.border}", f"    ┌── Quick Specs ────────────────────────────────────\n"))
+                    if cur.get("detail"):
+                        frags.append((f"fg:{t.border}", "    │  "))
+                        frags.append((f"fg:{t.secondary_text}", f"{cur['detail']}\n"))
+                    if cur.get("extra"):
+                        frags.append((f"fg:{t.border}", "    │  "))
+                        frags.append((f"fg:{t.subtle}", f"{cur['extra']}\n"))
+                    frags.append((f"fg:{t.border}", f"    └───{'─' * max(20, cols - 12)}\n"))
                 frags.append((f"fg:{t.border}", f"  {rule_line}\n"))
-                frags.append((f"fg:{t.subtle}", "  ↑/↓ move  ·  Enter select  ·  Esc cancel"))
+                frags.append((f"fg:{t.subtle}", "  ↑/↓ move  ·  1-9 quick-select  ·  Enter select  ·  Esc cancel"))
                 return frags
 
             control = FormattedTextControl(text=_render_fragments, focusable=True, show_cursor=False)
@@ -181,21 +202,26 @@ def _fallback_numbered_select(
 ) -> Optional[str]:
     """Clean fallback selector when interactive key capture is unavailable."""
     R.sync_theme()
-    max_title = max(14, min(26, max((len(o.get("title", o["value"])) for o in options), default=18) + 2))
+    from rich.table import Table
     R.console.print()
     R.console.print(Rule(title=f"[bold {R.Theme.PRIMARY}]{escape(title)}[/]", align="left", style=R.Theme.BORDER))
+    table = Table(box=None, show_header=True, header_style=f"bold {R.Theme.DIM}", padding=(0, 2), expand=False)
+    table.add_column("#", style=f"bold {R.Theme.ACCENT}", justify="right")
+    table.add_column("Option", style=f"bold {R.Theme.PRIMARY}")
+    table.add_column("Specifications", style=R.Theme.SECONDARY)
+    table.add_column("Status", style=R.Theme.OK)
+
     for i, opt in enumerate(options, 1):
         is_curr = opt["value"] == current_value
-        marker = f"[{R.Theme.ACCENT}]{R.ui_glyph('chevron')}[/]" if is_curr else " "
-        meta = f"  [{R.Theme.DIM}]{escape(opt['meta'])}[/]" if opt.get("meta") else ""
-        check = f"  [{R.Theme.OK}]{R.ui_glyph('ok')}[/]" if is_curr else ""
-        R.console.print(
-            f"  {marker} [{R.Theme.DIM}]{i:2d}[/]  [bold {R.Theme.PRIMARY}]{escape(opt['title']):<{max_title}}[/]{meta}{check}"
-        )
-        if opt.get("extra"):
-            R.console.print(f"       [{R.Theme.SECONDARY}]{escape(opt['extra'])}[/]")
+        meta = opt.get("meta", "")
+        extra = opt.get("extra", "")
+        specs = f"{meta} · {extra}".strip(" ·") if (meta or extra) else ""
+        status = f"[{R.Theme.OK}]{R.ui_glyph('ok')} Active[/]" if is_curr else ""
+        table.add_row(str(i), escape(opt.get("title", opt["value"])), escape(specs[:70]), status)
+
+    R.console.print(table)
     R.console.print(Rule(style=R.Theme.BORDER))
-    R.console.print(f"  [{R.Theme.DIM}]Select number (Enter keeps current)[/] ", end="")
+    R.console.print(f"  [{R.Theme.DIM}]Select number (1-{len(options)}, Enter keeps current):[/] ", end="")
     try:
         choice = input().strip()
         if not choice:
@@ -335,22 +361,23 @@ def pick_multiagent_custom_queue(state=None) -> Optional[List[str]]:
 # ─── Theme Picker (/theme) ────────────────────────────────────────────────────
 
 def pick_theme(current: str = "") -> Optional[str]:
-    """Show interactive /theme palette selector."""
+    """Show interactive /theme palette selector with live color swatch previews."""
     curr = current or get_theme().id
     themes = list_themes()
     options = [
         {
             "value": pal.id,
             "title": pal.name,
-            "meta": f"accent {pal.claude}",
-            "detail": pal.description,
-            "extra": f"/theme {pal.id}",
+            "meta": f"accent {pal.claude} · border {pal.border}",
+            "detail": f"/theme {pal.id}  ·  {pal.description}",
+            "extra": f"Syntax: {pal.code_theme}  ·  Accent: {pal.claude}  ·  Text: {pal.text}",
+            "swatch": pal.claude,
         }
         for pal in themes
     ]
     return _inline_select_menu(
-        title="Theme",
-        subtitle=f"{len(themes)} palettes",
+        title="Theme Palette",
+        subtitle=f"{len(themes)} palettes with live preview",
         options=options,
         current_value=curr,
     )

@@ -2190,30 +2190,41 @@ def _dynamic_user_consultation(
     q_clean = str(question or "").strip()
     ctx_clean = str(context or "").strip()
     role_label = str(role or "orchestrator").capitalize()
+    role_lower = str(role or "orchestrator").strip().lower()
+
+    role_meta = {
+        "architect": ("📐", "yellow", "Architect Dynamic Checkpoint"),
+        "coder": ("⚡", "green", "Coder Dynamic Checkpoint"),
+        "verifier": ("🧪", "magenta", "Verifier Dynamic Checkpoint"),
+        "explorer": ("🔍", "cyan", "Explorer Dynamic Checkpoint"),
+        "security": ("🛡️", "red", "Security Dynamic Checkpoint"),
+        "orchestrator": ("◆", Theme.ACCENT, "Orchestrator Dynamic Checkpoint"),
+    }
+    icon, border_col, title_hdr = role_meta.get(role_lower, ("◆", Theme.ACCENT, f"Dynamic Checkpoint · {role_label}"))
 
     lines = [
-        f"[bold {Theme.PRIMARY}]WSA Dynamic Checkpoint · {escape(role_label)}[/]",
-        "",
-        escape(q_clean),
+        f"[bold {Theme.PRIMARY}]{escape(q_clean)}[/]",
     ]
     if ctx_clean:
         lines.append("")
-        lines.append(f"[{Theme.DIM}]Context:[/{Theme.DIM}] {escape(ctx_clean)}")
+        lines.append(f"[{Theme.DIM}]│ Context:[/] [{Theme.SECONDARY}]{escape(ctx_clean)}[/]")
 
     opts_list = [str(o).strip() for o in (options or []) if str(o).strip()]
     if opts_list:
         lines.append("")
-        lines.append(f"[bold {Theme.DIM}]Options:[/{Theme.DIM}]")
+        lines.append(f"[bold {Theme.DIM}]Recommended Options:[/{Theme.DIM}]")
         for idx, opt in enumerate(opts_list, 1):
-            lines.append(f"  [{Theme.ACCENT}]{idx}.[/] {escape(opt)}")
+            lines.append(f"  [bold {border_col}][{idx}][/] [bold {Theme.PRIMARY}]{escape(opt)}[/]")
 
     lines.append("")
     default_hint = f" (default: {escape(default_choice)})" if default_choice else ""
+    opts_hint = f"  [bold {border_col}]\\[1-{len(opts_list)}][/] Choose option" if opts_list else ""
     lines.append(
         f"[{Theme.DIM}]Controls:[/] "
-        f"[bold {Theme.PRIMARY}]\\[Enter][/] Proceed{default_hint}  "
+        f"[bold {Theme.PRIMARY}]\\[Enter][/] Proceed{default_hint}"
+        f"{opts_hint}  "
         f"[bold {Theme.WARN}]\\[a][/] Abort  "
-        f"[bold {Theme.PRIMARY}]or type your explicit answer/guidance[/]"
+        f"[{Theme.DIM}]or type guidance[/]"
     )
 
     try:
@@ -2221,8 +2232,8 @@ def _dynamic_user_consultation(
         console.print(
             Panel(
                 "\n".join(lines),
-                title=f"[bold {Theme.ACCENT}]Dynamic Checkpoint · {escape(role_label)}[/]",
-                border_style=Theme.ACCENT,
+                title=f"[bold {border_col}]{icon}  {escape(title_hdr)}[/]",
+                border_style=border_col,
                 padding=(1, 2),
             )
         )
