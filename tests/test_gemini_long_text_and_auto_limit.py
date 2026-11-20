@@ -13,37 +13,52 @@ from wsa_server.models import extract_upstream_model_info
 
 
 def test_gemini_client_extract_limit_on_auto_and_flash_lite():
-    # Various phrases Gemini uses when limit is exceeded and it switches to Auto or Flash-Lite
-    phrases = [
-        "Switched to Gemini Auto",
+    # Explicit limit phrases that must trigger limit reached:
+    limit_phrases = [
+        "Switched to Gemini Auto because your limit was reached",
         "Switched to Gemini Flash-Lite",
-        "Switched to Auto",
-        "Switched to Flash-Lite",
-        "Responses will use Gemini Auto",
         "Responses will use Gemini Flash-Lite",
-        "Responses will use Auto",
+        "Switched to Flash-Lite",
         "Responses will use Flash-Lite",
         "Using Gemini Auto until your limit resets",
         "Using Gemini Flash-Lite until your limit resets",
         "You've reached your Gemini Pro limit",
         "Gemini Pro limit reached",
         "Gemini Advanced limit reached",
+        "Limit reached, reset usage on 6:39 AM",
+        "Limit reached · Resets 6:39 AM",
+        "Reset usage on 4:00 PM",
+        "Usage will reset at 3:00 PM",
     ]
-    for phrase in phrases:
+    for phrase in limit_phrases:
         err = {"error": {"message": phrase, "provider": "gemini"}}
         res = _extract_limit_error_from_dict(err)
         assert res is not None, f"Failed to extract limit from: {phrase}"
         assert res[0] == "gemini"
 
+    # Bare Gemini Auto phrases without limit reached must NOT trigger limit:
+    non_limit_phrases = [
+        "Switched to Gemini Auto",
+        "Switched to Auto",
+        "Responses will use Gemini Auto",
+        "Responses will use Auto",
+        "Gemini Auto",
+    ]
+    for phrase in non_limit_phrases:
+        err = {"error": {"message": phrase, "provider": "gemini"}}
+        res = _extract_limit_error_from_dict(err)
+        assert res is None, f"Should not treat bare auto phrase as limit: {phrase}"
+
 
 def test_gemini_models_detect_downgrade_on_auto_and_flash_lite():
-    # Test extract_upstream_model_info detects Auto and Flash-Lite downgrades
+    # Test extract_upstream_model_info does NOT mark Auto as downgraded
     info_auto = extract_upstream_model_info({"badge": "Gemini Auto"})
-    assert info_auto["is_downgraded_flash_lite"] is True
+    assert info_auto["is_downgraded_flash_lite"] is False
 
     info_auto_bare = extract_upstream_model_info({"badge": "Auto"})
-    assert info_auto_bare["is_downgraded_flash_lite"] is True
+    assert info_auto_bare["is_downgraded_flash_lite"] is False
 
+    # True Flash-Lite badges ARE marked as downgraded
     info_flash_lite = extract_upstream_model_info({"badge": "Gemini Flash-Lite"})
     assert info_flash_lite["is_downgraded_flash_lite"] is True
 
@@ -173,23 +188,38 @@ bg._domInstallPageRuntimeFn();
 const rt = globalThis.__wsaRuntime;
 assert.ok(rt, "Gemini runtime must install");
 
-// 1. Test Limit detection on Gemini Auto / Flash-Lite phrases
+// 1. Test Limit detection on Gemini limit / reset timing phrases
 const phrases = [
   "Switched to Gemini Auto because your limit was reached",
   "Switched to Gemini Flash-Lite",
-  "Responses will use Gemini Auto",
   "Responses will use Gemini Flash-Lite",
   "Using Gemini Auto until 3:00 AM",
+  "Using Gemini Auto until your limit resets",
   "Using Gemini Flash-Lite until limit resets",
   "You've reached your Gemini Pro limit",
   "Gemini Pro limit reached",
   "Limit reached · Resets 6:39 AM      See usage",
   "Limit reached · Resets 12:00 PM",
-  "Limit reached"
+  "Limit reached, reset usage on 6:39 AM",
+  "Limit reached",
+  "Reset usage on 4:00 PM",
+  "Usage will reset at 3:00 PM"
 ];
 for (const p of phrases) {{
   const det = rt.detectLimitMessage(p, true);
   assert.ok(det, "Must detect limit for: " + p);
+}}
+
+// 1a. Test bare Gemini Auto without limit does NOT trigger detectLimitMessage
+const nonLimitPhrases = [
+  "Switched to Gemini Auto",
+  "Responses will use Gemini Auto",
+  "Users can switch to Gemini Auto for lighter tasks.",
+  "Gemini Auto"
+];
+for (const p of nonLimitPhrases) {{
+  const det = rt.detectLimitMessage(p, true);
+  assert.strictEqual(det, "", "Must NOT detect limit for bare auto: " + p);
 }}
 
 // 1b. Test readModePickerBadge with icon/chevron (e.g., ≡ Gemini Auto ∨)
@@ -264,7 +294,7 @@ assert.strictEqual(pollRes.done, false);
 assert.ok(pollRes.error.startsWith("[LIMIT_REACHED]"), "Poll must return [LIMIT_REACHED] when banner is present, got: " + pollRes.error);
 document.body.removeChild(limitCard);
 
-// 6. Test _domPollTurnFn early abort on Gemini Auto when prompt is unsent even without explicit limit banner
+// 6. Test _domPollTurnFn does NOT fake-abort on Gemini Auto when prompt is unsent without limit banner
 const autoModelBtn = new MockElement("button", {{ "aria-haspopup": "menu" }}, "≡ Gemini Auto ∨");
 document.body.appendChild(autoModelBtn);
 const unsentEd = new MockElement("div", {{ role: "textbox", contenteditable: "true" }}, "Unsent prompt text");
@@ -295,11 +325,40 @@ globalThis.__wsaActiveJob = {{
 }};
 
 const pollRes2 = bg._domPollTurnFn("req-poll-auto");
-console.log("pollRes2 result:", pollRes2);
-assert.strictEqual(pollRes2.done, false);
-assert.ok(pollRes2.error.startsWith("[LIMIT_REACHED]"), "Poll must return [LIMIT_REACHED] on Gemini Auto unsent prompt, got: " + pollRes2.error);
+assert.strictEqual(pollRes2.error, undefined, "Poll must NOT fake-abort with [LIMIT_REACHED] on Gemini Auto unsent prompt without limit banner");
 document.body.removeChild(autoModelBtn);
 document.body.removeChild(unsentEd);
+
+// 7. Test _domPollTurnFn DOES abort when explicit limit banner exists with reset timing
+const resetBanner = new MockElement("div", {{ class: "limit-banner" }}, "Limit reached, reset usage on 6:39 AM");
+document.body.appendChild(resetBanner);
+globalThis.__wsaActiveJob = {{
+  reqId: "req-poll-reset",
+  startedAt: Date.now(),
+  selectedBadge: "Gemini Auto",
+  prompt: "Unsent prompt text",
+  submitRetries: 0,
+  lastRetryAt: Date.now(),
+  beforeRelayObj: {{}},
+  beforeDomCount: 0,
+  beforeModelCount: 0,
+  beforeActionCount: 0,
+  beforeAnnouncerSnapshot: "",
+  lastText: "",
+  lastThinking: "",
+  sourceKind: "",
+  thinkingLines: [],
+  lastTextChangeAt: Date.now(),
+  lastThinkChangeAt: Date.now(),
+  lastBusyAt: Date.now(),
+  sawNewTurn: false,
+  sawEditorCleared: false,
+  announcerChanged: false,
+}};
+const pollRes3 = bg._domPollTurnFn("req-poll-reset");
+assert.strictEqual(pollRes3.done, false);
+assert.ok(pollRes3.error.startsWith("[LIMIT_REACHED]"), "Poll must return [LIMIT_REACHED] when explicit reset banner is present, got: " + pollRes3.error);
+document.body.removeChild(resetBanner);
 
 console.log("GEMINI_LONG_TEXT_AND_AUTO_LIMIT_OK");
 }})().catch(err => {{

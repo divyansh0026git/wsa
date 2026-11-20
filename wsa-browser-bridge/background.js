@@ -4268,8 +4268,8 @@ function _domInstallPageRuntimeFn() {
     }
     // Pre-check document text without reflow; only inspect compact non-prose cards when limit text exists
     const bodyText = document.body?.textContent || "";
-    if (/\b(?:limit\s+reached|resets?\s+\d+:\d+)\b/i.test(bodyText)) {
-      const limitBannerRe = /\b(?:limit\s+reached|resets?\s+\d+:\d+)\b/i;
+    if (/\b(?:limit\s+(?:has\s+been\s+)?reached|resets?\s+(?:at|in|on)?\s*\d+|reset\s+usage\b|usage\s+will\s+reset|limit\s+resets?)\b/i.test(bodyText)) {
+      const limitBannerRe = /\b(?:limit\s+(?:has\s+been\s+)?reached|resets?\s+(?:at|in|on)?\s*\d+|reset\s+usage\b|usage\s+will\s+reset|limit\s+resets?)\b/i;
       for (const el of document.querySelectorAll("div, p, span, section, aside, [role='region']")) {
         if (el.children && el.children.length > 4) continue;
         const t = (el.textContent || "").replace(/\s+/g, " ").trim();
@@ -4310,9 +4310,9 @@ function _domInstallPageRuntimeFn() {
     const raw = String(text || "").trim();
     if (!raw) return "";
     const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
-    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
+    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after|on)|reset\s+usage|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
     const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
-    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+auto|auto|gemini\s+flash-lite|flash-lite|flash\s+lite|gemini\s+flash|flash)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:until|because|due\s+to|after)\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
+    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+flash-lite|flash-lite|flash\s+lite)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:flash-lite|flash\s+lite)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+until\s+(?:your\s+)?(?:limit\s+resets?|\d+:\d+|\w+\s+resets?)\b|\b(?:switched\s+to|responses\s+will\s+use)\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:because|due\s+to|after)\s+(?:reaching\s+)?(?:your\s+)?limit\b|\breset\s+usage\s+(?:on|at|in)?\b|\busage\s+will\s+reset\b|\blimit\s+resets?\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
@@ -4416,9 +4416,6 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
   }
 
   const initialBadge = typeof rt.readModePickerBadge === "function" ? rt.readModePickerBadge() : "";
-  if (initialBadge && /(?:auto|flash(?:-lite|\s+lite)?)/i.test(initialBadge) && earlyBanner && (/\blimit\b/i.test(earlyBanner) || /\bresets?\b/i.test(earlyBanner))) {
-    return { ok: false, error: `[LIMIT_REACHED] Gemini: Limit reached · Model auto-switched to ${initialBadge}` };
-  }
 
   const sleepMs = ms => new Promise(r => setTimeout(r, ms));
   let inputEl = rt.findEditor();
@@ -4488,12 +4485,6 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
   }
 
   const selectedBadge = rt.readModePickerBadge() || initialBadge;
-  if (selectedBadge && /(?:auto|flash(?:-lite|\s+lite)?)/i.test(selectedBadge)) {
-    const bannerNow = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
-    if (bannerNow && (/\blimit\b/i.test(bannerNow) || /\bresets?\b/i.test(bannerNow))) {
-      return { ok: false, error: `[LIMIT_REACHED] Gemini: Limit reached · Model auto-switched to ${selectedBadge}` };
-    }
-  }
 
   const monoNow = () => (typeof performance !== "undefined" && typeof performance.now === "function") ? performance.now() : Date.now();
   const tTurnStart = monoNow();
@@ -4716,11 +4707,18 @@ function _domPollTurnFn(reqId) {
     : (job.selectedBadge || livePickerBadge);
 
   const pageBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
-  if (typeof rt.detectLimitMessage === "function" || (pageBanner && /\blimit\s+reached\b/i.test(pageBanner))) {
+  const isExplicitLimitBanner = Boolean(
+    pageBanner && (
+      (typeof rt.detectLimitMessage === "function" && rt.detectLimitMessage(pageBanner, true)) ||
+      /\blimit\s+(?:has\s+been\s+)?reached\b/i.test(pageBanner) ||
+      (/\blimit\b/i.test(pageBanner) && (/\bresets?\b/i.test(pageBanner) || /\breset\s+usage\b/i.test(pageBanner)))
+    )
+  );
+
+  if (typeof rt.detectLimitMessage === "function" || isExplicitLimitBanner) {
     const turnLimitErr = (!busy && job.lastText) ? rt.detectLimitMessage(job.lastText) : "";
-    const pageBannerErr = pageBanner ? (rt.detectLimitMessage(pageBanner, true) || (/\blimit\s+reached\b/i.test(pageBanner) ? pageBanner : "")) : "";
-    const isAutoWithLimit = Boolean(/(?:auto|flash(?:-lite|\s+lite)?)/i.test(effectiveBadge) && (pageBanner && (/\blimit\b/i.test(pageBanner) || /\bresets?\b/i.test(pageBanner))));
-    const matchedLimit = turnLimitErr || pageBannerErr || (isAutoWithLimit ? `Limit reached (active model: ${effectiveBadge})` : "");
+    const pageBannerErr = pageBanner ? (rt.detectLimitMessage(pageBanner, true) || (isExplicitLimitBanner ? pageBanner : "")) : "";
+    const matchedLimit = turnLimitErr || pageBannerErr;
     if (matchedLimit && !job.lastText.includes("```")) {
       delete globalThis.__wsaActiveJob;
       return {
@@ -4735,18 +4733,12 @@ function _domPollTurnFn(reqId) {
       };
     }
   }
-  const isAutoDowngraded = Boolean(
-    /(?:auto|flash(?:-lite|\s+lite)?)/i.test(effectiveBadge) &&
-    !/(?:auto|flash(?:-lite|\s+lite)?)/i.test(job.selectedBadge || "")
-  );
 
-  if ((isAutoDowngraded && !job.lastText) || (pageBanner && /\blimit\s+reached\b/i.test(pageBanner))) {
+  if (isExplicitLimitBanner && !job.lastText) {
     delete globalThis.__wsaActiveJob;
     return {
       done: false,
-      error: isAutoDowngraded
-        ? `[LIMIT_REACHED] Gemini: Limit reached · Upstream model auto-switched to ${effectiveBadge}`
-        : `[LIMIT_REACHED] Gemini: ${pageBanner}`,
+      error: `[LIMIT_REACHED] Gemini: ${pageBanner}`,
       text: "",
       thinking: "",
       model: effectiveBadge,
@@ -4764,11 +4756,11 @@ function _domPollTurnFn(reqId) {
     !job.lastThinking &&
     isPromptInEd
   );
-  if (promptUnsent && (/(?:auto|flash(?:-lite|\s+lite)?)/i.test(effectiveBadge) || (pageBanner && /\blimit\s+reached\b/i.test(pageBanner)))) {
+  if (promptUnsent && isExplicitLimitBanner) {
     delete globalThis.__wsaActiveJob;
     return {
       done: false,
-      error: `[LIMIT_REACHED] Gemini: Limit reached (active model: ${effectiveBadge || "Gemini Auto"})`,
+      error: `[LIMIT_REACHED] Gemini: ${pageBanner}`,
       text: "",
       thinking: "",
       model: effectiveBadge,
@@ -6322,9 +6314,9 @@ function _claudeInstallPageRuntimeFn() {
     const raw = String(text || "").trim();
     if (!raw) return "";
     const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
-    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
+    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after|on)|reset\s+usage|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
     const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
-    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+auto|auto|gemini\s+flash-lite|flash-lite|flash\s+lite|gemini\s+flash|flash)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:until|because|due\s+to|after)\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
+    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+flash-lite|flash-lite|flash\s+lite)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:flash-lite|flash\s+lite)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+until\s+(?:your\s+)?(?:limit\s+resets?|\d+:\d+|\w+\s+resets?)\b|\b(?:switched\s+to|responses\s+will\s+use)\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:because|due\s+to|after)\s+(?:reaching\s+)?(?:your\s+)?limit\b|\breset\s+usage\s+(?:on|at|in)?\b|\busage\s+will\s+reset\b|\blimit\s+resets?\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {
@@ -7805,9 +7797,9 @@ function _installWsaDomUtilsFn() {
     const raw = String(text || "").trim();
     if (!raw) return "";
     const softPctRe = /\b(?:over\s+|nearly\s+|almost\s+|approaching\s+|used\s+)?(?:[1-9]?\d)\s*%\s+of\s+(?:your\s+)?(?:\S+\s+){0,3}(?:limit|limi|quota|usage)\b/i;
-    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after)|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
+    const hardBlockRe = /\b(?:reached|exceeded|hit|exhausted|will\s+reset|resets?\s+(?:at|in|after|on)|reset\s+usage|0\s+messages|out\s+of\s+(?:free\s+)?messages|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|cannot\s+send|try\s+again\s+(?:later|at|in)|until\s+\d)\b/i;
     const isSoftOnly = (s) => softPctRe.test(s) && !hardBlockRe.test(s);
-    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+auto|auto|gemini\s+flash-lite|flash-lite|flash\s+lite|gemini\s+flash|flash)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:until|because|due\s+to|after)\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
+    const re = /(?:you(?:'|’)?ve|you\s+have)\s+(?:reached|hit|exceeded)(?:\s+\S+){0,6}\s+(?:cap|limit)|(?:rate|usage|message|hourly|daily(?:\s+(?:chat|message|free))?|weekly|monthly|\d+\s*[- ]?\s*hour|plan|free|session|reasoning|thinking|deepthink|search|credit)\s+limit\b(?:\s+(?:has\s+been\s+)?(?:reached|exceeded|hit|will\s+reset|resets))?|\blimit\s+(?:has\s+been\s+)?(?:reached|exceeded|resets|will\s+reset)|(?:out\s+of\s+(?:free\s+)?messages|(?:0|zero|no)\s+messages\s+(?:left|remaining)|(?:out\s+of|insufficient|no)\s+(?:venice\s+)?credits|upgrade\s+to\s+pro\s+to\s+(?:continue|chat|send)|too\s+many\s+(?:concurrent\s+)?requests|resource[_\s-]*exhausted|quota\s+exceeded|(?:server|service|system|model)\s+is\s+(?:currently\s+)?busy|high\s+(?:demand|traffic)|http\s*(?:error\s*)?429\b|responses\s+will\s+use\s+(?:another|a\s+different|the\s+mini|gemini\s+flash-lite|flash-lite|flash\s+lite)\b|\bswitched\s+to\s+(?:gemini\s+)?(?:flash-lite|flash\s+lite)\b|\busing\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+until\s+(?:your\s+)?(?:limit\s+resets?|\d+:\d+|\w+\s+resets?)\b|\b(?:switched\s+to|responses\s+will\s+use)\s+(?:gemini\s+)?(?:auto|flash-lite|flash\s+lite|flash)\s+(?:because|due\s+to|after)\s+(?:reaching\s+)?(?:your\s+)?limit\b|\breset\s+usage\s+(?:on|at|in)?\b|\busage\s+will\s+reset\b|\blimit\s+resets?\b|\b(?:you(?:'|’)?ve|you\s+have)\s+reached\s+(?:your\s+|the\s+)?(?:gemini\s+)?(?:pro|advanced)?\s*limit\b|\b(?:gemini\s+)?(?:pro|advanced)\s+(?:limit|quota)\s+(?:reached|exceeded|hit)\b|\breached\s+(?:your|the)?\s*(?:daily|hourly|usage|message)?\s*limit\s+for\s+gemini\b)/i;
     if (isBanner) {
       const parts = raw.split(/\s*\|\s*|\r?\n+|(?<=[.!?])\s+/).map(p => p.replace(/\s+/g, " ").trim()).filter(Boolean);
       for (const seg of parts) {

@@ -246,7 +246,7 @@ def extract_upstream_model_info(raw_or_inner) -> dict:
 
     is_downgraded = bool(
         executed_mode == 6
-        or (badge and any(k in badge.lower() for k in ("flash-lite", "flash lite", "auto", "gemini auto")))
+        or (badge and any(k in badge.lower() for k in ("flash-lite", "flash lite")))
     )
     is_tier4 = bool(
         not is_downgraded
