@@ -716,3 +716,74 @@ def classify_task_complexity(prompt: str, state: Any = None) -> Dict[str, Any]:
         "reasons": reasons,
         "fast_direct": bool(mode == "direct" and is_fast_single),
     }
+
+
+_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+
+_CONFIRMATION_PATTERNS = [
+    re.compile(r"\b(?:do|would|should|could|can)\s+you\s+(?:want|like|prefer|wish|confirm|approve|decide|have|need)\b", re.I),
+    re.compile(r"\b(?:shall|should)\s+i\s+(?:download|install|configure|proceed|setup|run|use|overwrite|start)\b", re.I),
+    re.compile(r"\b(?:please\s+)?(?:confirm|clarify|let me know|choose|select|specify)\s+(?:if|whether|which|how|what|before|your)\b", re.I),
+    re.compile(r"\b(?:waiting\s+for|awaiting)\s+(?:your\s+)?(?:confirmation|input|response|decision|guidance|approval)\b", re.I),
+    re.compile(r"\b(?:before\s+(?:i|we)\s+(?:can\s+)?(?:proceed|continue|execute|start|apply|download|install|run))\b", re.I),
+    re.compile(r"\b(?:how\s+would\s+you\s+like\s+(?:to\s+proceed|me\s+to))\b", re.I),
+    re.compile(r"\b(?:do\s+you\s+have\s+a\s+preference|what\s+is\s+your\s+preference)\b", re.I),
+]
+
+_ISSUE_PATTERNS = [
+    re.compile(r"\b(?:critical\s+issue|blocker|blocking\s+issue|encountered\s+an\s+issue|found\s+an\s+issue|cannot\s+proceed|unable\s+to\s+proceed)\b", re.I),
+    re.compile(r"\b(?:hardware\s+limitation|gpu\s+not\s+(?:found|supported|available)|cuda\s+not\s+available|out\s+of\s+memory|insufficient\s+(?:disk|vram|memory))\b", re.I),
+    re.compile(r"\b(?:missing\s+prerequisite|dependency\s+conflict|merge\s+conflict|authentication\s+required)\b", re.I),
+    re.compile(r"\b(?:requires?\s+(?:your|user|manual)\s+(?:intervention|action|confirmation|input))\b", re.I),
+]
+
+
+def _detect_ai_confirmation_or_issue(text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Detect whether a model response asks for user confirmation/decision or reports an issue."""
+    if not text or not isinstance(text, str):
+        return None
+    prose = _CODE_BLOCK_RE.sub("", text).strip()
+    if not prose:
+        return None
+
+    if re.search(r'"verdict"\s*:\s*"(?:pass|fail)"', prose, re.I):
+        return None
+    if re.search(r"\b(?:all\s+(?:tasks|requirements|fixes|edits|files)\s+(?:are\s+)?(?:complete|done|verified))\b", prose, re.I):
+        return None
+
+    has_issue = any(pat.search(prose) for pat in _ISSUE_PATTERNS)
+    has_confirm = any(pat.search(prose) for pat in _CONFIRMATION_PATTERNS)
+
+    paragraphs = [p.strip() for p in prose.split("\n\n") if p.strip()]
+    last_paragraph = paragraphs[-1] if paragraphs else ""
+    has_trailing_question = bool(
+        "?" in last_paragraph
+        and re.search(r"\b(?:you|your|confirm|proceed|prefer|should|choice|option)\b", last_paragraph, re.I)
+    )
+
+    if not (has_issue or has_confirm or has_trailing_question):
+        return None
+
+    options: List[str] = []
+    for opt_m in re.finditer(r"(?:^|\n)\s*(?:[1-9][.)]|\([a-zA-Z0-9]\)|[-*])\s+([^\n]{3,180})", prose):
+        opt_text = opt_m.group(1).strip()
+        if opt_text and not opt_text.startswith("#"):
+            options.append(opt_text)
+
+    relevant_lines: List[str] = []
+    for line in prose.splitlines():
+        line_s = line.strip()
+        if not line_s:
+            continue
+        if any(pat.search(line_s) for pat in _ISSUE_PATTERNS + _CONFIRMATION_PATTERNS) or ("?" in line_s and re.search(r"\b(?:you|your|confirm|should|prefer)\b", line_s, re.I)):
+            relevant_lines.append(line_s)
+
+    summary = "\n".join(relevant_lines[:4]) if relevant_lines else last_paragraph[:300]
+
+    return {
+        "type": "issue" if has_issue and not has_confirm else "confirmation",
+        "has_issue": has_issue,
+        "has_confirmation": has_confirm or has_trailing_question,
+        "summary": summary[:400],
+        "options": options[:5],
+    }

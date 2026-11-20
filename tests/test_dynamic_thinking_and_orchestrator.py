@@ -577,3 +577,120 @@ def test_classify_task_complexity_identifies_repo_setup_and_model_integration(tm
     assert res["mode"] == "orchestrate", f"Expected orchestrate, got {res}"
     assert res["score"] >= 4
 
+
+def test_dynamic_tools_registered_in_roles_and_definitions():
+    """dynamic_architect, dynamic_coder, dynamic_verifier, dynamic_explorer, ask_user must be registered in schemas and role toolsets."""
+    from wsa_agent.tools import TOOL_DEFINITIONS
+    from wsa_agent.permissions import READ_ONLY_TOOLS
+    from wsa_agent.subagents import EXPLORER_TOOLS, ARCHITECT_TOOLS, CODER_TOOLS, VERIFIER_TOOLS
+
+    tool_names = {t["function"]["name"] for t in TOOL_DEFINITIONS}
+    for req_tool in ("dynamic_architect", "dynamic_coder", "dynamic_verifier", "dynamic_explorer", "ask_user"):
+        assert req_tool in tool_names
+        assert req_tool in READ_ONLY_TOOLS
+
+    assert "dynamic_architect" in ARCHITECT_TOOLS
+    assert "dynamic_coder" in CODER_TOOLS
+    assert "dynamic_verifier" in VERIFIER_TOOLS
+    assert "dynamic_explorer" in EXPLORER_TOOLS
+
+
+def test_dynamic_tools_execution_and_user_response(monkeypatch):
+    """Calling dynamic tools must prompt the user and return their chosen option or custom answer."""
+    from wsa_agent.tools import execute_tool, set_dynamic_consultation_input_fn
+
+    try:
+        # 1. User selects option by number
+        set_dynamic_consultation_input_fn(lambda p: "2")
+        res = execute_tool("dynamic_architect", {
+            "question": "Do you want to download model locally or use CPU/API fallback?",
+            "options": ["1. Local GPU execution", "2. CPU/API fallback"],
+            "default_choice": "2. CPU/API fallback",
+        })
+        assert "CPU/API fallback" in res
+
+        # 2. User types custom guidance
+        set_dynamic_consultation_input_fn(lambda p: "I have RTX 3060 6GB, configure 4-bit quantization")
+        res = execute_tool("dynamic_coder", {
+            "question": "CUDA memory constraint encountered. How should we proceed?",
+            "options": ["Fallback to CPU", "Quantize weights"],
+        })
+        assert "4-bit quantization" in res
+
+        # 3. User aborts workflow cleanly
+        set_dynamic_consultation_input_fn(lambda p: "a")
+        res = execute_tool("dynamic_verifier", {
+            "question": "Verification check revealed breaking regression. Proceed?",
+        })
+        assert "[ABORTED_BY_USER]" in res
+    finally:
+        set_dynamic_consultation_input_fn(None)
+
+
+def test_detect_ai_confirmation_or_issue_handles_all_cases():
+    """_detect_ai_confirmation_or_issue must detect confirmation questions and issues, and ignore normal completion."""
+    from wsa_agent.context import _detect_ai_confirmation_or_issue
+
+    # 1. Confirmation question from user screenshot context
+    prompt_q = (
+        "Downloading the full 14B model weights requires 15GB disk space and a CUDA GPU with >=12GB VRAM.\n"
+        "Do you want me to download the whole model in your own laptop for GPU inference, or configure a lightweight CPU/API fallback?\n"
+        "1. Download full weights locally (~15GB) for GPU execution\n"
+        "2. Setup lightweight CPU or remote API fallback\n"
+        "Please confirm before I proceed with the installation."
+    )
+    res = _detect_ai_confirmation_or_issue(prompt_q)
+    assert res is not None
+    assert res["has_confirmation"] is True
+    assert len(res["options"]) == 2
+
+    # 2. Issue with hardware
+    issue_text = "Critical issue: CUDA not available on this machine. PyTorch is running in CPU mode. Should I continue with CPU-only installation?"
+    res = _detect_ai_confirmation_or_issue(issue_text)
+    assert res is not None
+    assert res["has_issue"] is True
+
+    # 3. Normal verified completion (no trigger)
+    done_text = (
+        "I have completed all requested changes.\n"
+        "```python\n# Should we check something? pass\n```\n"
+        "All requirements are complete and verified."
+    )
+    assert _detect_ai_confirmation_or_issue(done_text) is None
+
+
+def test_prompt_user_for_orchestrator_decision_options():
+    """_prompt_user_for_orchestrator_decision must correctly handle continue, skip, abort, and custom answers."""
+    from wsa_agent.session import SessionState
+    from wsa_agent.subagents import _prompt_user_for_orchestrator_decision
+
+    state = SessionState()
+    info = {
+        "type": "confirmation",
+        "summary": "Should we use local GPU or API fallback?",
+        "options": ["Local GPU", "API fallback"],
+    }
+
+    # Custom answer
+    res = _prompt_user_for_orchestrator_decision("Test", info, state, input_fn=lambda p: "Use API fallback with Gemini")
+    assert res["action"] == "answer"
+    assert "Gemini" in res["response"]
+
+    # Option selection
+    res = _prompt_user_for_orchestrator_decision("Test", info, state, input_fn=lambda p: "1")
+    assert res["action"] == "answer"
+    assert res["response"] == "Local GPU"
+
+    # Default continue
+    res = _prompt_user_for_orchestrator_decision("Test", info, state, input_fn=lambda p: "")
+    assert res["action"] == "continue"
+
+    # Skip
+    res = _prompt_user_for_orchestrator_decision("Test", info, state, input_fn=lambda p: "s")
+    assert res["action"] == "skip"
+
+    # Abort
+    res = _prompt_user_for_orchestrator_decision("Test", info, state, input_fn=lambda p: "a")
+    assert res["action"] == "abort"
+
+

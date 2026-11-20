@@ -37,7 +37,7 @@ from .agent import (
     execute_agent_loop,
 )
 from .client import WSAClient
-from .context import FileContextLedger, build_context_packet
+from .context import FileContextLedger, build_context_packet, _detect_ai_confirmation_or_issue
 from .session import SessionState
 from .tools import TOOL_DEFINITIONS, set_active_file_ledger
 from .runtime import serialized_turn
@@ -60,9 +60,15 @@ EXPLORER_TOOLS: Set[str] = {
     "todo",
     "wait_for",
     "detect_toolchain",
+    "dynamic_explorer",
+    "dynamic_architect",
+    "ask_user",
 }
 
-ARCHITECT_TOOLS: Set[str] = set(EXPLORER_TOOLS)
+ARCHITECT_TOOLS: Set[str] = set(EXPLORER_TOOLS) | {
+    "dynamic_architect",
+    "ask_user",
+}
 
 CODER_TOOLS: Set[str] = {
     "get_file_outline",
@@ -101,6 +107,8 @@ CODER_TOOLS: Set[str] = {
     "web_fetch",
     "todo",
     "wait_for",
+    "dynamic_coder",
+    "ask_user",
 }
 
 VERIFIER_TOOLS: Set[str] = {
@@ -129,6 +137,8 @@ VERIFIER_TOOLS: Set[str] = {
     "web_fetch",
     "todo",
     "wait_for",
+    "dynamic_verifier",
+    "ask_user",
 }
 
 SECURITY_TOOLS: Set[str] = {
@@ -156,6 +166,9 @@ SECURITY_TOOLS: Set[str] = {
     "git",
     "todo",
     "wait_for",
+    "dynamic_coder",
+    "dynamic_verifier",
+    "ask_user",
 }
 
 ROLE_ALLOWED_TOOLS: Dict[str, Set[str]] = {
@@ -192,7 +205,8 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "   - Debugging & Bug Fixing: trace the full input->state->failure dataflow, identify the true root cause, and `search_files` for all sibling call sites sharing the same bug pattern.\n"
         "   - Normal Websites & UI (non-3D): lock an unslopped Obsidian-Black & Crisp White editorial direction (`#090A0D` obsidian canvas, `#111318`/`#161920` elevated surfaces, `1px solid rgba(255,255,255,0.08)` hairlines, `#F5F6F8` crisp off-white ink, `#8E95A5` muted slate, `#F5F6F8` primary CTA button with `#090A0D` dark ink, architectural hairline grids, zero purple/neon gradients or emoji slop) unless a light theme is requested.\n"
         "   - 3D Websites: lock seamless atmospheric palette continuity (`scene.background` + `FogExp2` + CSS `--bg` with zero harsh horizon cuts), sculptural multi-part 3D/shader forms banning cheap 'Saturn-ring + sphere' primitives, asymmetric 3D vs typography safe zones, and frosted surface cards/headers.\n"
-        "4. Format inspection calls as plain ```tool_call JSON blocks until needed facts are gathered, then synthesize a structured Deep Research & Reconnaissance Report."
+        "4. Format inspection calls as plain ```tool_call JSON blocks until needed facts are gathered, then synthesize a structured Deep Research & Reconnaissance Report.\n"
+        "5. Dynamic User Decisions & Help: If you encounter an issue, technical ambiguity, hardware constraint (e.g. GPU vs CPU, model size, disk space), or need user confirmation before planning, call `dynamic_explorer` (or `dynamic_architect`) with your question and options. WSA pauses the workflow, prompts the user in the CLI, and returns their explicit decision."
     ),
     "architect": (
         "Role: WSA Architect — read-only principal system designer, visual art director, and execution planner.\n"
@@ -207,7 +221,8 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "4. Output your final plan inside a ```json block containing a JSON array of objects:\n"
         '   [{"id": "t1", "title": "...", "description": "Exact file architecture & contract details", "owned_files": ["path/a.py"], "depends_on": [], '
         '"acceptance": "Exact checkable outcome", "ui": false}]\n'
-        "5. Do not mutate files; ground every task in real workspace paths."
+        "5. Do not mutate files; ground every task in real workspace paths.\n"
+        "6. Dynamic User Decisions & Help: If you need clarification on architectural trade-offs, library/framework selection, or hardware/model deployment choices, call `dynamic_architect` with your question, context, and options. WSA will pause and ask the user directly, returning their explicit decision so your blueprint matches their exact preference."
     ),
     "coder": (
         "Role: WSA Coder — surgical, high-precision software, backend & UI implementation specialist.\n"
@@ -217,7 +232,8 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "3. Use surgical `patch_file` with exact surrounding anchors/hunks for existing files — never leave `TODO`/`...` stubs. When fixing bugs, patch the root cause and all sibling call sites in scope. Write secure code by default (validated inputs, parameterized queries, `textContent` over `innerHTML`, `rel=\"noopener noreferrer\"`).\n"
         "4. Preserve existing imports, comments, style, and unrelated callers.\n"
         "5. After edits, run targeted verification with the project's native tools (`run_tests` auto-picks pytest/vitest/cargo/go/dotnet/phpunit/rspec/…; `py_compile`, `node --check`/`tsc --noEmit`, `cargo check`, `go vet`, `php -l`; `visual_inspect` for UI) and fix any failure or visual/contrast defect before concluding. If a module or tool is missing (`No module named`, `Cannot find module`, `not recognized`), call `install_dependencies` (libraries) or `install_runtime` (a missing language/tool) once and re-run — never repeat an unchanged failing command.\n"
-        "6. Output clean ```tool_call JSON blocks for local actions without dumping untouched files in prose."
+        "6. Output clean ```tool_call JSON blocks for local actions without dumping untouched files in prose.\n"
+        "7. Dynamic User Decisions & Help: If you encounter a blocker, missing credentials, hardware/dependency constraint, or need confirmation between tasks, call `dynamic_coder` with your question and options. WSA will pause and ask the user, returning their guidance to continue smoothly."
     ),
     "verifier": (
         "Role: WSA Verifier — independent QA, runtime, and regression verification specialist.\n"
@@ -227,7 +243,8 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
         "3. Check real test pass counts and observed command outputs (not merely exit code 0) and report exact file/line defects.\n"
         "4. End your response with a strict JSON verdict block:\n"
         '   ```json\n   {"verdict": "pass", "checks": ["pytest: 12 passed"], "failures": [], "summary": "..."}\n   ```\n'
-        '   Use `"verdict": "fail"` whenever any check errors, fails assertions, or leaves broken UI/runtime behavior.'
+        '   Use `"verdict": "fail"` whenever any check errors, fails assertions, or leaves broken UI/runtime behavior.\n'
+        "5. Dynamic User Help: If you encounter ambiguous verification requirements, unexpected visual/runtime behavior, or need user confirmation on interactive behavior, call `dynamic_verifier`."
     ),
     "security": (
         "Role: WSA Security Fixer — adversarial web & application security auditor and surgical remediator.\n"
@@ -1238,6 +1255,147 @@ def _recover_orchestrated_stage_limit(
     return False
 
 
+def _prompt_user_for_orchestrator_decision(
+    stage_label: str,
+    decision_info: Dict[str, Any],
+    state: SessionState,
+    default_action: str = "continue",
+    input_fn: Optional[Callable[[str], str]] = None,
+) -> Dict[str, Any]:
+    """Prompt the user dynamically when an AI stage/task raises an issue or asks for confirmation."""
+    import sys
+    from rich.markup import escape
+    from rich.panel import Panel
+
+    cb = getattr(state, "approval_callback", None)
+    if cb is not None:
+        try:
+            req = {
+                "tool": "dynamic_checkpoint",
+                "stage": stage_label,
+                "summary": decision_info.get("summary", ""),
+                "options": decision_info.get("options", []),
+                "type": decision_info.get("type", "confirmation"),
+            }
+            res = cb(req)
+            if isinstance(res, dict) and res.get("action"):
+                return res
+            elif res is True:
+                return {"action": "continue", "response": ""}
+            elif res is False:
+                return {"action": "abort", "response": "Declined by user"}
+        except Exception:
+            pass
+
+    is_interactive = (
+        input_fn is not None
+        or (sys.stdin is not None and sys.stdin.isatty() and sys.stdout is not None and sys.stdout.isatty())
+    )
+    if not is_interactive:
+        return {"action": default_action, "response": ""}
+
+    try:
+        R._release_console_live(R.console)
+        R.sync_theme()
+    except Exception:
+        pass
+
+    prompt_type = decision_info.get("type", "confirmation")
+    border_style = R.Theme.WARN if prompt_type == "issue" else R.Theme.ACCENT
+    title = f"Dynamic Checkpoint · {stage_label}"
+
+    body_lines = [
+        f"[bold {R.Theme.PRIMARY}]{escape(stage_label)}[/]",
+        "",
+        escape(decision_info.get("summary", "")),
+    ]
+    options = decision_info.get("options") or []
+    if options:
+        body_lines.append("")
+        body_lines.append(f"[bold {R.Theme.DIM}]Detected Options:[/{R.Theme.DIM}]")
+        for idx, opt in enumerate(options, 1):
+            body_lines.append(f"  [{R.Theme.ACCENT}]{idx}.[/] {escape(opt)}")
+
+    body_lines.append("")
+    body_lines.append(
+        f"[{R.Theme.DIM}]Controls:[/] "
+        f"[bold {R.Theme.PRIMARY}]\\[Enter][/] Continue default  "
+        f"[bold {R.Theme.ACCENT}]\\[r][/] Retry  "
+        f"[bold {R.Theme.ACCENT}]\\[s][/] Skip  "
+        f"[bold {R.Theme.WARN}]\\[a][/] Abort  "
+        f"[bold {R.Theme.PRIMARY}]or type your instructions/answer directly[/]"
+    )
+
+    try:
+        R.console.print()
+        R.console.print(
+            Panel(
+                "\n".join(body_lines),
+                title=f"[bold {border_style}]{title}[/]",
+                border_style=border_style,
+                padding=(1, 2),
+            )
+        )
+    except Exception:
+        print(f"\n--- {title} ---")
+        print(decision_info.get("summary", ""))
+
+    try:
+        prompt_str = f"  [{R.Theme.PRIMARY}]Your decision / answer[/] [{R.Theme.DIM}](Enter to continue)[/]: "
+        if input_fn:
+            ans = input_fn(prompt_str).strip()
+        else:
+            ans = R.console.input(prompt_str).strip()
+    except (EOFError, KeyboardInterrupt):
+        return {"action": "abort", "response": "Aborted by user"}
+
+    if not ans:
+        return {"action": default_action, "response": ""}
+    low = ans.lower().strip()
+    if low in ("c", "continue"):
+        return {"action": "continue", "response": ""}
+    if low in ("s", "skip"):
+        return {"action": "skip", "response": ""}
+    if low in ("a", "abort", "q", "quit", "stop"):
+        return {"action": "abort", "response": "Aborted by user"}
+    if low in ("r", "retry"):
+        try:
+            extra = R.console.input(f"  [{R.Theme.PRIMARY}]Optional retry instructions[/] [{R.Theme.DIM}](Enter for none)[/]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            extra = ""
+        return {"action": "retry", "response": extra}
+
+    if low.isdigit() and options and 1 <= int(low) <= len(options):
+        selected_opt = options[int(low) - 1]
+        return {"action": "answer", "response": selected_opt}
+
+    return {"action": "answer", "response": ans}
+
+
+def _prompt_user_on_task_issue(
+    task_item: Dict[str, Any],
+    issue: str,
+    state: SessionState,
+) -> Dict[str, Any]:
+    """Prompt the user dynamically when a DAG task encounters an issue instead of blindly forcing next task."""
+    issue_decision = {
+        "type": "issue",
+        "summary": f"Task [{task_item['id']}] '{task_item['title']}' encountered an issue:\n{issue}",
+        "options": [
+            "Continue to next task (ignore issue and proceed)",
+            "Retry this task with your custom instructions",
+            "Skip this task cleanly (unblock dependent tasks)",
+            "Abort workflow cleanly (preserve state and stop)",
+        ],
+    }
+    return _prompt_user_for_orchestrator_decision(
+        f"Task [{task_item['id']}] Issue",
+        issue_decision,
+        state,
+        default_action="continue",
+    )
+
+
 @serialized_turn
 def run_orchestrated_turn(
     user_input: str,
@@ -1445,6 +1603,18 @@ def run_orchestrated_turn(
             if not exp_res.get("ok", False):
                 return _failed_orchestration_result("explorer", str(exp_res.get("aborted_reason") or "incomplete"))
             explorer_summary = str(exp_res.get("final_text") or "").strip()
+            ai_exp_dec = _detect_ai_confirmation_or_issue(explorer_summary)
+            if ai_exp_dec and not exp_res.get("tool_calls_count"):
+                u_choice = _prompt_user_for_orchestrator_decision("Explorer Reconnaissance", ai_exp_dec, state)
+                if u_choice["action"] == "abort":
+                    return _interrupted_orchestration_result("explorer")
+                elif u_choice["action"] in ("answer", "retry"):
+                    resp_txt = u_choice.get("response") or "Proceed with default."
+                    guidance = f"\n\n[User Decision & Guidance from Explorer]:\n{resp_txt}"
+                    explorer_summary += guidance
+                    user_input += guidance
+                    if hasattr(state, "decisions"):
+                        state.decisions.append(resp_txt[:240])
 
             # ── Stage 2: Architect ──────────────────────────────────────────────
             _ui_stage_banner("architect", "Designing detailed file-by-file architecture blueprint & dependency DAG…")
@@ -1486,6 +1656,16 @@ def run_orchestrated_turn(
             if not arch_res.get("ok", False):
                 return _failed_orchestration_result("architect", str(arch_res.get("aborted_reason") or "incomplete"))
             arch_raw_text = str(arch_res.get("final_text") or "")
+            ai_arch_dec = _detect_ai_confirmation_or_issue(arch_raw_text)
+            if ai_arch_dec and not arch_res.get("tool_calls_count") and not _extract_json_block(arch_raw_text, list):
+                u_choice = _prompt_user_for_orchestrator_decision("Architect Blueprint", ai_arch_dec, state)
+                if u_choice["action"] == "abort":
+                    return _interrupted_orchestration_result("architect")
+                elif u_choice["action"] in ("answer", "retry"):
+                    resp_txt = u_choice.get("response") or "Proceed with default."
+                    guidance = f"\n\n[User Architectural Directive]:\n{resp_txt}"
+                    user_input += guidance
+                    arch_raw_text += guidance
             arch_blueprint = _extract_architect_blueprint(arch_raw_text)
             if arch_blueprint:
                 try:
@@ -1651,6 +1831,31 @@ def run_orchestrated_turn(
             wf_accum: List[str] = list(res.get("written_files") or [])
             initial_reason = str(res.get("aborted_reason") or "")
             has_zero_tools = "tool_calls_count" in res and res.get("tool_calls_count") == 0
+            final_text = str(res.get("final_text") or "")
+            ai_coder_dec = _detect_ai_confirmation_or_issue(final_text)
+            if ai_coder_dec and not wf_accum and has_zero_tools:
+                u_choice = _prompt_user_for_orchestrator_decision(
+                    f"Task [{tid}] {task_item['title']}",
+                    ai_coder_dec,
+                    state,
+                )
+                if u_choice["action"] == "abort":
+                    res = dict(res, ok=False, aborted_reason="aborted_by_user")
+                    return task_item, res
+                elif u_choice["action"] == "skip":
+                    task_item["status"] = "skipped"
+                    res = dict(res, ok=True, skipped=True, written_files=[], final_text=f"Task skipped by user: {final_text}")
+                    return task_item, res
+                elif u_choice["action"] in ("answer", "retry"):
+                    guidance = u_choice.get("response") or "Please proceed with implementation."
+                    retry_args = dict(worker_args, prompt=(
+                        f"{worker_prompt}\n\n[User Guidance & Instructions]:\n{guidance}\n\n"
+                        "Please proceed with the implementation using the above guidance."
+                    ))
+                    res = _run_stage(**retry_args)
+                    wf_accum = sorted(set(wf_accum) | set(res.get("written_files") or []))
+                    final_text = str(res.get("final_text") or "")
+                    has_zero_tools = "tool_calls_count" in res and res.get("tool_calls_count") == 0
             budget_poisoned = _has_budget_poison(res)
             fake_tool_prose = _looks_like_fake_tool_request(res.get("final_text"))
             is_mutating_slice = bool(owned) and not _is_verification_task(task_item)
@@ -1760,23 +1965,59 @@ def run_orchestrated_turn(
                 break
             if res.get("ok"):
                 completed_ids.add(done_item["id"])
-            else:
-                worker_failures.append({
-                    "file": done_item["id"],
-                    "issue": str(res.get("aborted_reason") or "Worker returned failure without a reason"),
-                })
-            pending.remove(done_item)
-            if res.get("aborted_reason") == "permission_denied":
+            elif res.get("aborted_reason") == "aborted_by_user":
+                aborted_reason = "aborted_by_user"
+                for remaining in pending:
+                    remaining["status"] = "blocked"
+                break
+            elif res.get("aborted_reason") == "permission_denied":
                 aborted_reason = "permission_denied"
                 for remaining in pending:
                     remaining["status"] = "blocked"
                 break
-            if _is_interrupted_res(res):
+            elif _is_interrupted_res(res):
                 interrupted = True
                 aborted_reason = "interrupted"
                 if hasattr(state, "auto_checkpoint"):
                     state.auto_checkpoint()
                 break
+            else:
+                fail_issue = str(res.get("aborted_reason") or "Worker returned failure without a reason")
+                u_choice = _prompt_user_on_task_issue(
+                    task_item=done_item,
+                    issue=fail_issue,
+                    state=state,
+                )
+                if u_choice["action"] == "abort":
+                    aborted_reason = "aborted_by_user"
+                    for remaining in pending:
+                        remaining["status"] = "blocked"
+                    break
+                elif u_choice["action"] == "skip":
+                    done_item["status"] = "skipped"
+                    completed_ids.add(done_item["id"])
+                    task_summaries.append(f"- [{done_item['id']}] {done_item['title']} -> skipped by user ({fail_issue})")
+                    pending.remove(done_item)
+                    continue
+                elif u_choice["action"] in ("retry", "answer"):
+                    guidance = u_choice.get("response") or "Please retry and resolve the issue."
+                    retry_prompt = f"{done_item['title']}\n\n[User Guidance on Issue]:\n{guidance}\n\nResolve the issue and complete the task."
+                    retry_item, retry_res = _execute_task_slice(dict(done_item, description=retry_prompt))
+                    if retry_res.get("ok"):
+                        completed_ids.add(done_item["id"])
+                        pending.remove(done_item)
+                        continue
+                    else:
+                        worker_failures.append({
+                            "file": done_item["id"],
+                            "issue": str(retry_res.get("aborted_reason") or fail_issue),
+                        })
+                else:
+                    worker_failures.append({
+                        "file": done_item["id"],
+                        "issue": fail_issue,
+                    })
+            pending.remove(done_item)
 
             if hasattr(state, "auto_checkpoint"):
                 state.auto_checkpoint()
@@ -1859,6 +2100,10 @@ def run_orchestrated_turn(
                 ],
                 "summary": "Prerequisites did not complete. Final verification was skipped.",
             }
+        elif aborted_reason == "aborted_by_user":
+            verdict = {"verdict": "fail", "checks": [],
+                       "failures": [{"file": "orchestrator", "issue": "Workflow stopped cleanly by user decision"}],
+                       "summary": "Workflow paused/aborted cleanly by user decision; remaining tasks skipped."}
         elif aborted_reason == "permission_denied":
             verdict = {"verdict": "fail", "checks": [],
                        "failures": [{"file": "coder", "issue": "Action approval was not granted"}],

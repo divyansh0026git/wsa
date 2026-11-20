@@ -1831,6 +1831,9 @@ def _maybe_anti_laziness_nudge(
     )
     has_stub = bool(round_num > 0 and _PROSE_STUB_RE.search(content))
     if has_deferred or has_punt or has_stub or truncated_skill_thought:
+        from .context import _detect_ai_confirmation_or_issue
+        if _detect_ai_confirmation_or_issue(content):
+            return None
         if missing_appointed_skills and tool_calls_count == 0:
             skills_csv = ",".join(missing_appointed_skills[:8])
             return (
@@ -3917,6 +3920,13 @@ def execute_agent_loop(
                     break
                 finally:
                     _close_stream_ui(cap_sr)
+                if str(result or "").startswith("[ABORTED_BY_USER]"):
+                    interrupted_in_tools = True
+                    aborted_reason = "aborted_by_user"
+                    if not quiet_ui:
+                        R.print_warn("Workflow aborted by user at dynamic checkpoint.")
+                    tool_result_messages.append({"role": "tool", "tool_call_id": tc_id, "name": name, "content": result})
+                    break
                 t_elapsed = max(0.0, time.monotonic() - t_start)
                 is_err = _is_error_result_text(result)
                 if name == "visual_inspect":

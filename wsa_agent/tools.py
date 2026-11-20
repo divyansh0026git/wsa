@@ -1284,6 +1284,101 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "dynamic_architect",
+            "description": (
+                "Stop workflow to consult the user on architecture trade-offs, tech stack choices, hardware/model constraints, or requirements clarification. WSA pauses, prompts the user, and returns their explicit decision."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question":       {"type": "string", "description": "Specific question, trade-off, or confirmation needed from the user"},
+                    "context":        {"type": "string", "description": "Brief context explaining why this decision is needed"},
+                    "options":        {"type": "array", "items": {"type": "string"}, "description": "Recommended options (e.g. ['1. Local GPU', '2. CPU/API fallback'])"},
+                    "default_choice": {"type": "string", "description": "Default choice if user proceeds without typing custom answer"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dynamic_coder",
+            "description": (
+                "Stop workflow during implementation to ask the user a critical question, report an unexpected blocker, or request confirmation between tasks. WSA pauses, prompts the user, and returns their guidance."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question":       {"type": "string", "description": "Specific question, blocker, or confirmation needed from the user"},
+                    "context":        {"type": "string", "description": "Brief context explaining the constraint or issue"},
+                    "options":        {"type": "array", "items": {"type": "string"}, "description": "Recommended options for the user"},
+                    "default_choice": {"type": "string", "description": "Default choice if user proceeds without typing custom answer"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dynamic_verifier",
+            "description": (
+                "Stop workflow during verification to consult the user on unexpected behavior, ambiguous verification requirements, or manual browser/UI testing confirmation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question":       {"type": "string", "description": "Verification question, unexpected finding, or manual test check needed from user"},
+                    "context":        {"type": "string", "description": "Details of the verification check or observed discrepancy"},
+                    "options":        {"type": "array", "items": {"type": "string"}, "description": "Recommended options for the user"},
+                    "default_choice": {"type": "string", "description": "Default choice if user proceeds without typing custom answer"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dynamic_explorer",
+            "description": (
+                "Stop workflow during reconnaissance to ask the user a clarifying domain, hardware, or scope question before architecture planning."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question":       {"type": "string", "description": "Specific question or clarification needed from the user"},
+                    "context":        {"type": "string", "description": "Brief context explaining what was discovered during reconnaissance"},
+                    "options":        {"type": "array", "items": {"type": "string"}, "description": "Recommended options for the user"},
+                    "default_choice": {"type": "string", "description": "Default choice if user proceeds without typing custom answer"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": (
+                "Ask the user a direct clarifying question or confirmation request. WSA pauses the workflow, presents the question in the CLI, and returns the user's explicit response."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question":       {"type": "string", "description": "Question or confirmation needed from the user"},
+                    "context":        {"type": "string", "description": "Brief context or background information"},
+                    "options":        {"type": "array", "items": {"type": "string"}, "description": "Optional list of choices for the user"},
+                    "default_choice": {"type": "string", "description": "Default choice if user presses Enter without typing"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
 ]
 
 _BUILTIN_TOOL_NAMES = frozenset(item["function"]["name"] for item in TOOL_DEFINITIONS)
@@ -2051,6 +2146,9 @@ def _execute_tool_unlocked(name: str, args: dict) -> str:
         if name == "set_dynamic_rule":   return _set_dynamic_rule(**args)
         if name == "list_dynamic_rules": return _list_dynamic_rules()
         if name == "remove_dynamic_rule": return _set_dynamic_rule(key=args.get("key", ""), rule="")
+        if name in ("dynamic_architect", "dynamic_coder", "dynamic_verifier", "dynamic_explorer", "ask_user"):
+            eff_role = name.replace("dynamic_", "") if name.startswith("dynamic_") else "orchestrator"
+            return _dynamic_user_consultation(role=eff_role, **args)
         if name in _custom_tools:        return _execute_custom_tool(name, args)
         return f"[Error] Unknown tool: {name}"
     except PermissionError as e:
@@ -2059,6 +2157,113 @@ def _execute_tool_unlocked(name: str, args: dict) -> str:
         return f"[Error] Wrong arguments for {name}: {e}"
     except Exception as e:
         return f"[Error] {type(e).__name__}: {e}"
+
+
+_dynamic_consultation_fn: Optional[Callable[[str], str]] = None
+
+
+def set_dynamic_consultation_input_fn(fn: Optional[Callable[[str], str]]) -> None:
+    """Override user input function for dynamic consultation (used in tests or UI embedding)."""
+    global _dynamic_consultation_fn
+    _dynamic_consultation_fn = fn
+
+
+def _dynamic_user_consultation(
+    question: str,
+    context: str = "",
+    options: Optional[List[str]] = None,
+    default_choice: str = "",
+    role: str = "orchestrator",
+) -> str:
+    """Prompt the user dynamically when an agent stage/task needs clarification or confirmation."""
+    import sys
+    from rich.markup import escape
+    from rich.panel import Panel
+    from .renderer import Theme, console, _release_console_live, sync_theme
+
+    try:
+        _release_console_live(console)
+        sync_theme()
+    except Exception:
+        pass
+
+    q_clean = str(question or "").strip()
+    ctx_clean = str(context or "").strip()
+    role_label = str(role or "orchestrator").capitalize()
+
+    lines = [
+        f"[bold {Theme.PRIMARY}]WSA Dynamic Checkpoint · {escape(role_label)}[/]",
+        "",
+        escape(q_clean),
+    ]
+    if ctx_clean:
+        lines.append("")
+        lines.append(f"[{Theme.DIM}]Context:[/{Theme.DIM}] {escape(ctx_clean)}")
+
+    opts_list = [str(o).strip() for o in (options or []) if str(o).strip()]
+    if opts_list:
+        lines.append("")
+        lines.append(f"[bold {Theme.DIM}]Options:[/{Theme.DIM}]")
+        for idx, opt in enumerate(opts_list, 1):
+            lines.append(f"  [{Theme.ACCENT}]{idx}.[/] {escape(opt)}")
+
+    lines.append("")
+    default_hint = f" (default: {escape(default_choice)})" if default_choice else ""
+    lines.append(
+        f"[{Theme.DIM}]Controls:[/] "
+        f"[bold {Theme.PRIMARY}]\\[Enter][/] Proceed{default_hint}  "
+        f"[bold {Theme.WARN}]\\[a][/] Abort  "
+        f"[bold {Theme.PRIMARY}]or type your explicit answer/guidance[/]"
+    )
+
+    try:
+        console.print()
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"[bold {Theme.ACCENT}]Dynamic Checkpoint · {escape(role_label)}[/]",
+                border_style=Theme.ACCENT,
+                padding=(1, 2),
+            )
+        )
+    except Exception:
+        print(f"\n--- Dynamic Checkpoint · {role_label} ---")
+        print(q_clean)
+        if ctx_clean:
+            print(f"Context: {ctx_clean}")
+        for idx, opt in enumerate(opts_list, 1):
+            print(f"  {idx}. {opt}")
+
+    is_interactive = (
+        _dynamic_consultation_fn is not None
+        or (sys.stdin is not None and sys.stdin.isatty() and sys.stdout is not None and sys.stdout.isatty())
+    )
+    if not is_interactive:
+        fallback = default_choice or (opts_list[0] if opts_list else "Proceed with recommended approach")
+        return f"[Non-interactive mode] User default applied: {fallback}"
+
+    try:
+        prompt_label = f"  [{Theme.PRIMARY}]Your decision / answer[/] [{Theme.DIM}](Enter to continue)[/]: "
+        if _dynamic_consultation_fn is not None:
+            user_reply = _dynamic_consultation_fn(prompt_label).strip()
+        else:
+            user_reply = console.input(prompt_label).strip()
+    except (EOFError, KeyboardInterrupt):
+        return "[ABORTED_BY_USER] User cancelled the workflow at this checkpoint."
+
+    if not user_reply:
+        fallback = default_choice or (opts_list[0] if opts_list else "Proceed with default")
+        return f"User confirmed to proceed: {fallback}"
+
+    low = user_reply.lower()
+    if low in ("a", "abort", "cancel", "q", "quit", "stop"):
+        return "[ABORTED_BY_USER] User explicitly aborted the workflow at this checkpoint."
+
+    if low.isdigit() and opts_list and 1 <= int(low) <= len(opts_list):
+        chosen = opts_list[int(low) - 1]
+        return f"User selected option {low}: {chosen}"
+
+    return f"User response / decision: {user_reply}"
 
 
 def _spawn_subagent(
