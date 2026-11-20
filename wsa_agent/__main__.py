@@ -581,7 +581,16 @@ def _try_resume(state: SessionState) -> bool:
     try:
         sessions = state.list_saved_sessions()
         project_str = str(state.project_root)
-        matches = [s for s in sessions if s.get("project") == project_str]
+        try:
+            target_root = Path(state.project_root).resolve()
+        except Exception:
+            target_root = None
+        matches = [
+            s for s in sessions
+            if s.get("project") == project_str
+            or str(s.get("project") or "").lower() == project_str.lower()
+            or (target_root and s.get("project") and Path(s["project"]).resolve() == target_root)
+        ]
         if not matches:
             return False
         latest = matches[0]
