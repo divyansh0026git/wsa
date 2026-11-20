@@ -9,14 +9,14 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-# ── Bundled Skill Registry (18 non-overlapping top-pick skills across 5 domains) ──
+# ── Bundled Canonical Skill Registry (5 Unified High-Density Domain Pillars) ──
 
 CATEGORY_LABELS: Dict[str, str] = {
-    "3d-motion": "3D, Shaders & Motion",
-    "ui-design": "UI & Anti-Slop",
-    "debugging-qa": "Debugging & Browser QA",
-    "security": "Website Security & Skill Safety",
-    "engineering": "Core Engineering",
+    "design": "3D, UI & Cinematic Craft",
+    "security": "Website Security & Guardrails",
+    "engineering": "Core Engineering & Workflow",
+    "debugging-qa": "Systematic Debugging & DevTools QA",
+    "docs": "Documentation Grounding",
 }
 
 
@@ -30,151 +30,140 @@ class SkillSpec:
 
 
 SKILL_SPECS: Tuple[SkillSpec, ...] = (
-    # 1. 3D, Shaders & Scroll Motion
+    # 1. 3D, UI & Cinematic Craft
     SkillSpec(
-        name="dream-loop",
-        category="3d-motion",
-        tagline="Visual quality critic loop: lock target look first, critique live renders until lighting & composition match",
-        source="achimala/dream-loop",
+        name="design-craft",
+        category="design",
+        tagline="Master Design Director & 3D Cinematic Craft: anti-slop typography, responsive layout, GSAP choreography, and award-winning WebGL/Three.js shaders (Igloo.inc & NASA Eyes on the Solar System standard)",
+        source="anthropic/greensock/threejs-skills/igloo",
+        excerpt_sections=("1. UI & Visual Identity (Anti-Slop Baseline)", "3. Igloo.inc-Class 3D Cinematic & Solar System Architecture"),
     ),
+    # 2. Website Security & Pre-Install Skill Safety
     SkillSpec(
-        name="img2threejs",
-        category="3d-motion",
-        tagline="8-pass vision-verified procedural Three.js hero asset builder (clean THREE.Group factory, no crude primitives)",
-        source="img2threejs/img2threejs",
+        name="security-guardrails",
+        category="security",
+        tagline="Master Website Security & Guardrails: OWASP Top 10 code security, 6-phase adversarial repo audit, secret hygiene, and pre-install skill safety verification",
+        source="cloudflare/semgrep/nvidia-skillspector",
+        excerpt_sections=("1. While-You-Code OWASP Top 10 Guardrails", "2. 6-Phase Adversarial Repository Security Audit"),
     ),
+    # 3. Core Software Engineering & Workflow
     SkillSpec(
-        name="gsap-skills",
-        category="3d-motion",
-        tagline="GSAP scroll-scrubbed timelines, ScrollTrigger pinned chapters, GPU-only motion, and gsap.context() cleanup",
-        source="greensock/gsap-skills",
+        name="engineering-workflow",
+        category="engineering",
+        tagline="Master Software Engineering Discipline: Karpathy simplicity, Red-Green-Refactor TDD, strict pre-completion evidence verification, and git safety guardrails",
+        source="karpathy/superpowers/git-guardrails",
+        excerpt_sections=("1. Karpathy 4-Pillar Clean Coding Discipline", "3. Verification Before Completion Gate"),
     ),
-    SkillSpec(
-        name="threejs-skills",
-        category="3d-motion",
-        tagline="Modern Three.js r150+ PBR materials, lighting, GLSL shaders, resize handling, and strict GPU disposal",
-        source="CloudAI-X/threejs-skills",
-    ),
-    # 2. UI & UX Design (Anti-Slop)
-    SkillSpec(
-        name="frontend-design",
-        category="ui-design",
-        tagline="Distinctive aesthetic baseline: bold typography, intentional layout direction, zero templated AI defaults",
-        source="anthropics/skills/frontend-design",
-        excerpt_sections=("Design principles", "Restraint and self-critique"),
-    ),
-    SkillSpec(
-        name="unslop",
-        category="ui-design",
-        tagline="Anti-slop polish (@heydamir, CC BY 4.0): eliminates purple glows, emoji chrome, and generic card grids",
-        source="heydamir/unslop",
-        excerpt_sections=("What good looks like", "Do not", "Checklist"),
-    ),
-    SkillSpec(
-        name="impeccable",
-        category="ui-design",
-        tagline="Design-director passes (critique/distill/typeset/colorize/polish) + deterministic anti-slop detector",
-        source="pbakaus/impeccable",
-    ),
-    SkillSpec(
-        name="web-design-guidelines",
-        category="ui-design",
-        tagline="Pre-ship UI/UX & accessibility audit: WCAG contrast, keyboard focus, ARIA, forms, touch targets, CLS",
-        source="vercel-labs/agent-skills",
-    ),
-    # 3. Debugging, Bug Fixing & Live Browser QA
+    # 4. Systematic Debugging & Browser QA
     SkillSpec(
         name="systematic-debugging",
         category="debugging-qa",
-        tagline="4-phase root-cause investigation protocol: no fixes without verified root cause first",
-        source="obra/superpowers",
-        excerpt_sections=("Quick Reference",),
+        tagline="Master Debugging & Browser QA: 4-phase root-cause investigation protocol, live Chrome DevTools inspection (console, network, DOM, memory), and performance profiling",
+        source="superpowers/chrome-devtools-mcp",
+        excerpt_sections=("1. The 4-Phase Root Cause Protocol", "2. Live Browser DevTools QA (Frontend & WebGL)"),
     ),
+    # 5. Documentation Grounding
     SkillSpec(
-        name="verification-before-completion",
-        category="debugging-qa",
-        tagline="Evidence-first completion gate: run fresh verification AFTER final edit and read real output/exit code",
-        source="obra/superpowers",
-    ),
-    SkillSpec(
-        name="chrome-devtools-qa",
-        category="debugging-qa",
-        tagline="Live browser console, network, DOM layout, memory leak, and Core Web Vitals performance debugging",
-        source="ChromeDevTools/chrome-devtools-mcp",
-    ),
-    # 4. Website Security & Pre-Install Skill Safety
-    SkillSpec(
-        name="security-audit",
-        category="security",
-        tagline="6-phase adversarial repo security auditor: hunt real exploit paths, disprove false positives, patch & verify",
-        source="cloudflare/security-audit-skill",
-    ),
-    SkillSpec(
-        name="semgrep-guardrails",
-        category="security",
-        tagline="While-you-code OWASP Top 10 & LLM Top 10 guardrails: XSS, SQLi, CSRF, SSRF, auth/IDOR, CSP, secret hygiene",
-        source="semgrep/skills",
-    ),
-    SkillSpec(
-        name="skill-spector",
-        category="security",
-        tagline="Pre-install scanner for third-party SKILL.md & plugins: detects prompt injection, obfuscation, exfiltration",
-        source="NVIDIA/SkillSpector",
-    ),
-    # 5. Core Software Engineering
-    SkillSpec(
-        name="karpathy-skills",
-        category="engineering",
-        tagline="4-pillar clean coding discipline: think before coding, simplicity first, surgical changes, goal-driven checks",
-        source="multica-ai/andrej-karpathy-skills",
-    ),
-    SkillSpec(
-        name="test-driven-development",
-        category="engineering",
-        tagline="Red-green-refactor disciplined engineering: write failing test first, implement minimally, verify & clean up",
-        source="obra/superpowers",
-        excerpt_sections=("Overview", "REFACTOR - Clean Up"),
-    ),
-    SkillSpec(
-        name="grill-and-git-guardrails",
-        category="engineering",
-        tagline="Pre-build clarity (grill-me requirements lock) + destructive git guardrails blocking force-push/hard-reset",
-        source="mattpocock/skills",
-    ),
-    SkillSpec(
-        name="context7-docs",
-        category="engineering",
-        tagline="Live version-accurate framework docs grounding: verify installed versions & fetch current docs before coding",
+        name="context-docs",
+        category="docs",
+        tagline="Live, version-accurate framework and library documentation grounding: inspect installed versions & fetch official current docs before coding",
         source="upstash/context7",
+        excerpt_sections=("The Ground-Before-Code Protocol",),
     ),
 )
 
 SKILL_BY_NAME: Dict[str, SkillSpec] = {spec.name: spec for spec in SKILL_SPECS}
 ALL_SKILL_NAMES: Tuple[str, ...] = tuple(spec.name for spec in SKILL_SPECS)
+CANONICAL_SPECS: Tuple[SkillSpec, ...] = SKILL_SPECS
+CANONICAL_SKILL_NAMES: Tuple[str, ...] = ALL_SKILL_NAMES
 
-# Friendly aliases users or web agents might type
-_SKILL_ALIASES: Dict[str, str] = {
-    "dreamloop": "dream-loop",
-    "dream_loop": "dream-loop",
-    "threejs": "threejs-skills",
-    "three-js": "threejs-skills",
-    "gsap": "gsap-skills",
-    "karpathy": "karpathy-skills",
-    "andrej-karpathy-skills": "karpathy-skills",
-    "chrome-devtools": "chrome-devtools-qa",
-    "chrome-devtools-mcp": "chrome-devtools-qa",
-    "devtools": "chrome-devtools-qa",
-    "security-audit-skill": "security-audit",
-    "semgrep": "semgrep-guardrails",
-    "skillspector": "skill-spector",
-    "grill-me": "grill-and-git-guardrails",
-    "git-guardrails": "grill-and-git-guardrails",
-    "context7": "context7-docs",
-    "tdd": "test-driven-development",
-    "debugging": "systematic-debugging",
-    "verify": "verification-before-completion",
-    "a11y": "web-design-guidelines",
+# Legacy-to-canonical mapping
+LEGACY_TO_CANONICAL: Dict[str, str] = {
+    "dream-loop": "design-craft",
+    "img2threejs": "design-craft",
+    "gsap-skills": "design-craft",
+    "threejs-skills": "design-craft",
+    "frontend-design": "design-craft",
+    "unslop": "design-craft",
+    "impeccable": "design-craft",
+    "web-design-guidelines": "design-craft",
+    "security-audit": "security-guardrails",
+    "semgrep-guardrails": "security-guardrails",
+    "skill-spector": "security-guardrails",
+    "karpathy-skills": "engineering-workflow",
+    "test-driven-development": "engineering-workflow",
+    "verification-before-completion": "engineering-workflow",
+    "grill-and-git-guardrails": "engineering-workflow",
+    "systematic-debugging": "systematic-debugging",
+    "chrome-devtools-qa": "systematic-debugging",
+    "context7-docs": "context-docs",
+    "context-docs": "context-docs",
+    "design-craft": "design-craft",
+    "security-guardrails": "security-guardrails",
+    "engineering-workflow": "engineering-workflow",
 }
+
+# Alias resolution dictionary
+_SKILL_ALIASES: Dict[str, str] = {
+    "design-craft": "design-craft",
+    "design": "design-craft",
+    "ui": "design-craft",
+    "3d": "design-craft",
+    "cinematic": "design-craft",
+    "igloo": "design-craft",
+    "solar-system": "design-craft",
+    "security-guardrails": "security-guardrails",
+    "security": "security-guardrails",
+    "guardrails": "security-guardrails",
+    "engineering-workflow": "engineering-workflow",
+    "engineering": "engineering-workflow",
+    "workflow": "engineering-workflow",
+    "systematic-debugging": "systematic-debugging",
+    "debugging": "systematic-debugging",
+    "context-docs": "context-docs",
+    "docs": "context-docs",
+    "dream-loop": "design-craft",
+    "dreamloop": "design-craft",
+    "dream_loop": "design-craft",
+    "img2threejs": "design-craft",
+    "gsap-skills": "design-craft",
+    "gsap": "design-craft",
+    "threejs-skills": "design-craft",
+    "threejs": "design-craft",
+    "three-js": "design-craft",
+    "frontend-design": "design-craft",
+    "unslop": "design-craft",
+    "impeccable": "design-craft",
+    "web-design-guidelines": "design-craft",
+    "a11y": "design-craft",
+    "security-audit": "security-guardrails",
+    "security-audit-skill": "security-guardrails",
+    "semgrep-guardrails": "security-guardrails",
+    "semgrep": "security-guardrails",
+    "skill-spector": "security-guardrails",
+    "skillspector": "security-guardrails",
+    "karpathy-skills": "engineering-workflow",
+    "karpathy": "engineering-workflow",
+    "andrej-karpathy-skills": "engineering-workflow",
+    "test-driven-development": "engineering-workflow",
+    "tdd": "engineering-workflow",
+    "verification-before-completion": "engineering-workflow",
+    "verify": "engineering-workflow",
+    "grill-and-git-guardrails": "engineering-workflow",
+    "grill-me": "engineering-workflow",
+    "git-guardrails": "engineering-workflow",
+    "chrome-devtools-qa": "systematic-debugging",
+    "chrome-devtools": "systematic-debugging",
+    "chrome-devtools-mcp": "systematic-debugging",
+    "devtools": "systematic-debugging",
+    "context7-docs": "context-docs",
+    "context7": "context-docs",
+}
+
+# Ensure any alias lookup in SKILL_BY_NAME also returns the canonical spec
+for _alias, _target in _SKILL_ALIASES.items():
+    if _alias not in SKILL_BY_NAME and _target in SKILL_BY_NAME:
+        SKILL_BY_NAME[_alias] = SKILL_BY_NAME[_target]
 
 
 # ── Intent & Vibe-Coder Signal Patterns ───────────────────────────────────────
@@ -242,6 +231,8 @@ _ANTI_SLOP = re.compile(
 _THREE_D = re.compile(
     r"\b(3d|three\.?js|threejs|webgl|webgpu|r3f|react[- ]three[- ]fiber|shaders?|glsl|"
     r"spline|gltf|glb|pbr|raycast(?:ing)?|orbitcontrols|igloo(?:\.inc)?|particles?|"
+    r"solar\s+system|celestial|planet(?:s|ary)?|orbit(?:al)?|eyes\s+on\s+the\s+solar\s+system|"
+    r"tsl|three-live|shaderpass|effectcomposer|cinematic\s+3d|"
     r"post[- ]?processing|volumetric|holographic|procedural\s+3d|dream[- ]?loop|img2threejs)\b",
     re.I,
 )
@@ -331,6 +322,15 @@ class SkillAppointment:
         return tuple(dict.fromkeys((*self.skills, *self.security_skills)))
 
     @property
+    def canonical_skills(self) -> Tuple[str, ...]:
+        out: List[str] = []
+        for s in self.all_skills:
+            canon = LEGACY_TO_CANONICAL.get(s, s)
+            if canon in CANONICAL_SKILL_NAMES and canon not in out:
+                out.append(canon)
+        return tuple(out)
+
+    @property
     def headline(self) -> str:
         if not self.skills and not self.requires_security_pass:
             return ""
@@ -341,9 +341,11 @@ class SkillAppointment:
 def normalize_skill_name(raw: str) -> str:
     """Resolve canonical bundled skill name from user or model input."""
     key = re.sub(r"[\s_]+", "-", str(raw or "").strip().lower()).strip("-")
+    if key in _SKILL_ALIASES:
+        return _SKILL_ALIASES[key]
     if key in SKILL_BY_NAME:
         return key
-    return _SKILL_ALIASES.get(key, "")
+    return ""
 
 
 def _is_ui_task(text: str) -> bool:
@@ -439,68 +441,36 @@ def analyze_prompt_skills(
         and (_WEBSITE_BUILD_VERBS.search(text) or has_vibe or has_anti_slop or has_3d or has_scroll)
     )
 
-    # 1. UI Design & Anti-Slop
-    if explicit_unslop_only:
-        categories.append("UI & Anti-Slop")
-    elif (has_ui and (has_change or has_failure or has_vibe or has_anti_slop)) or (has_anti_slop and (has_change or has_fix_word or "website" in text.lower() or "page" in text.lower() or "ui" in text.lower() or "site" in text.lower())) or (has_vibe and (has_ui or has_3d or has_scroll)):
-        categories.append("UI & Anti-Slop")
-        if has_anti_slop:
-            selected.extend(["unslop", "impeccable", "frontend-design"])
-        else:
-            selected.extend(["frontend-design", "unslop", "impeccable"])
-        if is_website_build or has_vibe or has_anti_slop or re.search(r"\b(a11y|accessib|audit|ship|launch|responsive|form|checkout|dashboard)\b", text, re.I):
-            selected.append("web-design-guidelines")
+    # 1. 3D, UI & Cinematic Craft
+    if (
+        explicit_unslop_only
+        or (has_ui and (has_change or has_failure or has_vibe or has_anti_slop))
+        or (has_anti_slop and (has_change or has_fix_word or any(w in text.lower() for w in ("website", "page", "ui", "site"))))
+        or (has_vibe and (has_ui or has_3d or has_scroll))
+        or has_3d
+        or has_scroll
+        or is_website_build
+    ):
+        categories.append(CATEGORY_LABELS["design"])
+        selected.append("design-craft")
 
-    # 2. 3D, Shaders & Scroll Motion
-    if has_3d or has_scroll:
-        categories.append("3D, Shaders & Motion")
-        if has_3d:
-            selected.extend(["threejs-skills", "dream-loop"])
-            if has_hero_3d:
-                selected.append("img2threejs")
-        if has_scroll:
-            selected.append("gsap-skills")
-            if "dream-loop" not in selected and (has_ui or has_vibe):
-                selected.append("dream-loop")
+    # 2. Debugging, Optimization & Live Browser QA
+    if has_failure or has_opt or has_browser_qa or (has_fix_word and (has_software or has_ui or has_3d or has_anti_slop)):
+        categories.append(CATEGORY_LABELS["debugging-qa"])
+        selected.append("systematic-debugging")
 
-    # 3. Debugging, Optimization & Live Browser QA
-    if has_failure or has_opt or (has_fix_word and (has_software or has_ui or has_3d or has_anti_slop)):
-        if has_opt:
-            categories.append("Optimization & Browser QA")
-        else:
-            categories.append("Debugging & QA")
-        if has_failure or (has_fix_word and not has_anti_slop):
-            selected.append("systematic-debugging")
-        if has_opt or has_browser_qa or (has_failure and (has_ui or has_3d or has_scroll)):
-            selected.append("chrome-devtools-qa")
-        if has_failure or has_opt or has_fix_word:
-            selected.append("verification-before-completion")
-    elif has_browser_qa:
-        categories.append("Browser QA")
-        selected.append("chrome-devtools-qa")
+    # 3. Security & Skill Vetting
+    if has_skill_vet or has_security:
+        categories.append(CATEGORY_LABELS["security"])
+        selected.append("security-guardrails")
 
-    # 4. Security & Skill Vetting
-    if has_skill_vet:
-        categories.append("Skill Security Vetting")
-        selected.append("skill-spector")
-    if has_security:
-        categories.append("Website Security")
-        selected.extend(["security-audit", "semgrep-guardrails"])
-        if "verification-before-completion" not in selected:
-            selected.append("verification-before-completion")
-
-    # 5. Core Software Engineering, Clarity, Git & Live Docs
-    if has_grill_git:
-        categories.append("Pre-Build Clarity & Git Safety")
-        selected.append("grill-and-git-guardrails")
-    if has_live_docs and (has_change or has_failure):
-        categories.append("Live Docs Grounding")
-        selected.append("context7-docs")
-    if has_impl and has_software:
-        categories.append("Core Engineering")
-        selected.extend(["test-driven-development", "karpathy-skills", "semgrep-guardrails"])
-        if "verification-before-completion" not in selected and not has_ui:
-            selected.append("verification-before-completion")
+    # 4. Core Software Engineering, Clarity, Git & Live Docs
+    if has_impl or has_software or has_grill_git:
+        categories.append(CATEGORY_LABELS["engineering"])
+        selected.append("engineering-workflow")
+    if has_live_docs and (has_change or has_failure or has_impl):
+        categories.append(CATEGORY_LABELS["docs"])
+        selected.append("context-docs")
 
     # Merge validated web-agent AI router picks (hybrid keyword + semantic judging)
     valid_ai: List[str] = []
@@ -530,7 +500,7 @@ def analyze_prompt_skills(
         categories.append("Website Build")
 
     security_skills: Tuple[str, ...] = (
-        ("security-audit", "semgrep-guardrails") if requires_security_pass else ()
+        ("security-guardrails",) if requires_security_pass else ()
     )
 
     cues = _collect_cues(
@@ -574,7 +544,8 @@ def select_task_skills(request: str) -> Tuple[str, ...]:
 
 @lru_cache(maxsize=len(SKILL_SPECS) + 4)
 def _raw_skill_doc(name: str) -> str:
-    return files("wsa_agent").joinpath("skills", name, "SKILL.md").read_text(encoding="utf-8")
+    target_name = normalize_skill_name(name) or name
+    return files("wsa_agent").joinpath("skills", target_name, "SKILL.md").read_text(encoding="utf-8")
 
 
 def _strip_frontmatter(doc: str) -> str:
@@ -589,7 +560,7 @@ def _strip_frontmatter(doc: str) -> str:
 def _parse_sections(body: str) -> List[Tuple[str, str]]:
     """Split markdown body into ordered `(heading, content)` pairs."""
     sections: List[Tuple[str, str]] = []
-    matches = list(re.finditer(r"^(#{2,3})\s+(.+?)\s*$", body, re.M))
+    matches = list(re.finditer(r"^(#{2})\s+(.+?)\s*$", body, re.M))
     if not matches:
         return [("Overview", body.strip())]
     preamble = body[: matches[0].start()].strip()
@@ -648,16 +619,30 @@ def _fit_section_to_budget(heading: str, lines: List[str], budget: int) -> Tuple
 
     sep_cost = max(0, len(body_lines) - 1)
     per_line_cap = max(28, int((avail - sep_cost) / len(body_lines)))
+    if per_line_cap < 72:
+        # Keep readable, high-value full lines instead of chopping every line to an unreadable 30-char stub
+        out_lines: List[str] = []
+        used = 0
+        for ln in body_lines:
+            clean_ln = ln if len(ln) <= 240 else (ln[:237].rstrip() + "…")
+            need = len(clean_ln) + (1 if out_lines else 0)
+            if used + need > avail:
+                rem = avail - used - (1 if out_lines else 0)
+                if rem >= 40:
+                    out_lines.append(clean_ln[: rem - 1].rstrip() + "…")
+                break
+            out_lines.append(clean_ln)
+            used += need
+        return (prefix + "\n".join(out_lines)).strip(), True
+
     condensed: List[str] = []
     for ln in body_lines:
         if len(ln) <= per_line_cap:
             condensed.append(ln)
-        elif per_line_cap >= 72:
+        else:
             head_n = int((per_line_cap - 3) * 0.62)
             tail_n = max(16, per_line_cap - 3 - head_n)
             condensed.append(ln[:head_n].rstrip() + " … " + ln[-tail_n:].lstrip())
-        else:
-            condensed.append(ln[: per_line_cap - 1].rstrip() + "…")
 
     out_lines: List[str] = []
     used = 0
@@ -769,11 +754,11 @@ def _excerpt(name: str) -> str:
     doc = _raw_skill_doc(name)
     spec = SKILL_BY_NAME[name]
     paragraphs: List[str] = []
-    if name == "unslop":
+    if name in {"unslop", "design-craft"}:
         paragraphs.append("Credit: unslop by Damir Sokolovsky (@heydamir), CC BY 4.0.")
     if spec.excerpt_sections:
         for title in spec.excerpt_sections:
-            section = re.search(rf"^#{{2,3}} {re.escape(title)}\s*\n(.*?)(?=^#{{2,3}} |\Z)", doc, re.M | re.S)
+            section = re.search(rf"^#{{2,3}} {re.escape(title)}\s*\n(.*?)(?=^#{{2}} |\Z)", doc, re.M | re.S)
             if section is None:
                 raise ValueError(f"Missing bundled skill section: {name}/{title}")
             body = section[1].strip()
@@ -802,9 +787,9 @@ def skill_guidance(names: Tuple[str, ...]) -> str:
 
 
 def format_router_skill_index() -> str:
-    """Ultra-compact 1-line-per-skill index for the web-agent workflow/skill judge (~1.2KB)."""
+    """Ultra-compact index for the web-agent workflow/skill judge (~800 bytes)."""
     lines = ["Available WSA skills (pick ONLY relevant slugs in JSON \"skills\"):"]
-    for spec in SKILL_SPECS:
+    for spec in CANONICAL_SPECS:
         lines.append(f"- {spec.name} ({spec.category}): {spec.tagline}")
     return "\n".join(lines)
 
@@ -852,7 +837,7 @@ def skill_read_directive(
         lines.append(f"• [{name}]{marker}: {spec.tagline}")
 
     if include_security_note and appointment.requires_security_pass:
-        sec_list = ", ".join(appointment.security_skills or ("security-audit", "semgrep-guardrails"))
+        sec_list = ", ".join(appointment.security_skills or ("security-guardrails",))
         lines.append(
             f"• [post-build security pass]: After website code is written, read `{sec_list}` via `read_skill` "
             "and fix any XSS, DOM injection, auth/IDOR, CSP/CORS, validation, or secret issues before concluding."
@@ -962,7 +947,7 @@ def read_skill_content(
             body = _compress_markdown_losslessly(doc, max_chars=min(per_skill_budget, 2600))
 
         extra_meta = ""
-        if slug == "unslop" and "@heydamir" not in body:
+        if slug in {"unslop", "design-craft"} and "@heydamir" not in body:
             extra_meta = "Credit: unslop by Damir Sokolovsky (@heydamir), CC BY 4.0.\n"
         blocks.append(
             f"=== [{slug}] ({cat_label} · source: {spec.source}) ===\n"

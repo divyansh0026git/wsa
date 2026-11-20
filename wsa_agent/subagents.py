@@ -249,7 +249,7 @@ ROLE_SYSTEM_PROMPTS: Dict[str, str] = {
     "security": (
         "Role: WSA Security Fixer — adversarial web & application security auditor and surgical remediator.\n"
         "Guidelines:\n"
-        "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first before auditing or patching.\n"
+        "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-guardrails\")` first before auditing or patching.\n"
         "2. Inspect all newly created/modified website, frontend, API, and server files for real exploit paths: "
         "DOM/stored/reflected XSS (`innerHTML`/`dangerouslySetInnerHTML`), unsafe `href`/`src` schemes, missing `rel=\"noopener noreferrer\"`, "
         "CSRF/CORS/CSP/security headers, broken auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"
@@ -766,7 +766,7 @@ CLAUDE_STAGE_DIRECTIVES: Dict[str, str] = {
     ),
     "security": (
         "Workflow Phase — Security Fixer: Perform adversarial web & application security auditing and surgical remediation.\n"
-        "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first before auditing or patching.\n"
+        "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-guardrails\")` first before auditing or patching.\n"
         "2. Inspect all newly created/modified HTML, CSS, JS, TS, Python, API, and server files for real exploit paths: XSS (`innerHTML`/`dangerouslySetInnerHTML`), unsafe `href`/`src` schemes, missing `rel=\"noopener noreferrer\"`, CSRF/CORS/CSP/headers, auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"
         "3. Disprove false positives adversarially, patch confirmed vulnerabilities surgically via `patch_file` preserving UI craft, and re-verify cleanly."
     ),
@@ -1443,7 +1443,7 @@ def run_orchestrated_turn(
         already_in_chat = set() if is_fresh else set(loaded_by_chat.get(cur_key, set()))
         if stage_role == "security":
             sec_appt = SkillAppointment(
-                skills=appointment.security_skills or ("security-audit", "semgrep-guardrails"),
+                skills=appointment.security_skills or ("security-guardrails",),
                 categories=("Website Security",),
                 matched_cues=("post-build security pass",),
                 requires_security_pass=False,
@@ -2025,7 +2025,7 @@ def run_orchestrated_turn(
         # ── Stage 3.5: Automatic Post-Build Website Security Fixing ─────────
         if not aborted_reason and not interrupted and appointment.requires_security_pass and all_written:
             sec_targets = sorted(all_written)
-            sec_names = ", ".join(appointment.security_skills or ("security-audit", "semgrep-guardrails"))
+            sec_names = ", ".join(appointment.security_skills or ("security-guardrails",))
             _ui_stage_banner(
                 "security",
                 f"Website build complete — forcing web agents to read security skills ({sec_names}) for security fixing…",
@@ -2045,7 +2045,7 @@ def run_orchestrated_turn(
             sec_prompt = (
                 f"Perform post-build website security auditing and surgical fixing for:\n{user_input[:3000]}\n\n"
                 f"Files created/modified to audit & harden: {', '.join(sec_targets)}\n"
-                "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-audit,semgrep-guardrails\")` first.\n"
+                "1. STEP 1 (MANDATORY): Call `read_skill(name=\"security-guardrails\")` first.\n"
                 "2. Audit every modified HTML/CSS/JS/TS/Python/API file for confirmed XSS (`innerHTML`/`dangerouslySetInnerHTML`), "
                 "unsafe URL schemes (`javascript:`), missing `rel=\"noopener noreferrer\"`, weak CSP/CORS/security headers, "
                 "broken auth/IDOR/client-trusted totals, SQL/shell/path injection, and hardcoded secrets.\n"

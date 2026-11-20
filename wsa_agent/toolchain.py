@@ -381,7 +381,7 @@ def recommend_stack(task_text: str, root: Path, binaries: Optional[Dict[str, Opt
 SKILL_DOMAIN_TOOLCHAINS: Dict[str, Dict[str, Any]] = {
     "ui-design": {
         "label": "UI & Anti-Slop (Normal Websites, Web Apps & Dashboards)",
-        "skills": ("frontend-design", "unslop", "impeccable", "web-design-guidelines"),
+        "skills": ("design-craft", "frontend-design", "unslop", "impeccable", "web-design-guidelines"),
         "primary_language": "TypeScript (Node.js + Vite)",
         "required_packages": ("typescript", "vite"),
         "optional_packages": ("gsap",),
@@ -395,8 +395,8 @@ SKILL_DOMAIN_TOOLCHAINS: Dict[str, Dict[str, Any]] = {
         ),
     },
     "3d-motion": {
-        "label": "3D Websites, WebGL / Three.js, Custom GLSL Shaders & GSAP Motion",
-        "skills": ("threejs-skills", "img2threejs", "gsap-skills", "dream-loop"),
+        "label": "3D Websites, WebGL / Three.js, Custom GLSL Shaders & GSAP Motion (Igloo.inc & NASA Eyes Standard)",
+        "skills": ("design-craft", "threejs-skills", "img2threejs", "gsap-skills", "dream-loop"),
         "primary_language": "TypeScript (Node.js + Vite + Three.js + GSAP + GLSL)",
         "required_packages": ("typescript", "vite", "three", "@types/three", "gsap"),
         "optional_packages": (),
@@ -425,7 +425,7 @@ SKILL_DOMAIN_TOOLCHAINS: Dict[str, Dict[str, Any]] = {
     },
     "security": {
         "label": "Adversarial Website Security Auditing, OWASP Guardrails & Skill Safety",
-        "skills": ("security-audit", "semgrep-guardrails", "skill-spector"),
+        "skills": ("security-guardrails", "security-audit", "semgrep-guardrails", "skill-spector"),
         "primary_language": "In-Place Native Language Hardening (TypeScript strict DOM / Parameterized Backend)",
         "required_packages": (),
         "optional_packages": (),
@@ -438,7 +438,7 @@ SKILL_DOMAIN_TOOLCHAINS: Dict[str, Dict[str, Any]] = {
     },
     "engineering": {
         "label": "Core Software Engineering, Systems, APIs, Data/ML & TDD",
-        "skills": ("karpathy-skills", "test-driven-development", "grill-and-git-guardrails", "context7-docs"),
+        "skills": ("engineering-workflow", "context-docs", "karpathy-skills", "test-driven-development", "grill-and-git-guardrails", "context7-docs"),
         "primary_language": "Best-Fit Language by Workload (TypeScript/Node for web apps, Rust for systems/CLI/perf, Go for concurrent services, Python for AI/ML/data, PHP/C#/Java/Ruby/Swift/Dart/Elixir/Zig by domain)",
         "required_packages": (),
         "optional_packages": (),

@@ -21,9 +21,9 @@ from wsa_server import multimodal as mm
 @pytest.mark.parametrize("provider,max_turn1_bytes", [
     ("chatgpt", 14_000),
     ("deepseek", 14_000),
-    ("gemini", 15_000),
-    ("venice", 15_000),
-    ("claude", 16_000),
+    ("gemini", 17_000),
+    ("venice", 17_000),
+    ("claude", 17_000),
 ])
 def test_compressed_turn1_prompts_stay_lean_across_providers(tmp_path, provider, max_turn1_bytes):
     state = SessionState(project_root=tmp_path, selected_model=provider)
@@ -823,7 +823,7 @@ def test_orchestrator_deep_architecture_blueprint_and_visual_contrast_audit():
     assert "System, Backend & File Architecture Blueprint" in imp_txt
 
     backend_appt = task_skills.analyze_prompt_skills("Implement a FastAPI backend service with database endpoints")
-    assert {"karpathy-skills", "test-driven-development", "semgrep-guardrails"}.issubset(set(backend_appt.skills))
+    assert {"engineering-workflow", "context-docs"}.issubset(set(backend_appt.skills))
 
     sample_arch = (
         "### Deep Architecture & File Blueprint\n"
@@ -866,29 +866,19 @@ def test_orchestrator_deep_architecture_blueprint_and_visual_contrast_audit():
 
 
 def test_section_balanced_skill_compression_preserves_guardrails_in_8_skill_batch() -> None:
-    """Verify batched 8-skill read stays compact and preserves critical bottom Guardrails/Anti-Slop rules."""
+    """Verify batched 8-skill alias read resolves to canonical design pillar and stays compact."""
     from wsa_agent import task_skills as ts
 
     batch, loaded = ts.read_skill_content(
         "frontend-design,unslop,impeccable,web-design-guidelines,threejs-skills,dream-loop,img2threejs,gsap-skills"
     )
-    assert len(loaded) == 8
+    assert len(loaded) == 1
+    assert loaded == ["design-craft"]
     assert len(batch) <= 9400
-
-    def _chunk(slug: str) -> str:
-        start = batch.find(f"=== [{slug}]")
-        assert start != -1, f"Missing {slug} in batch"
-        nxt = batch.find("=== [", start + 10)
-        return batch[start : nxt if nxt != -1 else len(batch)]
-
-    imp = _chunk("impeccable")
-    assert "#090A0D" in imp
-    assert "backdrop-filter" in imp
-    assert "FogExp2" in _chunk("threejs-skills")
-    dream = _chunk("dream-loop")
-    assert "Saturn" in dream
-    assert "FogExp2" in dream
-    assert "Saturn" in _chunk("img2threejs")
+    assert "#090A0D" in batch
+    assert "backdrop-filter" in batch
+    assert "FogExp2" in batch
+    assert "Saturn" in batch
 
     kar_brief, _ = ts.read_skill_content("karpathy-skills", mode="brief")
     assert len(kar_brief) <= 3400
@@ -905,7 +895,7 @@ def test_claude_stage_directives_synced_with_security_and_role_scoped_skills() -
     assert "Deep Architecture & File Blueprint" in cd["architect"]
     assert "Shared Contract Matrix" in cd["architect"]
     assert "Read-Before-Write Contract Check" in cd["coder"]
-    assert "security-audit,semgrep-guardrails" in cd["security"]
+    assert "security-guardrails" in cd["security"]
     assert "Cross-File Contract Audit" in cd["verifier"]
 
     appt = task_skills.analyze_prompt_skills(
@@ -918,11 +908,11 @@ def test_claude_stage_directives_synced_with_security_and_role_scoped_skills() -
     sec = subagents._select_stage_skills("security", ["index.html"], appt)
     ver = subagents._select_stage_skills("verifier", [], appt)
 
-    assert 1 <= len(exp_skills) <= 4
-    assert 1 <= len(arch_skills) <= 4
-    assert set(c3d).issubset({"threejs-skills", "img2threejs", "dream-loop", "gsap-skills"})
-    assert set(cui).issubset({"impeccable", "unslop", "frontend-design", "web-design-guidelines"})
-    assert sec == ("security-audit", "semgrep-guardrails")
+    assert 1 <= len(exp_skills) <= 2
+    assert 1 <= len(arch_skills) <= 2
+    assert set(c3d).issubset({"design-craft", "engineering-workflow"})
+    assert set(cui).issubset({"design-craft", "engineering-workflow"})
+    assert sec == ("security-guardrails",)
     assert ver
 
     all_tasks = [

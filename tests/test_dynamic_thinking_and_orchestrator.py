@@ -477,7 +477,7 @@ def test_parse_workflow_decision_robustly_handles_all_web_agent_formats():
     res = _parse_workflow_decision(claude_ss)
     assert res is not None
     assert res["mode"] == "orchestrate"
-    assert "verification-before-completion" in res["skills"]
+    assert "engineering-workflow" in res["skills"]
     assert res["security_pass"] is False
 
     # 2. Claude inline code formatting (`{...}`)
@@ -533,7 +533,7 @@ def test_parse_workflow_decision_robustly_handles_all_web_agent_formats():
     res = _parse_workflow_decision(broken_json)
     assert res is not None
     assert res["mode"] == "orchestrate"
-    assert res["skills"] == ["context7-docs"]
+    assert res["skills"] == ["context-docs"]
 
 
 def test_judge_workflow_extracts_orchestrator_decision_from_claude_response(tmp_path):
@@ -557,9 +557,8 @@ def test_judge_workflow_extracts_orchestrator_decision_from_claude_response(tmp_
 
     decision = agent._judge_workflow("setup colibri in my codebase", state, mock_client, fallback)
     assert decision["mode"] == "orchestrate"
-    assert "context7-docs" in decision["skills"]
-    assert "karpathy-skills" in decision["skills"]
-    assert "verification-before-completion" in decision["skills"]
+    assert "context-docs" in decision["skills"]
+    assert "engineering-workflow" in decision["skills"]
     assert decision["security_pass"] is False
     assert state.chat_urls.get("claude") == "https://claude.ai/chat/79a6d6ec-bca1-4a84-9633-dd0628118e5d"
 

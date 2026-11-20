@@ -17,32 +17,19 @@ from wsa_agent.session import SessionState
 from wsa_server import multimodal as mm
 
 
-EXPECTED_18_SKILLS = {
-    "dream-loop",
-    "img2threejs",
-    "gsap-skills",
-    "threejs-skills",
-    "frontend-design",
-    "unslop",
-    "impeccable",
-    "web-design-guidelines",
+EXPECTED_5_CANONICAL_SKILLS = {
+    "design-craft",
+    "security-guardrails",
+    "engineering-workflow",
     "systematic-debugging",
-    "verification-before-completion",
-    "chrome-devtools-qa",
-    "security-audit",
-    "semgrep-guardrails",
-    "skill-spector",
-    "karpathy-skills",
-    "test-driven-development",
-    "grill-and-git-guardrails",
-    "context7-docs",
+    "context-docs",
 }
 
 
 def test_all_18_skills_bundled_loadable_and_pass_skillspector():
-    assert set(task_skills.ALL_SKILL_NAMES) == EXPECTED_18_SKILLS
+    assert set(task_skills.ALL_SKILL_NAMES) == EXPECTED_5_CANONICAL_SKILLS
     skills_root = Path(__file__).resolve().parent.parent / "wsa_agent" / "skills"
-    for slug in EXPECTED_18_SKILLS:
+    for slug in EXPECTED_5_CANONICAL_SKILLS:
         assert (skills_root / slug / "SKILL.md").is_file(), f"Missing SKILL.md for {slug}"
         assert (skills_root / slug / "LICENSE.txt").is_file(), f"Missing LICENSE.txt for {slug}"
 
@@ -57,18 +44,18 @@ def test_all_18_skills_bundled_loadable_and_pass_skillspector():
 
     # Batched comma-separated read + catalog + alias + section lookup
     batch_txt, batch_loaded = task_skills.read_skill_content("impeccable,threejs,dreamloop")
-    assert batch_loaded == ["impeccable", "threejs-skills", "dream-loop"]
-    assert "Loaded 3 skills" in batch_txt
+    assert batch_loaded == ["design-craft"]
+    assert "Loaded skill 'design-craft'" in batch_txt
 
     catalog_txt, cat_loaded = task_skills.read_skill_content("catalog")
     assert cat_loaded == []
-    assert "18 skills" in catalog_txt
-    for slug in EXPECTED_18_SKILLS:
+    assert "5 skills" in catalog_txt
+    for slug in EXPECTED_5_CANONICAL_SKILLS:
         assert slug in catalog_txt
 
-    sec_txt, sec_loaded = task_skills.read_skill_content("security-audit", section="6 Structured Phases")
-    assert sec_loaded == ["security-audit"]
-    assert "Phase 3" in sec_txt
+    sec_txt, sec_loaded = task_skills.read_skill_content("security-guardrails", section="OWASP")
+    assert sec_loaded == ["security-guardrails"]
+    assert "OWASP" in sec_txt
 
 
 def test_skillspector_catches_prompt_injection_and_exfiltration(tmp_path):
@@ -98,37 +85,37 @@ def test_skillspector_catches_prompt_injection_and_exfiltration(tmp_path):
 @pytest.mark.parametrize(("prompt", "expected_skills", "expect_sec_pass"), [
     (
         "This website looks AI generated and full of slop, redesign it to look expensive and studio-grade",
-        {"unslop", "impeccable", "frontend-design", "web-design-guidelines"},
+        {"design-craft"},
         True,
     ),
     (
         "Build an igloo.inc style 3D hero showcase website with GSAP scroll storytelling and shaders",
-        {"threejs-skills", "dream-loop", "img2threejs", "gsap-skills", "frontend-design"},
+        {"design-craft"},
         True,
     ),
     (
         "Our dashboard is super laggy and freezing with memory leaks — debug and optimize performance",
-        {"systematic-debugging", "chrome-devtools-qa", "verification-before-completion"},
+        {"systematic-debugging"},
         False,
     ),
     (
         "Vet this third-party SKILL.md before installing it into my agent",
-        {"skill-spector"},
+        {"security-guardrails"},
         False,
     ),
     (
         "Run a full security audit and fix XSS, CSRF, and auth vulnerabilities before launch",
-        {"security-audit", "semgrep-guardrails", "verification-before-completion"},
+        {"security-guardrails"},
         True,
     ),
     (
         "Grill me on requirements and don't allow git force push on our backend",
-        {"grill-and-git-guardrails"},
+        {"engineering-workflow"},
         False,
     ),
     (
         "Implement a FastAPI service using latest docs with clean architecture",
-        {"context7-docs", "karpathy-skills", "test-driven-development"},
+        {"context-docs", "engineering-workflow"},
         False,
     ),
     (
@@ -171,7 +158,7 @@ def test_read_skill_tool_is_read_only_and_works_in_agent_loop_without_full_dump(
                         "type": "function",
                         "function": {
                             "name": "read_skill",
-                            "arguments": json.dumps({"name": "impeccable,unslop"}),
+                            "arguments": json.dumps({"name": "design-craft"}),
                         },
                     }],
                 }
@@ -183,8 +170,8 @@ def test_read_skill_tool_is_read_only_and_works_in_agent_loop_without_full_dump(
         res = agent.execute_agent_loop(prompt, state, ReadSkillFirstClient(), quiet_ui=False)
 
     assert res["ok"] is True
-    assert set(res["skills_read"]) == {"impeccable", "unslop"}
-    assert {"impeccable", "unslop"}.issubset(state.loaded_skills)
+    assert set(res["skills_read"]) == {"design-craft"}
+    assert {"design-craft"}.issubset(state.loaded_skills)
 
     # Initial prompt MUST be a compact Read-First directive, NOT a giant raw SKILL.md dump
     first_user = str(captured_msgs[0][-1]["content"])
@@ -196,15 +183,15 @@ def test_read_skill_tool_is_read_only_and_works_in_agent_loop_without_full_dump(
     # Second round received compressed tool output from read_skill
     tool_msgs = [m for m in captured_msgs[1] if m.get("role") == "tool" and m.get("name") == "read_skill"]
     assert len(tool_msgs) == 1
-    assert "Loaded 2 skills (impeccable, unslop)" in tool_msgs[0]["content"]
+    assert "Loaded skill 'design-craft'" in tool_msgs[0]["content"]
 
     # TUI displayed both skill appointment AND ReadSkill tool visuals
     tui_out = " ".join(sink.getvalue().split())
     assert "forcing web agents to read the relevant skills first" in tui_out
     assert "Read first:" in tui_out
     assert "Security pass:" in tui_out
-    assert "ReadSkill(impeccable,unslop)" in tui_out
-    assert "Loaded 2 skills (impeccable, unslop)" in tui_out
+    assert "ReadSkill(design-craft)" in tui_out
+    assert "Loaded skill 'design-craft'" in tui_out
 
 
 def test_web_agent_workflow_judge_merges_ai_skills_and_security_flag(tmp_path):
@@ -231,14 +218,13 @@ def test_web_agent_workflow_judge_merges_ai_skills_and_security_flag(tmp_path):
     # Confirm router prompt included the compact WSA skill catalog
     sent_sys = client.stream.call_args.kwargs["messages"][0]["content"]
     assert "Available WSA skills" in sent_sys
-    assert "impeccable" in sent_sys
-    assert "security-audit" in sent_sys
+    assert "design-craft" in sent_sys
+    assert "security-guardrails" in sent_sys
 
     appt = captured_orch["skill_appointment"]
     assert isinstance(appt, task_skills.SkillAppointment)
-    assert "dream-loop" in appt.skills
-    assert "gsap-skills" in appt.skills
-    assert "context7-docs" in appt.skills
+    assert "design-craft" in appt.skills
+    assert "context-docs" in appt.skills
     assert appt.requires_security_pass is True
 
 
@@ -277,11 +263,11 @@ def test_orchestrator_runs_mandatory_post_build_security_stage_on_website_builds
     assert res["ok"] is True
     assert seen_roles == ["explorer", "architect", "coder", "security", "verifier"]
     assert len(sec_prompts) == 1
-    assert 'read_skill(name="security-audit,semgrep-guardrails")' in sec_prompts[0]
+    assert 'read_skill(name="security-guardrails")' in sec_prompts[0]
     assert "index.html" in sec_prompts[0] and "app.js" in sec_prompts[0]
     tui_out = sink.getvalue()
     assert "SECURITY" in tui_out
-    assert "security-audit, semgrep-guardrails" in tui_out
+    assert "security-guardrails" in tui_out
 
 
 def test_single_agent_website_build_enforces_security_fixing_gate(tmp_path):
@@ -313,7 +299,7 @@ def test_single_agent_website_build_enforces_security_fixing_gate(tmp_path):
                         "type": "function",
                         "function": {
                             "name": "read_skill",
-                            "arguments": json.dumps({"name": "security-audit,semgrep-guardrails"}),
+                            "arguments": json.dumps({"name": "security-guardrails"}),
                         },
                     },
                     {
@@ -340,9 +326,8 @@ def test_single_agent_website_build_enforces_security_fixing_gate(tmp_path):
 
         assert res["ok"] is True
         assert any("[Website Security Fixing Gate]" in p for p in captured_prompts)
-        assert any("security-audit,semgrep-guardrails" in p for p in captured_prompts)
-        assert "security-audit" in res["skills_read"]
-        assert "semgrep-guardrails" in res["skills_read"]
+        assert any("security-guardrails" in p for p in captured_prompts)
+        assert "security-guardrails" in res["skills_read"]
     finally:
         tools.set_project_root(orig_root)
 
@@ -355,14 +340,14 @@ def test_slash_skills_command_list_read_and_scan(tmp_path):
 
     with patch.object(renderer, "console", Console(file=sink, force_terminal=False, width=110)):
         assert commands.handle_command("/skills", state) == (True, True)
-        assert commands.handle_command("/skills impeccable", state) == (True, True)
+        assert commands.handle_command("/skills design-craft", state) == (True, True)
         assert commands.handle_command(f"/skills scan {sample}", state) == (True, True)
 
     out = sink.getvalue()
-    assert "WSA Bundled Skills (18)" in out
-    assert "dream-loop" in out
-    assert "security-audit" in out
-    assert "impeccable" in out
+    assert "WSA Bundled Skills (5)" in out
+    assert "design-craft" in out
+    assert "security-guardrails" in out
+    assert "engineering-workflow" in out
     assert "SkillSpector verdict: SAFE" in out
 
 
@@ -374,7 +359,7 @@ def test_read_first_skills_and_tool_schema_stay_under_all_5_web_budgets(provider
     appt = task_skills.analyze_prompt_skills(user_req)
     directive = task_skills.skill_read_directive(appt)
     skill_out, loaded = task_skills.read_skill_content(",".join(appt.skills[:3]), mode="brief")
-    assert len(loaded) == 3
+    assert len(loaded) >= 1
 
     msgs = [
         {"role": "system", "content": sys_prompt},

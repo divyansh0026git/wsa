@@ -1,2 +1,0 @@
-MIT License — Adapted for WSA from vercel-labs/agent-skills
-Upstream reference: https://github.com/vercel-labs/agent-skills

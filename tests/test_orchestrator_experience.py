@@ -11,53 +11,53 @@ from wsa_agent.task_skills import select_task_skills, skill_guidance
 @pytest.mark.parametrize(("prompt", "required", "forbidden"), [
     (
         "Make a premium 3D ecommerce website",
-        ("frontend-design", "unslop", "impeccable", "web-design-guidelines", "threejs-skills", "dream-loop", "img2threejs"),
-        ("systematic-debugging", "skill-spector"),
+        ("design-craft",),
+        ("systematic-debugging", "security-guardrails"),
     ),
     (
         "Build a clean analytics interface",
-        ("frontend-design", "unslop", "impeccable"),
-        ("threejs-skills", "systematic-debugging"),
+        ("design-craft",),
+        ("systematic-debugging",),
     ),
     (
         "Redesign the frontend dashboard",
-        ("frontend-design", "unslop", "impeccable", "web-design-guidelines"),
-        ("threejs-skills", "systematic-debugging"),
+        ("design-craft",),
+        ("systematic-debugging",),
     ),
     (
         "Clean up the admin panel",
-        ("frontend-design", "unslop", "impeccable"),
-        ("threejs-skills", "systematic-debugging"),
+        ("design-craft",),
+        ("systematic-debugging",),
     ),
-    ("Unslop this page", ("unslop",), ("threejs-skills", "systematic-debugging")),
+    ("Unslop this page", ("design-craft",), ("systematic-debugging",)),
     (
         "Add OAuth2 to the API",
-        ("test-driven-development", "karpathy-skills", "security-audit", "semgrep-guardrails"),
-        ("frontend-design", "unslop", "impeccable"),
+        ("engineering-workflow", "security-guardrails"),
+        ("design-craft",),
     ),
     (
         "Add a TypeScript interface for the API",
-        ("test-driven-development", "karpathy-skills", "verification-before-completion"),
-        ("frontend-design", "unslop", "impeccable"),
+        ("engineering-workflow",),
+        ("design-craft",),
     ),
     (
         "Debug a timeout in checkout",
-        ("systematic-debugging", "verification-before-completion"),
-        ("frontend-design", "threejs-skills"),
+        ("systematic-debugging",),
+        ("design-craft",),
     ),
     (
         "Fix the broken dashboard layout",
-        ("frontend-design", "unslop", "impeccable", "systematic-debugging", "chrome-devtools-qa"),
-        ("threejs-skills", "skill-spector"),
+        ("design-craft", "systematic-debugging"),
+        ("security-guardrails",),
     ),
     (
         "Build a responsive web app",
-        ("frontend-design", "unslop", "impeccable", "web-design-guidelines", "test-driven-development", "karpathy-skills"),
-        ("threejs-skills", "systematic-debugging"),
+        ("design-craft", "engineering-workflow"),
+        ("systematic-debugging",),
     ),
-    ("Explain what an API is", (), ("frontend-design", "test-driven-development", "systematic-debugging")),
-    ("What is systematic debugging?", (), ("systematic-debugging", "verification-before-completion")),
-    ("Thank you", (), ("frontend-design", "karpathy-skills", "systematic-debugging")),
+    ("Explain what an API is", (), ("design-craft", "engineering-workflow", "systematic-debugging")),
+    ("What is systematic debugging?", (), ("systematic-debugging",)),
+    ("Thank you", (), ("design-craft", "engineering-workflow", "systematic-debugging")),
 ])
 def test_skill_selection(prompt, required, forbidden):
     selected = select_task_skills(prompt)
@@ -71,7 +71,7 @@ def test_skill_selection(prompt, required, forbidden):
     guidance = skill_guidance(selected)
     for name in selected:
         assert "[" + name + "]" in guidance
-    if "unslop" in selected:
+    if "design-craft" in selected:
         assert "@heydamir" in guidance
         assert "One bright element" in guidance
         assert "No emoji left in the interface" in guidance
@@ -88,8 +88,7 @@ def test_skill_reaches_each_role_and_single_mode_without_polluting_history(tmp_p
 
     def worker(**kwargs):
         seen.append(kwargs["role"])
-        assert "[frontend-design]" in kwargs["prompt"]
-        assert "[unslop]" in kwargs["prompt"]
+        assert "design-craft" in kwargs["prompt"]
         if kwargs["role"] == "architect":
             return {"ok": True, "final_text": json.dumps(plan)}
         if kwargs["role"] == "verifier":
@@ -108,7 +107,7 @@ def test_skill_reaches_each_role_and_single_mode_without_polluting_history(tmp_p
         result = agent.execute_agent_loop(prompt, state, client, quiet_ui=True)
     assert result["ok"]
     sent = client.stream.call_args.kwargs["messages"]
-    assert any("[frontend-design]" in str(m["content"]) and "[unslop]" in str(m["content"]) for m in sent if m["role"] == "user")
+    assert any("design-craft" in str(m["content"]) for m in sent if m["role"] == "user")
     assert state.messages[0]["content"] == prompt
 
 

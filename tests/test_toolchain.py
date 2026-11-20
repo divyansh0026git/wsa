@@ -547,7 +547,7 @@ def test_ai_ml_workload_selects_python_and_passes_gate(tmp_path):
 
 def test_all_18_skills_are_mapped_to_authoritative_toolchains(tmp_path):
     from wsa_agent import task_skills
-    assert len(task_skills.SKILL_SPECS) == 18
+    assert len(task_skills.SKILL_SPECS) == 5
     for spec in task_skills.SKILL_SPECS:
         assert spec.name in toolchain.SKILL_TO_DOMAIN, spec.name
         dom = toolchain.SKILL_TO_DOMAIN[spec.name]

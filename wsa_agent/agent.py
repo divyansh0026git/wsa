@@ -1751,7 +1751,7 @@ def _maybe_anti_laziness_nudge(
         return (
             "security_fix",
             f"[Website Security Fixing Gate]: You built/modified `{sec_targets}`. Before finishing, "
-            "call `read_skill(name=\"security-audit,semgrep-guardrails\")` first, audit these files for real "
+            "call `read_skill(name=\"security-guardrails\")` first, audit these files for real "
             "XSS/DOM-injection (`innerHTML`), unsafe links (`noopener`), CSRF/CORS/CSP, auth/IDOR, injection, "
             "input validation, and secret-exposure flaws, apply surgical `patch_file` fixes for any confirmed "
             "issues, and re-verify cleanly.",

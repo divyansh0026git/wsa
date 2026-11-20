@@ -1,2 +1,0 @@
-MIT License — Adapted for WSA from CloudAI-X/threejs-skills
-Upstream reference: https://github.com/CloudAI-X/threejs-skills
