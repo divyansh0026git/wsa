@@ -356,6 +356,7 @@ class SessionState:
     approved_design_concepts: List[Dict[str, Any]] = field(default_factory=list)
     visual_concept_mode: str = "auto"  # "auto" | "on" | "off"
     _concept_synced_keys: Set[str] = field(default_factory=set, repr=False, compare=False)
+    pending_refinement_pass: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_root, Path):

@@ -560,7 +560,8 @@ def test_judge_workflow_extracts_orchestrator_decision_from_claude_response(tmp_
     assert "context-docs" in decision["skills"]
     assert "engineering-workflow" in decision["skills"]
     assert decision["security_pass"] is False
-    assert state.chat_urls.get("claude") == "https://claude.ai/chat/79a6d6ec-bca1-4a84-9633-dd0628118e5d"
+    assert getattr(state, "_router_chat_url", "") == "https://claude.ai/chat/79a6d6ec-bca1-4a84-9633-dd0628118e5d"
+    assert state.active_chat_url == ""
 
 
 def test_classify_task_complexity_identifies_repo_setup_and_model_integration(tmp_path):

@@ -6074,8 +6074,15 @@ function _claudeInstallPageRuntimeFn() {
       }
     }
 
+    const hasThinking = Boolean(
+      thinking ||
+      thinkingNodes.length ||
+      turnEl.querySelector("[data-cds='TurnStatus'], [data-cds='TurnStatusStep'], [data-testid*='thinking'], [data-testid*='thought'], .font-claude-thought")
+    );
     const stoppedByUser = Boolean(
       !text &&
+      !hasThinking &&
+      !isStreaming &&
       /\byou stopped claude['’]?s response\b/i.test(String(turnEl.innerText || turnEl.textContent || ""))
     );
 
@@ -6644,9 +6651,15 @@ function _claudePollTurnFn(reqId) {
     turn.lastRetryAt = now;
   }
 
+  const hasActiveThinking = Boolean(
+    curThinking ||
+    turn.lastThinking ||
+    (turn.sawActivity && (now - (turn.lastActivityAt || now)) < 30000)
+  );
   const stoppedByUser = Boolean(
     !turn.lastText &&
     !isStillStreaming &&
+    !hasActiveThinking &&
     (latest?.stoppedByUser || /\byou stopped claude['’]?s response\b/i.test(`${curThinking}\n${curText}\n${turn.lastThinking}`))
   );
   const emptyStalledAfterActivity = Boolean(turn.sawActivity && !turn.lastText && !isStillStreaming && quietMs >= 10000);

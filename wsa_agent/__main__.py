@@ -549,12 +549,13 @@ def _build_bottom_toolbar(state: SessionState) -> str:
 def _build_prompt(state: SessionState) -> str:
     from wsa_agent.theme import get_theme
     t = get_theme()
-    rst, bold = "\033[0m", "\033[1m"
+    rst, bold, dim = "\033[0m", "\033[1m", "\033[2m"
     hair = _hex_ansi("#52525b" if t.border == "#3f3f46" else t.border)
     accent = _hex_ansi(t.claude)
     rule = "─" * _prompt_rule_width()
     chev = R.ui_glyph("chevron")
-    return f"\n{hair}  {rule}{rst}\n  {accent}{bold}{chev}{rst} "
+    hint = f" {dim}(Enter to continue refinement pass){rst}" if getattr(state, "pending_refinement_pass", False) else ""
+    return f"\n{hair}  {rule}{rst}\n  {accent}{bold}{chev}{rst}{hint} "
 
 
 # ─── Startup banner ───────────────────────────────────────────────────────────
@@ -704,7 +705,14 @@ def run_repl(state: SessionState, client: WSAClient, *, permission_override: str
 
         text = raw.strip()
         if not text:
-            continue
+            if getattr(state, "pending_refinement_pass", False):
+                state.pending_refinement_pass = False
+                text = "continue"
+                R.print_info("Auto-continuing exact refinement pass…")
+            else:
+                continue
+        else:
+            state.pending_refinement_pass = False
         last_interrupt_ts = 0.0
         if R.console.is_terminal:
             try:

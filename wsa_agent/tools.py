@@ -5721,7 +5721,32 @@ def _http_request(
         reason = str(getattr(ue, "reason", ue) or ue)
         if reason.startswith("[Safety Error]"):
             return reason
-        return f"[Error] HTTP request failed: {reason}"
+        diagnostic = ""
+        if "10061" in reason or "connection refused" in reason.lower():
+            try:
+                with _bg_lock:
+                    active_servers = []
+                    for name, entry in _bg_processes.items():
+                        cmd = entry.get("command", "")
+                        log_path = entry.get("log_path")
+                        found_port = None
+                        if log_path and Path(log_path).is_file():
+                            try:
+                                log_txt = Path(log_path).read_text(encoding="utf-8", errors="replace")[-2000:]
+                                m = re.search(r"https?://(?:localhost|127\.0\.0\.1):(\d+)", log_txt)
+                                if m:
+                                    found_port = m.group(1)
+                            except Exception:
+                                pass
+                        if found_port:
+                            active_servers.append(f"'{name}' ({cmd[:50]}) on port {found_port}")
+                        elif any(k in cmd.lower() for k in ("vite", "next", "serve", "http.server", "uvicorn", "flask")):
+                            active_servers.append(f"'{name}' ({cmd[:50]})")
+                    if active_servers:
+                        diagnostic = f"\n[Diagnostic] Active background dev server(s): {', '.join(active_servers)}. If the server is listening on another port, retry http_request with that port."
+            except Exception:
+                pass
+        return f"[Error] HTTP request failed: {reason}{diagnostic}"
     except Exception as e:
         return f"[Error] HTTP request failed ({type(e).__name__}): {e}"
 

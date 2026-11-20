@@ -4442,6 +4442,11 @@ def execute_agent_loop(
                         aborted_reason = "verification_failed"
     if not quiet_ui and aborted_reason in ("verification_incomplete", "verification_failed", "permission_denied"):
         R.print_warn("Turn incomplete: " + aborted_reason.replace("_", " ") + ".")
+    if state is not None:
+        has_refine_cue = bool(
+            re.search(r"###\s*(?:\d+\.\s*)?Exact Next-Turn Refinement Pass|reply with ['\"]continue['\"]", str(final_assistant_text or ""), re.I)
+        )
+        setattr(state, "pending_refinement_pass", has_refine_cue)
     return {
         "ok": not bool(aborted_reason),
         "role": role,
@@ -4749,8 +4754,8 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
                 model=state.model,
                 use_tools=False,
                 session_id=f"{state.session_id}:role:workflow_router",
-                chat_url=active_url or None,
-                new_chat=False,
+                chat_url=None,
+                new_chat=True,
             )
             if sr is not None:
                 stream_kwargs["on_thinking"] = sr.feed_thinking
@@ -4767,11 +4772,7 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
                 um = response["upstream_model"]
                 c_url = str(um.get("chat_url") or "")
                 if c_url and is_provider_thread_url(c_url):
-                    if not getattr(state, "active_chat_url", ""):
-                        state.active_chat_url = c_url
-                    if hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
-                        if not state.chat_urls.get(state.model):
-                            state.chat_urls[state.model] = c_url
+                    state._router_chat_url = c_url
             raw = str(response.get("content") or "").strip()
             thinking = str(response.get("thinking") or "").strip()
             decision = _parse_workflow_decision(raw)
