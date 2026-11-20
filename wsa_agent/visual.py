@@ -1381,9 +1381,9 @@ def capture_visual_inspection(
     project_root: Path,
     viewports: Optional[List[Dict[str, Any]]] = None,
     actions: Optional[List[Dict[str, Any]]] = None,
-    annotate: bool = True,
+    annotate: bool = False,
     full_page: bool = False,
-    include_diff: bool = True,
+    include_diff: bool = False,
     color_scheme: str = "",
     disable_webgl: bool = False,
     wait_ms: int = 500,
@@ -1482,7 +1482,7 @@ def capture_visual_inspection(
             page_exceptions = list(cdp.page_exceptions)
             failed_requests = list(cdp.failed_requests)
 
-        if include_diff and primary_png is not None:
+        if primary_png is not None:
             baseline = (Path(project_root).resolve(), cache_key, primary_viewport,
                         color_scheme, bool(full_page), bool(disable_webgl))
             with _PREVIOUS_CAPTURES_LOCK:
@@ -1490,11 +1490,12 @@ def capture_visual_inspection(
                 _PREVIOUS_CAPTURES[baseline] = primary_png
                 if len(_PREVIOUS_CAPTURES) > _MAX_PREVIOUS_CACHE:
                     _PREVIOUS_CAPTURES.pop(next(iter(_PREVIOUS_CAPTURES)))
-            if prev_png is not None and len(tiles) < 4:
+            if prev_png is not None:
                 diff_bytes, pct = build_pixel_diff_tile(prev_png, primary_png)
                 if diff_bytes:
                     diff_pct = pct
-                    tiles.append((f"PIXEL DIFF ({pct:.1f}% changed)", diff_bytes))
+                    if include_diff and len(tiles) < 4:
+                        tiles.append((f"PIXEL DIFF ({pct:.1f}% changed)", diff_bytes))
 
         sheet_bytes, sheet_mime, sheet_w, sheet_h = compose_contact_sheet(tiles)
         return {
