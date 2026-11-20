@@ -31,7 +31,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from contextvars import ContextVar
-from typing import Any, Optional, List, Dict, Set, Tuple
+from typing import Any, Optional, List, Dict, Set, Tuple, Callable
 
 _REAL_POPEN_CLS = subprocess.Popen
 
