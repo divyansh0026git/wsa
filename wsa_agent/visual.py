@@ -1575,11 +1575,11 @@ def capture_visual_inspection(
                 if idx == 0:
                     primary_viewport = (vw, vh, is_mobile)
                     cdp.navigate(target_url, wait_ms=wait_ms)
-                    if freeze_animations:
+                    if freeze_animations and callable(getattr(cdp, "freeze_page_animations", None)):
                         cdp.freeze_page_animations()
                 else:
                     cdp.drain_events(250)
-                    if freeze_animations:
+                    if freeze_animations and callable(getattr(cdp, "freeze_page_animations", None)):
                         cdp.freeze_page_animations()
 
                 want_som = bool(annotate and idx == 0)

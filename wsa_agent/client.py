@@ -402,6 +402,10 @@ class WSAClient:
                         if chunk.get("usage"):
                             usage = chunk["usage"]
                             log_debug(f"Usage received: {usage}")
+                        if chunk.get("chat_url"):
+                            self.last_chat_url = str(chunk["chat_url"])
+                        elif isinstance(chunk.get("x_upstream_model"), dict) and chunk["x_upstream_model"].get("chat_url"):
+                            self.last_chat_url = str(chunk["x_upstream_model"]["chat_url"])
                         if isinstance(chunk.get("x_upstream_model"), dict):
                             self.last_upstream_model = chunk["x_upstream_model"]
                         if isinstance(chunk.get("x_relay_timings"), dict):
@@ -548,6 +552,7 @@ class WSAClient:
             "upstream_model": self.last_upstream_model,
             "relay_timings": relay_timings,
             "generated_images": generated_images,
+            "chat_url": getattr(self, "last_chat_url", None) or (self.last_upstream_model.get("chat_url") if isinstance(self.last_upstream_model, dict) else None),
         }
 
     def check_connection(self) -> bool:

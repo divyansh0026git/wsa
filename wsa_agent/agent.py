@@ -287,7 +287,7 @@ def _compact_historical_slice(
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {})
                 raw_args = fn.get("arguments", "")
-                if isinstance(raw_args, str) and len(raw_args) > 500:
+                if isinstance(raw_args, str) and len(raw_args) > 500 and "...[compacted]" not in raw_args:
                     try:
                         parsed = json.loads(raw_args)
                         if isinstance(parsed, dict):
@@ -2367,11 +2367,10 @@ def _run_visual_critic_bridge(
     critic_parts: List[Dict[str, Any]] = [{
         "type": "text",
         "text": (
-            "Act as a senior Awwwards / Igloo.inc Visual Art Director and Dream-Loop Critic. "
-            "Inspect the attached UI/visual contact sheet and telemetry critically:\n"
-            "1. 3D & Background Craft: Flag cheap 'Saturn-toy' primitive collages (sphere + torus rings + cones) or harsh two-tone horizon cuts (e.g. pitch-black sky meeting a bright gray floor behind text without unified fog/atmosphere).\n"
-            "2. Text-Over-Canvas Contrast & Safe Zones: Flag unbacked dark text over dark 3D sky/geometry (or light text over bright terrain), low WCAG contrast, or 3D geometry slicing behind headline typography.\n"
-            "3. Navbar & Layout Hygiene: Flag transparent sticky headers where scrolled text/tables bleed behind nav links, text clipping, overflow, or occluded controls.\n"
+            "Inspect the attached UI/visual contact sheet and telemetry objectively:\n"
+            "1. 3D & Background Craft: Check canvas rendering, scene backgrounds, and lighting/contrast.\n"
+            "2. Typography & Contrast: Check text readability over 3D canvases, contrast, and layout safe zones.\n"
+            "3. Layout Hygiene: Check header occlusion, overflow, and interactive control positioning.\n"
             "Reference Set-of-Mark badge numbers [1], [2], etc. when visible.\n\n"
             f"Telemetry:\n{str(telemetry_text or '')[:2200]}\n\n"
             'Return ONLY concise JSON: {"pass": true|false, "defects": [{"tile": "...", "mark": "[N]", '
@@ -2871,7 +2870,7 @@ def execute_agent_loop(
             )
             if active_budget < MAX_WEB_PROMPT_CHARS:
                 compacted_n += _trim_oversized_user_messages(messages, delta_budget)
-            if compacted_n and not quiet_ui:
+            if compacted_n and not quiet_ui and not is_delta_continuation:
                 R.print_info(
                     f"Auto-compacted {compacted_n} tool output(s) to stay within "
                     f"{R.friendly_model_name(effective_model)} prompt limits ({active_budget // 1000}KB)."
@@ -3458,6 +3457,7 @@ def execute_agent_loop(
 
             if sr.get_thinking_text() and persist_to_state:
                 state.last_thinking_chars = len(sr.get_thinking_text())
+            c_url = ""
             if isinstance(response.get("upstream_model"), dict):
                 um = response["upstream_model"]
                 if persist_to_state and role == "main":
@@ -3468,18 +3468,23 @@ def execute_agent_loop(
                     if lbl and not getattr(state, "active_account_label", ""):
                         state.active_account_label = str(lbl)
                 c_url = str(um.get("chat_url") or "")
-                if c_url and is_provider_thread_url(c_url):
-                    if uses_main_thread:
-                        state.active_chat_url = c_url
-                        if hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
-                            state.chat_urls[effective_model] = c_url
-                        effective_chat_url = c_url
-                    elif role != "main":
-                        if hasattr(state, "set_role_chat_url"):
-                            state.set_role_chat_url(role, c_url, model=effective_model)
-                        elif hasattr(state, "role_threads"):
-                            state.role_threads[role] = c_url
-                        effective_chat_url = c_url
+            if not c_url and isinstance(response, dict):
+                c_url = str(response.get("chat_url") or getattr(client, "last_chat_url", "") or "")
+            if c_url and is_provider_thread_url(c_url):
+                if uses_main_thread:
+                    state.active_chat_url = c_url
+                    if hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
+                        state.chat_urls[effective_model] = c_url
+                    effective_chat_url = c_url
+                elif role != "main":
+                    if hasattr(state, "set_role_chat_url"):
+                        state.set_role_chat_url(role, c_url, model=effective_model)
+                    elif hasattr(state, "role_threads"):
+                        state.role_threads[role] = c_url
+                    effective_chat_url = c_url
+                else:
+                    state.active_chat_url = c_url
+                    effective_chat_url = c_url
                     cur_scope = f"{effective_model}:{role}"
                     if concept_synced_scope_this_turn == cur_scope:
                         if not isinstance(getattr(state, "_concept_synced_keys", None), set):
@@ -4368,13 +4373,13 @@ def execute_agent_loop(
                     visual_parts: List[Dict] = [{
                         "type": "text",
                         "text": (
-                            "[Visual Attachment — Art-Director & Dream-Loop Critique]: Carefully inspect the attached "
-                            "screenshot/image(s) ("
+                            "[Visual Attachment]: Inspect the attached capture ("
                             + ", ".join(im.get("filename", "image") for im in pending_imgs)
-                            + ") and telemetry (`[1][2][3]` Set-of-Mark badges) as a ruthless senior Awwwards / Igloo.inc Art Director:\n"
-                            "- 3D & Background Cohesion: Reject crude 'Saturn-toy' primitive collages (sphere + torus rings + cones) or harsh two-tone horizon cuts (black sky abruptly meeting a bright floor mesh). Ensure unified `scene.background`, `FogExp2`, and CSS `--bg` continuity.\n"
-                            "- Text-Over-Canvas Readability & Layering: Reject unbacked dark text over dark 3D sky/geometry, 3D geometry slicing behind headlines, or transparent sticky headers that let scrolled content bleed behind nav links.\n"
-                            "If ANY visual, aesthetic, contrast, or layout defect is visible, refine the shaders, lighting/fog, layout safe-zones, or frosted CSS surfaces and re-verify before concluding."
+                            + ") and telemetry (`[1][2][3]` Set-of-Mark badges).\n"
+                            "Verify 3D scene rendering, background continuity, readability, and layout integrity against user goals. "
+                            "If intentional design choices or false positives are flagged (e.g. intentional header transparency or animation diff), "
+                            "pass `accepted_flags=['<FLAG>']` in `visual_inspect` or note them in your summary. "
+                            "If real defects are present, apply targeted fixes; once verified complete, proceed to summarize."
                         ),
                     }]
                     for im in pending_imgs[:4]:

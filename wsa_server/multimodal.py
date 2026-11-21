@@ -885,8 +885,13 @@ def messages_to_prompt(messages: list, tools: list = None, provider: str = "gemi
                     if clean_asst:
                         prior_entries.append((i, "assistant", f"Earlier working note: {clean_asst}"))
                 elif role == "tool":
-                    safe_content = _sanitize_claude_tool_result(_escape_tool_fences(str(content)))
-                    prior_entries.append((i, "tool", f"Earlier local output returned by my `wsa` CLI for `{msg.get('name', '')}`:\n{safe_content}"))
+                    t_name = str(msg.get("name", "") or "tool")
+                    raw_c = str(content)
+                    if len(raw_c) > 1200:
+                        safe_content = f"[{t_name} output ({len(raw_c):,} chars completed in earlier turn; files remain on disk)]"
+                    else:
+                        safe_content = _sanitize_claude_tool_result(_escape_tool_fences(raw_c))
+                    prior_entries.append((i, "tool", f"Earlier local output returned by my `wsa` CLI for `{t_name}`:\n{safe_content}"))
             else:
                 if role == "assistant":
                     if msg.get("tool_calls"):
@@ -1027,8 +1032,13 @@ def messages_to_prompt(messages: list, tools: list = None, provider: str = "gemi
             clean_asst = _sanitize_assistant_relay_prose(str(content), bool(msg.get("tool_calls")))
             tagged_parts.append(("prior", f"[Prior Assistant]: {clean_asst}"))
         elif is_prior and role == "tool":
-            safe_content = _escape_tool_fences(str(content))
-            tagged_parts.append(("prior", f"[Prior Tool result for {msg.get('name', '')}]:\n{safe_content}"))
+            t_name = str(msg.get("name", "") or "tool")
+            raw_c = str(content)
+            if len(raw_c) > 1200:
+                safe_content = f"[{t_name} output ({len(raw_c):,} chars completed in prior turn; files on disk)]"
+            else:
+                safe_content = _escape_tool_fences(raw_c)
+            tagged_parts.append(("prior", f"[Prior Tool result for {t_name}]:\n{safe_content}"))
         elif role == "assistant":
             if msg.get("tool_calls"):
                 clean_asst = _sanitize_assistant_relay_prose(str(content or ""), has_tool_calls=True)
@@ -1167,19 +1177,9 @@ def messages_to_delta_prompt(
         images.extend(msg_images)
         safe_content = _escape_tool_fences(str(content))
         if role == "assistant":
-            if m.get("tool_calls"):
-                clean_asst = _sanitize_assistant_relay_prose(safe_content, has_tool_calls=True)
-                tc_strs = []
-                for tc in m["tool_calls"]:
-                    fn = tc.get("function", {})
-                    tc_strs.append(
-                        f'```tool_call\n{{"name": "{fn.get("name")}", '
-                        f'"arguments": {fn.get("arguments", "{}")}}}\n```'
-                    )
-                prefix = f"[Assistant]: {clean_asst}\n" if clean_asst else "[Assistant]:\n"
-                tagged_parts.append(("asst", prefix + "\n".join(tc_strs)))
-            elif safe_content:
-                tagged_parts.append(("asst", f"[Assistant]: {safe_content}"))
+            # Delta is sent to the existing chat tab where the model's turn is already visible.
+            # Avoid echoing the model's own response/tool_call back into the prompt.
+            continue
         elif role == "tool":
             t_name = str(m.get("name", "") or "tool")
             tool_txt = _sanitize_claude_tool_result(safe_content) if is_claude else safe_content
