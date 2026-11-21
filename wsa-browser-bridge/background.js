@@ -3367,6 +3367,9 @@ function _domInstallPageRuntimeFn() {
         item => item && typeof item === "object" && typeof item.name === "string" && item.name.length > 0
       );
     } catch {
+      // In-flight streaming tool call: detect partial JSON structure before full parse settles
+      const toolStart = trimmed.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/);
+      if (toolStart !== -1) return true;
       return false;
     }
   }
@@ -3860,6 +3863,7 @@ function _domInstallPageRuntimeFn() {
   }
 
   function findEnabledSendButton(editorEl) {
+    if (isStopButtonVisible()) return null;
     const ed = editorEl || findEditor();
     const scope = (ed && typeof ed.closest === "function"
       ? ed.closest("form, .input-area, .text-input-field, [class*='input-area' i], [class*='composer' i]")
@@ -3867,6 +3871,9 @@ function _domInstallPageRuntimeFn() {
     const roots = scope ? [scope, document] : [document];
     const isSendCandidate = (btn) => {
       if (!isVisibleElement(btn)) return false;
+      // Never select a button that contains stop icons or represents stopping/generation control
+      if (btn.querySelector?.("mat-icon[fonticon*='stop' i], mat-icon[data-mat-icon-name*='stop' i], [data-test-id*='stop' i], [data-testid*='stop' i], [aria-label*='stop' i], svg rect")) return false;
+      if (btn.matches?.("button[aria-label*='stop' i], .stop-button, [data-test-id*='stop' i], [data-testid*='stop' i]")) return false;
       // Gemini places .send-button on a component wrapping the native control.
       // Clicking the host bypasses the listener on its child.
       if (btn.tagName !== "BUTTON" && btn.querySelector?.("button")) return false;
@@ -3879,6 +3886,7 @@ function _domInstallPageRuntimeFn() {
         (btn.className || "") + " " +
         (btn.innerText || "")
       ).toLowerCase();
+      if (/\b(?:stop|pause|feedback|voice|dictate|mic|microphone)\b/i.test(meta)) return false;
       const isExplicitSend =
         btn.classList.contains("send-button") ||
         (btn.getAttribute("data-test-id") || "").toLowerCase().includes("send-button") ||
@@ -3887,10 +3895,9 @@ function _domInstallPageRuntimeFn() {
         meta.includes("send prompt") ||
         meta.trim() === "send";
       if (isExplicitSend) {
-        if (/\b(?:stop|pause|feedback|voice|dictate|mic|microphone)\b/i.test(meta)) return false;
         return true;
       }
-      if (/\b(?:add\s+image|upload\s+image|attach\s+file|insert\s+image|select\s+file|browse\s+files|feedback|stop|mic|microphone|voice|dictate|attach|upload|tool|canvas|gem|model|menu|more|expand|collapse|full\s*screen)\b/i.test(meta)) {
+      if (/\b(?:add\s+image|upload\s+image|attach\s+file|insert\s+image|select\s+file|browse\s+files|attach|upload|tool|canvas|gem|model|menu|more|expand|collapse|full\s*screen)\b/i.test(meta)) {
         return false;
       }
       return meta.includes("send message") || meta.trim() === "send" || btn.classList.contains("send-button") || /\bsend\b/.test(meta);
@@ -4083,6 +4090,12 @@ function _domInstallPageRuntimeFn() {
   }
 
   function triggerDomSubmit(editorEl, allowFormSubmitFallback = false) {
+    if (isStopButtonVisible() || detectReactBusy()) return "busy";
+    const job = globalThis.__wsaActiveJob;
+    if (job) {
+      if (document.querySelectorAll("model-response").length > (job.beforeModelCount || 0)) return "busy";
+      if (job.lastThinking || job.lastText) return "busy";
+    }
     const liveEd = findEditor() || editorEl;
     if (!liveEd || liveEd.isConnected === false) return "missing_editor";
     let sendBtn = findEnabledSendButton(liveEd);
@@ -4112,6 +4125,10 @@ function _domInstallPageRuntimeFn() {
       }
       try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
+    }
+    if (isStopButtonVisible() || detectReactBusy()) return "busy";
+    if (job && (document.querySelectorAll("model-response").length > (job.beforeModelCount || 0) || job.lastThinking || job.lastText)) {
+      return "busy";
     }
     if (typeof liveEd.focus === "function") {
       try { liveEd.focus(); } catch { /* ignore */ }
@@ -4385,7 +4402,12 @@ function _domInstallPageRuntimeFn() {
         if (isStopButtonVisible() || detectReactBusy()) return true;
         if (readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
         if (document.querySelectorAll("model-response").length > (globalThis.__wsaActiveJob?.beforeModelCount || 0)) return true;
-        if (!isPromptStillInEditor(findEditor() || inputEl, prompt)) return true;
+        if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought']").length > 0) return true;
+        const curEd = findEditor() || inputEl;
+        if (curEd) {
+          if (curEd.getAttribute("contenteditable") === "false" || curEd.getAttribute("aria-disabled") === "true" || curEd.disabled) return true;
+          if (!isPromptStillInEditor(curEd, prompt)) return true;
+        }
         if (hasMedia && countComposerMediaPreviews(resolveComposerAttachmentRoot(findEditor() || inputEl)) < beforeMediaCount) return true;
         if (readErrorBanner() !== beforeBanner) return true;
         return false;
@@ -4399,7 +4421,7 @@ function _domInstallPageRuntimeFn() {
         if (!isPromptStillInEditor(liveEd, prompt)) return false;
       }
       triggerDomSubmit(inputEl, false);
-      const maxSubmitPolls = hasMedia ? 36 : 18;
+      const maxSubmitPolls = hasMedia ? 40 : 18;
       for (let i = 0; i < maxSubmitPolls; i++) {
         await sleepMs(140);
         if (hasSubmitEffect()) {
@@ -4537,6 +4559,7 @@ function _domInstallPageRuntimeFn() {
     normalizeRelayMarkdown,
     pickBestChangedRelayCandidate,
     domNodeToMarkdown,
+    isToolCallPayload,
     readDomAssistantState,
     isTurnActionButton,
     countVisibleActionButtons,
@@ -4742,15 +4765,19 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
       if (rt.isStopButtonVisible() || rt.detectReactBusy()) return true;
       if (document.querySelectorAll("model-response").length > beforeModelCount) return true;
       if (rt.readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
+      if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought']").length > 0) return true;
       const live = rt.findEditor() || inputEl;
-      if (live && typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(live, prompt)) return true;
+      if (live) {
+        if (live.getAttribute("contenteditable") === "false" || live.getAttribute("aria-disabled") === "true" || live.disabled) return true;
+        if (typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(live, prompt)) return true;
+      }
       return false;
     };
     if (hasLateEffect()) {
       submitted = true;
     } else {
-      for (let w = 0; w < 14; w++) {
-        await sleepMs(250);
+      for (let w = 0; w < 90; w++) {
+        await sleepMs(300);
         if (hasLateEffect()) {
           submitted = true;
           break;
@@ -4933,11 +4960,18 @@ function _domPollTurnFn(reqId) {
   }
 
   const isPromptInEd = Boolean(job.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, job.prompt));
+  const hasModelResponseStarted = Boolean(
+    document.querySelectorAll("model-response").length > (job.beforeModelCount || 0) ||
+    document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought']").length > 0 ||
+    job.lastThinking ||
+    job.lastText ||
+    effectiveDomCount > job.beforeDomCount ||
+    Boolean(currentDomState.tailText) ||
+    job.sawNewTurn
+  );
   const promptUnsent = Boolean(
-    !job.sawNewTurn &&
+    !hasModelResponseStarted &&
     !busy &&
-    !job.lastText &&
-    !job.lastThinking &&
     isPromptInEd
   );
   if (promptUnsent && isExplicitLimitBanner) {
@@ -5407,7 +5441,16 @@ async function handleBrowserCommand(cmd) {
   try {
     const action = String(cmd.action || "list_tabs");
     const params = cmd.params || {};
-    if (action === "list_tabs") {
+    if (action === "reload_extension") {
+      result = { ok: true, reloaded: true };
+      setTimeout(() => {
+        try {
+          if (typeof chrome !== "undefined" && chrome.runtime?.reload) {
+            chrome.runtime.reload();
+          }
+        } catch { /* ignore */ }
+      }, 120);
+    } else if (action === "list_tabs") {
       const allTabs = await chrome.tabs.query({});
       result = {
         ok: true,

@@ -303,8 +303,11 @@ def _cmd_account(arg: str, state: SessionState) -> HandlerResult:
         if res.get("ok"):
             bound = res.get("active_relay_label") or res.get("active_relay") or res.get("active_account")
             old_urls = list((state.chat_urls or {}).values()) + list((state.role_threads or {}).values())
+            old_email = str(getattr(state, "account_email", "") or "").lower().strip()
+            new_email = str(res.get("account_email") or "").lower().strip()
+            email_changed = bool(old_email and new_email and old_email != new_email)
             state.sync_account_from_res(res)
-            if int(res.get("cleared_chats") or 0) > 0:
+            if int(res.get("cleared_chats") or 0) > 0 or email_changed or target.lower() in ("brave", "chrome", "edge"):
                 state.clear_provider_chats(clear_roles=True)
             if sid and callable(getattr(client, "clear_session_chats", None)):
                 client.clear_session_chats(sid, client_urls=old_urls)

@@ -126,4 +126,56 @@ assert.strictEqual(
 );
 
 console.log("   [PASS] evaluateTurnCompletionState streaming protection passed.");
+
+console.log("--> Testing in-flight streaming tool call recognition in rt.isToolCallPayload...");
+assert.strictEqual(
+  rt.isToolCallPayload('{"name": "apply_patch", "arguments": {"edits": [{"path": "src/shaders/cinematicPass.'),
+  true,
+  "In-flight streaming tool call should be recognized by isToolCallPayload"
+);
+assert.strictEqual(
+  rt.isToolCallPayload('Just regular prose without tool call'),
+  false,
+  "Prose should return false from isToolCallPayload"
+);
+console.log("   [PASS] isToolCallPayload streaming recognition passed.");
+
+console.log("--> Testing triggerDomSubmit guard against clicking Stop button or busy generation...");
+const mockStopDoc = {
+  querySelector: (sel) => {
+    if (sel.includes("stop")) return { disabled: false, getAttribute: () => null };
+    return null;
+  },
+  querySelectorAll: (sel) => {
+    if (sel.includes("stop")) return [{ disabled: false, getAttribute: () => null }];
+    return [];
+  },
+};
+const stopSandbox = {
+  globalThis: {},
+  document: mockStopDoc,
+  window: {},
+  location: { href: "https://gemini.google.com/u/4/app" },
+};
+stopSandbox.globalThis = stopSandbox;
+vm.runInNewContext("(" + bg._domInstallPageRuntimeFn.toString() + ")()", stopSandbox);
+const stopRt = stopSandbox.__wsaRuntime;
+
+assert.strictEqual(
+  stopRt.isStopButtonVisible(),
+  true,
+  "Mock stop button should be detected as visible"
+);
+assert.strictEqual(
+  stopRt.findEnabledSendButton(),
+  null,
+  "findEnabledSendButton must return null when Stop button is visible"
+);
+assert.strictEqual(
+  stopRt.triggerDomSubmit({ isConnected: true }),
+  "busy",
+  "triggerDomSubmit must return 'busy' when stop button is visible"
+);
+console.log("   [PASS] triggerDomSubmit & findEnabledSendButton stop protection passed.");
+
 console.log("\nALL GEMINI ACCOUNT SWITCHING & STREAM GUARD TESTS PASSED!");
