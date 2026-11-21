@@ -117,3 +117,41 @@ def test_visual_directive_avoids_art_director_saturn_toy_critique_loop():
     assert "Saturn-toy" not in prompts.SYSTEM_PROMPT
     assert "ruthless senior Awwwards" not in prompts.SYSTEM_PROMPT
     assert "Saturn-toy" not in prompts.CLAUDE_SYSTEM_PROMPT
+
+
+def test_visual_diff_never_injects_neon_pink_missing_texture_artifacts():
+    """Primary contact sheet must never stitch diff heatmaps, only clean real viewports."""
+    import io
+    from PIL import Image
+    from wsa_agent import visual
+
+    # Test capture_visual_inspection mock: ensure tiles for contact sheet contains NO diff tile
+    fake_cdp = MagicMock()
+    fake_cdp.console_errors = []
+    fake_cdp.page_exceptions = []
+    fake_cdp.failed_requests = []
+    fake_cdp.evaluate.return_value = {"viewport": {"width": 1440, "height": 900}, "marks": []}
+    
+    clean_im = Image.new("RGB", (400, 300), (10, 15, 25))
+    buf = io.BytesIO()
+    clean_im.save(buf, format="PNG")
+    clean_bytes = buf.getvalue()
+
+    fake_cdp.screenshot_png.return_value = clean_bytes
+    fake_cdp.run_actions.return_value = []
+    fake_cdp.eval_results = []
+
+    with patch.object(visual, "_HeadlessCDPClient", return_value=fake_cdp):
+        with patch.object(visual, "find_chromium_binary", return_value="fake_chrome.exe"):
+            res = visual.capture_visual_inspection(
+                "http://127.0.0.1:5173",
+                project_root=Path("."),
+                include_diff=True,
+            )
+            assert res["ok"] is True
+            # Contact sheet tiles must contain ONLY real viewports, never PIXEL DIFF
+            for tile_lbl in res["tiles"]:
+                assert "PIXEL DIFF" not in tile_lbl, f"Synthetic diff leaked into primary sheet tiles: {tile_lbl}"
+            assert len(res["tiles"]) == 1
+            assert "DESKTOP" in res["tiles"][0]
+

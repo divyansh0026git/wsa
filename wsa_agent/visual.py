@@ -408,13 +408,13 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
     if (overlay) {
       var box = document.createElement('div');
       box.style.cssText =
-        'position:fixed;box-sizing:border-box;border:2px solid ' + (occluded ? '#ef4444' : '#ff2e93') + ';' +
+        'position:fixed;box-sizing:border-box;border:2px solid ' + (occluded ? '#dc2626' : '#2563eb') + ';' +
         'left:' + Math.round(r.left) + 'px;top:' + Math.round(r.top) + 'px;' +
         'width:' + Math.round(r.width) + 'px;height:' + Math.round(r.height) + 'px;';
       var badge = document.createElement('span');
       badge.textContent = String(markIdx);
       badge.style.cssText =
-        'position:absolute;left:-2px;top:-2px;background:' + (occluded ? '#ef4444' : '#ff2e93') + ';' +
+        'position:absolute;left:-2px;top:-2px;background:' + (occluded ? '#dc2626' : '#2563eb') + ';' +
         'color:#ffffff;font:700 11px/1 monospace;padding:2px 4px;border-radius:2px;';
       box.appendChild(badge);
       overlay.appendChild(box);
@@ -858,7 +858,7 @@ class _HeadlessCDPClient:
             self.drain_events(100)
 
     def freeze_page_animations(self) -> None:
-        """Pause Web Animations API and freeze CSS keyframes to eliminate animation diff noise."""
+        """Pause Web Animations API, freeze CSS keyframes, and lock RAF clock to eliminate animation diff noise."""
         freeze_js = """(function() {
             try {
                 if (typeof document.getAnimations === "function") {
@@ -870,6 +870,15 @@ class _HeadlessCDPClient:
                 st.id = "__wsa_freeze_anim__";
                 st.textContent = "* { animation-play-state: paused !important; }";
                 (document.head || document.documentElement).appendChild(st);
+
+                // Freeze time progression for Three.js / WebGL / Canvas animation loops
+                if (!window.__wsa_time_frozen__) {
+                    window.__wsa_time_frozen__ = true;
+                    var frozenNow = performance.now();
+                    window.performance.now = function() { return frozenNow; };
+                    var originalDateNow = Date.now();
+                    Date.now = function() { return originalDateNow; };
+                }
                 return true;
             } catch(e) { return false; }
         })()"""
@@ -1662,8 +1671,8 @@ def capture_visual_inspection(
                 diff_bytes, pct = build_pixel_diff_tile(prev_png, primary_png)
                 if diff_bytes:
                     diff_pct = pct
-                    if include_diff and len(tiles) < 4:
-                        tiles.append((f"PIXEL DIFF ({pct:.1f}% changed)", diff_bytes))
+                    # Primary screenshot contact sheet must remain 100% clean real viewport renders.
+                    # We save the diff tile as a separate diagnostic artifact on disk (never in sheet_bytes).
 
         # Save individual native-resolution viewport images to disk so detail is never lost
         individual_images: List[Dict[str, Any]] = []
@@ -1681,6 +1690,15 @@ def capture_visual_inspection(
                     "label": lbl,
                     "path": str(shot_path),
                     "size_kb": max(1, len(p_bytes) // 1024),
+                })
+            # Save diff tile as a diagnostic image on disk if computed, but never stitch into primary sheet
+            if diff_bytes and (include_diff or diff_pct is not None):
+                diff_path = shots_dir / f"visual_diff_{ts}.png"
+                diff_path.write_bytes(diff_bytes)
+                individual_images.append({
+                    "label": f"PIXEL DIFF ({diff_pct:.1f}% changed)",
+                    "path": str(diff_path),
+                    "size_kb": max(1, len(diff_bytes) // 1024),
                 })
         except Exception:
             pass
@@ -1742,6 +1760,7 @@ def format_visual_report(
                 st = ev.get("result") or {}
                 lines.append(f"  state -> scrollY={st.get('scrollY')}/{st.get('maxScrollY')}px, active={st.get('activeElement')}, title={json.dumps(st.get('title'))}")
     if res.get("diff_pct") is not None:
+        lines.append(f"PIXEL DIFF: {res['diff_pct']:.2f}% pixels changed vs previous capture")
         lines.append(f"Pixel diff vs previous capture: {res['diff_pct']:.2f}% pixels changed")
 
     passed = bool(res.get("viewports")) and not any(res.get(k) for k in ("console_errors", "page_exceptions", "failed_requests"))

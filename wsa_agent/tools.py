@@ -719,7 +719,7 @@ TOOL_DEFINITIONS = [
                     "actions":           {"type": "array",   "description": "Optional interactions: click, hover, scroll, drag, type, wait, eval ({'type':'eval','expression':'window.scrollY'}), read_state ({'type':'read_state'}), wait_frames ({'type':'wait_frames','frames':30}), wait_idle ({'type':'wait_idle'})"},
                     "annotate":          {"type": "boolean", "description": "Overlay Set-of-Mark [1][2][3] element badges on primary tile (default: false for clean captures)"},
                     "full_page":         {"type": "boolean", "description": "Capture full scroll height on primary tile (default: false)"},
-                    "include_diff":      {"type": "boolean", "description": "Include pixel-diff heatmap tile vs previous capture (default: false for clean captures)"},
+                    "include_diff":      {"type": "boolean", "description": "Compute pixel-diff percentage vs previous capture (reported in telemetry; primary capture image always remains clean real viewport renders)"},
                     "color_scheme":      {"type": "string",  "description": "Optional CSS prefers-color-scheme emulation: 'dark' or 'light'"},
                     "disable_webgl":     {"type": "boolean", "description": "Disable WebGL to test 2D/poster fallback rendering (default: false)"},
                     "wait_ms":           {"type": "integer", "description": "Settle delay in ms after page load (default: 500)"},
