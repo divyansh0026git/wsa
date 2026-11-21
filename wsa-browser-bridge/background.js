@@ -3660,10 +3660,11 @@ function _domInstallPageRuntimeFn() {
       "button[aria-label*='Stop response' i], button[aria-label*='Stop streaming' i], button[aria-label*='Stop generating' i], " +
       "button[aria-label='Stop' i], button[mattooltip*='Stop' i], button[data-test-id*='stop' i], " +
       "button[data-testid*='stop' i], [data-test-id*='stop-button' i], [data-testid*='stop-button' i], " +
-      "button.stop-button, .stop-button, button[aria-label*='stop' i]"
+      "button.stop-button, .stop-button, button[aria-label*='stop' i], [role='button'][aria-label*='stop' i], " +
+      "[role='button'][mattooltip*='stop' i], [role='button'][data-test-id*='stop' i], [role='button'][data-testid*='stop' i]"
     );
     for (const btn of stopBtns) {
-      if (isVisibleElement(btn) && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
+      if (isVisibleElement(btn)) {
         return true;
       }
     }
@@ -3671,11 +3672,65 @@ function _domInstallPageRuntimeFn() {
       "mat-icon[fonticon='stop'], mat-icon[data-mat-icon-name='stop'], mat-icon[fonticon='stop_circle'], " +
       "mat-icon[data-mat-icon-name='stop_circle'], mat-icon[fonticon*='stop' i]"
     )) {
-      const btn = typeof icon.closest === "function" ? icon.closest("button") : null;
-      if (btn && isVisibleElement(btn) && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
+      const btn = typeof icon.closest === "function" ? icon.closest("button, [role='button']") : null;
+      if (btn && isVisibleElement(btn)) {
         return true;
       }
     }
+    return false;
+  }
+
+  function detectGeminiBusy() {
+    if (isStopButtonVisible()) return true;
+    if (detectReactBusy()) return true;
+
+    // 1. Angular/Material spinners & progress bars
+    const spinners = document.querySelectorAll(
+      "mat-progress-spinner, mat-spinner, mat-progress-bar, [role='progressbar'], " +
+      ".loading-spinner, .spinner, [aria-busy='true'], .gemini-loader, .loading-pulse"
+    );
+    for (const sp of spinners) {
+      if (isVisibleElement(sp)) return true;
+    }
+
+    // 2. Active status/thinking indicators (e.g. "... Analyzing visual details")
+    const statusEls = document.querySelectorAll(
+      "model-thoughts, thinking-overlay, .thoughts-content, .thoughts-status-message, " +
+      ".thought-description, thought-view, .thought-container, [data-test-id*='thought' i], " +
+      "[data-test-id*='status' i], [data-test-id*='loading' i], .loading-message, " +
+      "[jsname='bC5vW'], [jsname='wEk2pe']"
+    );
+    const analyzingRe = /^(?:(?:\.|\u2026|\*)\s*)?(?:analyzing|thinking|generating|working|loading|searching|processing|examining|comparing|reading)\b/i;
+    for (const el of statusEls) {
+      if (typeof el.closest === "function" && el.closest("message-content, code-block, pre, user-query, input-container")) continue;
+      if (isVisibleElement(el)) {
+        const text = (el.innerText || el.textContent || "").trim();
+        if (text && (analyzingRe.test(text) || (typeof el.matches === "function" && el.matches(".thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container")))) {
+          return true;
+        }
+      }
+    }
+
+    // 3. Status text in chat thread or live announcer
+    const announcerEls = document.querySelectorAll(".cdk-live-announcer-element, [aria-live='polite'], [aria-live='assertive']");
+    for (const ann of announcerEls) {
+      const annText = (ann.innerText || ann.textContent || "").trim();
+      if (annText && analyzingRe.test(annText)) return true;
+    }
+
+    // 4. Composer non-interactive / disabled state during active processing
+    const ed = typeof findEditor === "function" ? findEditor() : null;
+    if (ed && isVisibleElement(ed)) {
+      if (
+        ed.getAttribute?.("contenteditable") === "false" ||
+        ed.getAttribute?.("aria-disabled") === "true" ||
+        ed.disabled === true ||
+        (typeof ed.hasAttribute === "function" && ed.hasAttribute("inert"))
+      ) {
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -3829,7 +3884,9 @@ function _domInstallPageRuntimeFn() {
       job.announcerChanged = true;
     }
     const thoughtEls = document.querySelectorAll(
-      "model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container, .cdk-live-announcer-element"
+      "model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], " +
+      ".thoughts-status-message, .thought-description, thought-view, .thought-container, " +
+      "[jsname='bC5vW'], [jsname='wEk2pe'], .cdk-live-announcer-element, [data-test-id*='status' i], .loading-message"
     );
     const ignoreStatus = /^(Show thinking|Hide thinking|Stop response|Gemini said|Gemini is typing|New chat|Ask Gemini|Response ready|Copied to clipboard)$/i;
     let allModelResponses = null;
@@ -3841,11 +3898,13 @@ function _domInstallPageRuntimeFn() {
         const mrIdx = allModelResponses.indexOf(mr);
         if (mrIdx >= 0 && mrIdx < job.beforeModelCount) continue;
       }
-      if (!job.announcerChanged && sEl.classList.contains("cdk-live-announcer-element")) continue;
-      const st = (sEl.innerText || sEl.textContent || "").replace(/^(Show|Hide)\s+thinking\s*/i, "").trim();
+      if (!job.announcerChanged && sEl.classList?.contains?.("cdk-live-announcer-element")) continue;
+      let st = (sEl.innerText || sEl.textContent || "").replace(/^(Show|Hide)\s+thinking\s*/i, "").trim();
+      st = st.replace(/^(?:\.{3}|\u2026|\*)\s*/, "").trim();
       if (!st || st.length >= 4000 || ignoreStatus.test(st) || /^Code snippet\b/i.test(st)) continue;
       if (candidateText && ((st.length >= 4 && candidateText.includes(st)) || (candidateText.length >= 20 && st.includes(candidateText.slice(0, 60))))) continue;
-      if (busy || sEl.matches("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message")) {
+      const isAnalyzingStatus = /^(?:analyzing|thinking|generating|working|loading|searching|processing|examining|comparing|reading)\b/i.test(st);
+      if (busy || isAnalyzingStatus || sEl.matches("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container")) {
         const lastIdx = job.thinkingLines.length - 1;
         if (lastIdx >= 0 && st.startsWith(job.thinkingLines[lastIdx])) {
           job.thinkingLines[lastIdx] = st;
@@ -3863,7 +3922,7 @@ function _domInstallPageRuntimeFn() {
   }
 
   function findEnabledSendButton(editorEl) {
-    if (isStopButtonVisible()) return null;
+    if (isStopButtonVisible() || detectGeminiBusy()) return null;
     const ed = editorEl || findEditor();
     const scope = (ed && typeof ed.closest === "function"
       ? ed.closest("form, .input-area, .text-input-field, [class*='input-area' i], [class*='composer' i]")
@@ -4090,7 +4149,7 @@ function _domInstallPageRuntimeFn() {
   }
 
   function triggerDomSubmit(editorEl, allowFormSubmitFallback = false) {
-    if (isStopButtonVisible() || detectReactBusy()) return "busy";
+    if (isStopButtonVisible() || detectReactBusy() || detectGeminiBusy()) return "busy";
     const job = globalThis.__wsaActiveJob;
     if (job) {
       if (document.querySelectorAll("model-response").length > (job.beforeModelCount || 0)) return "busy";
@@ -4126,7 +4185,7 @@ function _domInstallPageRuntimeFn() {
       try { sendBtn.click(); } catch { /* ignore */ }
       return "button";
     }
-    if (isStopButtonVisible() || detectReactBusy()) return "busy";
+    if (isStopButtonVisible() || detectReactBusy() || detectGeminiBusy()) return "busy";
     if (job && (document.querySelectorAll("model-response").length > (job.beforeModelCount || 0) || job.lastThinking || job.lastText)) {
       return "busy";
     }
@@ -4374,6 +4433,10 @@ function _domInstallPageRuntimeFn() {
     }
 
     if (!submitted) {
+      for (let w = 0; w < 30; w++) {
+        if (!isStopButtonVisible() && !detectGeminiBusy()) break;
+        await sleepMs(300);
+      }
       log("Submitting via Angular/Quill DOM (" + prompt.length + " chars)");
       setPromptTextInEditor(inputEl, prompt);
       await sleepMs(160);
@@ -4399,13 +4462,13 @@ function _domInstallPageRuntimeFn() {
 
       const beforeBanner = readErrorBanner();
       const hasSubmitEffect = () => {
-        if (isStopButtonVisible() || detectReactBusy()) return true;
+        if (isStopButtonVisible() || detectReactBusy() || detectGeminiBusy()) return true;
         if (readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
         if (document.querySelectorAll("model-response").length > (globalThis.__wsaActiveJob?.beforeModelCount || 0)) return true;
-        if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought']").length > 0) return true;
+        if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container").length > 0) return true;
         const curEd = findEditor() || inputEl;
         if (curEd) {
-          if (curEd.getAttribute("contenteditable") === "false" || curEd.getAttribute("aria-disabled") === "true" || curEd.disabled) return true;
+          if (curEd.getAttribute?.("contenteditable") === "false" || curEd.getAttribute?.("aria-disabled") === "true" || curEd.disabled || (typeof curEd.hasAttribute === "function" && curEd.hasAttribute("inert"))) return true;
           if (!isPromptStillInEditor(curEd, prompt)) return true;
         }
         if (hasMedia && countComposerMediaPreviews(resolveComposerAttachmentRoot(findEditor() || inputEl)) < beforeMediaCount) return true;
@@ -4566,6 +4629,7 @@ function _domInstallPageRuntimeFn() {
     countGeneratedImages,
     isStopButtonVisible,
     detectReactBusy,
+    detectGeminiBusy,
     detectTurnCompletionActions,
     selectLiveTurnText,
     evaluateTurnCompletionState,
@@ -4762,13 +4826,13 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
 
   if (imagesAttached && submitted === false) {
     const hasLateEffect = () => {
-      if (rt.isStopButtonVisible() || rt.detectReactBusy()) return true;
+      if (rt.isStopButtonVisible() || rt.detectReactBusy() || (typeof rt.detectGeminiBusy === "function" && rt.detectGeminiBusy())) return true;
       if (document.querySelectorAll("model-response").length > beforeModelCount) return true;
       if (rt.readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
-      if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought']").length > 0) return true;
+      if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container").length > 0) return true;
       const live = rt.findEditor() || inputEl;
       if (live) {
-        if (live.getAttribute("contenteditable") === "false" || live.getAttribute("aria-disabled") === "true" || live.disabled) return true;
+        if (live.getAttribute?.("contenteditable") === "false" || live.getAttribute?.("aria-disabled") === "true" || live.disabled || (typeof live.hasAttribute === "function" && live.hasAttribute("inert"))) return true;
         if (typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(live, prompt)) return true;
       }
       return false;
@@ -4824,7 +4888,8 @@ function _domPollTurnFn(reqId) {
   const liveEd = typeof rt.findEditor === "function" ? rt.findEditor() : null;
   const stopVisible = rt.isStopButtonVisible();
   const reactBusy = rt.detectReactBusy();
-  const busy = stopVisible || reactBusy;
+  const geminiBusy = typeof rt.detectGeminiBusy === "function" ? rt.detectGeminiBusy() : false;
+  const busy = stopVisible || reactBusy || geminiBusy;
   if (busy) {
     job.lastBusyAt = now;
   }
@@ -4962,12 +5027,13 @@ function _domPollTurnFn(reqId) {
   const isPromptInEd = Boolean(job.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, job.prompt));
   const hasModelResponseStarted = Boolean(
     document.querySelectorAll("model-response").length > (job.beforeModelCount || 0) ||
-    document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought']").length > 0 ||
+    document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container").length > 0 ||
     job.lastThinking ||
     job.lastText ||
     effectiveDomCount > job.beforeDomCount ||
     Boolean(currentDomState.tailText) ||
-    job.sawNewTurn
+    job.sawNewTurn ||
+    geminiBusy
   );
   const promptUnsent = Boolean(
     !hasModelResponseStarted &&
@@ -6868,14 +6934,13 @@ function _claudePollTurnFn(reqId) {
     allTurns.length <= turn.beforeTurnCount &&
     isPromptInEd
   );
-  if (promptUnsent && typeof rt.triggerSubmit === "function" && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
-    const sendMissing = typeof rt.findSendButton === "function" && !rt.findSendButton(liveEd);
-    if (sendMissing && isPromptInEd && (turn.submitRetries || 0) < 2 && typeof rt.setPromptText === "function") {
-      rt.setPromptText(liveEd, turn.prompt);
+  if (promptUnsent && !isStillStreaming && typeof rt.triggerSubmit === "function" && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
+    const sendBtn = typeof rt.findSendButton === "function" ? rt.findSendButton(liveEd) : null;
+    if (sendBtn) {
+      rt.triggerSubmit(liveEd, (turn.submitRetries || 0) >= 1);
+      turn.submitRetries = (turn.submitRetries || 0) + 1;
+      turn.lastRetryAt = now;
     }
-    rt.triggerSubmit(liveEd, (turn.submitRetries || 0) >= 1);
-    turn.submitRetries = (turn.submitRetries || 0) + 1;
-    turn.lastRetryAt = now;
   }
 
   const hasActiveThinking = Boolean(
@@ -8367,14 +8432,13 @@ function _installWsaDomUtilsFn() {
       allTurns.length <= turn.beforeTurnCount &&
       isPromptInEd
     );
-    if (promptUnsent && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
-      const sendMissing = typeof rt.findSendButton === "function" && !rt.findSendButton(liveEd);
-      if (sendMissing && isPromptInEd && (turn.submitRetries || 0) < 2) {
-        setEditablePromptText(liveEd, turn.prompt);
+    if (promptUnsent && !isStillStreaming && (turn.submitRetries || 0) < 4 && (now - (turn.lastRetryAt || turn.startedAt)) >= 1800) {
+      const sendBtn = typeof rt.findSendButton === "function" ? rt.findSendButton(liveEd) : null;
+      if (sendBtn) {
+        triggerSendSubmission(rt, liveEd, (turn.submitRetries || 0) >= 1);
+        turn.submitRetries = (turn.submitRetries || 0) + 1;
+        turn.lastRetryAt = now;
       }
-      triggerSendSubmission(rt, liveEd, (turn.submitRetries || 0) >= 1);
-      turn.submitRetries = (turn.submitRetries || 0) + 1;
-      turn.lastRetryAt = now;
     }
 
     const stoppedByUser = Boolean(

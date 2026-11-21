@@ -167,6 +167,11 @@ assert.strictEqual(
   "Mock stop button should be detected as visible"
 );
 assert.strictEqual(
+  stopRt.detectGeminiBusy(),
+  true,
+  "detectGeminiBusy should be true when stop button is visible"
+);
+assert.strictEqual(
   stopRt.findEnabledSendButton(),
   null,
   "findEnabledSendButton must return null when Stop button is visible"
@@ -177,5 +182,64 @@ assert.strictEqual(
   "triggerDomSubmit must return 'busy' when stop button is visible"
 );
 console.log("   [PASS] triggerDomSubmit & findEnabledSendButton stop protection passed.");
+
+console.log("--> Testing detectGeminiBusy with analyzing status & spinner...");
+const mockAnalyzingDoc = {
+  querySelector: (sel) => {
+    if (sel.includes("spinner") || sel.includes("progressbar")) return { offsetWidth: 20, offsetHeight: 20 };
+    return null;
+  },
+  querySelectorAll: (sel) => {
+    if (sel.includes("stop")) return [];
+    if (sel.includes("spinner") || sel.includes("progressbar")) return [{ offsetWidth: 20, offsetHeight: 20 }];
+    if (sel.includes("thoughts-status-message") || sel.includes("bC5vW") || sel.includes("thought-view")) {
+      return [{
+        offsetWidth: 200,
+        offsetHeight: 24,
+        innerText: "... Analyzing visual details",
+        textContent: "... Analyzing visual details",
+        closest: () => null,
+        matches: () => true,
+        classList: { contains: () => false },
+      }];
+    }
+    return [];
+  },
+};
+const analyzingSandbox = {
+  globalThis: {},
+  document: mockAnalyzingDoc,
+  window: {},
+  location: { href: "https://gemini.google.com/u/4/app" },
+};
+analyzingSandbox.globalThis = analyzingSandbox;
+vm.runInNewContext("(" + bg._domInstallPageRuntimeFn.toString() + ")()", analyzingSandbox);
+const analyzingRt = analyzingSandbox.__wsaRuntime;
+
+assert.strictEqual(
+  analyzingRt.detectGeminiBusy(),
+  true,
+  "detectGeminiBusy should return true when analyzing status & spinner are present"
+);
+assert.strictEqual(
+  analyzingRt.findEnabledSendButton(),
+  null,
+  "findEnabledSendButton must return null when detectGeminiBusy is true"
+);
+
+// Test collectThinkingText extracting '... Analyzing visual details'
+const mockJob = {
+  beforeAnnouncerSnapshot: "",
+  thinkingLines: [],
+  lastThinking: "",
+  beforeModelCount: 0,
+};
+const extractedThink = analyzingRt.collectThinkingText(mockJob, "", "", true);
+assert.strictEqual(
+  extractedThink,
+  "Analyzing visual details",
+  "Should extract clean thinking text from '... Analyzing visual details'"
+);
+console.log("   [PASS] detectGeminiBusy & thinking extraction passed.");
 
 console.log("\nALL GEMINI ACCOUNT SWITCHING & STREAM GUARD TESTS PASSED!");

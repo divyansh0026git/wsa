@@ -3391,7 +3391,7 @@ def execute_agent_loop(
                                         "resetting to fresh chat & retrying (2/2)..."
                                     )
                             try:
-                                time.sleep(1.2)
+                                time.sleep(2.5)
                             except KeyboardInterrupt:
                                 _abort_interrupted()
                                 stream_aborted = True
