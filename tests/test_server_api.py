@@ -780,6 +780,123 @@ class EndToEndDataFlowTests(unittest.TestCase):
         finally:
             t.join(timeout=5)
 
+    def test_gemini_busy_heartbeat_preserves_auth_user_and_auto_sync_cannot_hijack_relay(self):
+        """Busy heartbeats omitting auth_user must preserve /u/4/ and background auto-sync must not hijack explicit brave lock."""
+        from wsa_server import relay as relay_mod
+
+        st_b, d_b = self._request_json("POST", "/sync-cookies", {
+            "client_id": "brave-lock-test",
+            "browser": "brave",
+            "label": "brave",
+            "cookie": "",
+            "auth_user": "4",
+            "email": "devcormac73@gmail.com",
+            "active_site": "gemini.google.com",
+            "model_badge": "Neon High",
+            "sync_only": True,
+            "providers": {
+                "gemini": {
+                    "has_tab": True,
+                    "email": "devcormac73@gmail.com",
+                    "auth_user": "4",
+                    "model_badge": "Neon High",
+                    "url": "https://gemini.google.com/u/4/app/conv-u4",
+                },
+            },
+        })
+        self.assertEqual(st_b, 200)
+        self.assertTrue(d_b["ok"])
+
+        st_c, d_c = self._request_json("POST", "/sync-cookies", {
+            "client_id": "chrome-bg-test",
+            "browser": "chrome",
+            "label": "chrome",
+            "cookie": "",
+            "auth_user": "0",
+            "email": "divyanshsarraf0026@gmail.com",
+            "active_site": "gemini.google.com",
+            "model_badge": "Neon High",
+            "sync_only": True,
+            "providers": {
+                "gemini": {
+                    "has_tab": True,
+                    "email": "divyanshsarraf0026@gmail.com",
+                    "auth_user": "0",
+                    "model_badge": "Neon High",
+                    "url": "https://gemini.google.com/app",
+                },
+            },
+        })
+        self.assertEqual(st_c, 200)
+        self.assertTrue(d_c["ok"])
+
+        sel_st, sel_data = self._request_json("POST", "/v1/relays/select", {
+            "relay": "brave",
+            "explicit": True,
+        })
+        self.assertEqual(sel_st, 200)
+        self.assertEqual(sel_data["active_relay_id"], "brave-lock-test")
+
+        # Save a session bound to /u/4/ and send a busy heartbeat WITHOUT auth_user query param
+        relay_mod.record_session_relay_turn(
+            session_id="sess-u4-preserve",
+            assistant_content="Turn 1 done",
+            chat_url="https://gemini.google.com/u/4/app/conv-u4",
+            relay_id="brave-lock-test",
+            provider="gemini",
+        )
+        hb_st, _ = self._request_json(
+            "GET",
+            "/pending-prompt?client_id=brave-lock-test&browser=brave&label=brave&busy=1&busy_req_id=req-hb",
+        )
+        self.assertEqual(hb_st, 200)
+
+        h_st, health = self._request_json("GET", "/v1/health")
+        self.assertEqual(h_st, 200)
+        brave_rec = next(r for r in health["relays"] if r["client_id"] == "brave-lock-test")
+        self.assertEqual(brave_rec["auth_user"], "4")
+        self.assertEqual(brave_rec["providers"]["gemini"]["auth_user"], "4")
+        with relay_mod._dom_relay_lock:
+            self.assertIn("sess-u4-preserve", relay_mod._dom_relay.get("sessions") or {})
+
+        # Chrome background auto-sync (explicit=False) MUST NOT steal active_relay_id away from online brave-lock-test
+        bg_st, bg_data = self._request_json("POST", "/relay/select", {
+            "client_id": "chrome-bg-test",
+            "browser": "chrome",
+            "label": "chrome",
+            "auth_user": "0",
+            "email": "divyanshsarraf0026@gmail.com",
+            "site": "gemini.google.com",
+            "provider": "gemini",
+            "model_badge": "Neon High",
+            "explicit": False,
+            "providers": {
+                "gemini": {
+                    "has_tab": True,
+                    "email": "divyanshsarraf0026@gmail.com",
+                    "auth_user": "0",
+                    "model_badge": "Neon High",
+                    "url": "https://gemini.google.com/app",
+                },
+            },
+        })
+        self.assertEqual(bg_st, 200)
+        self.assertTrue(bg_data["ok"])
+        self.assertEqual(bg_data["active_relay_id"], "brave-lock-test")
+        self.assertFalse(bg_data.get("is_active_relay"))
+
+        # Explicit user selection (explicit=True) DOES switch to chrome-bg-test
+        ex_st, ex_data = self._request_json("POST", "/relay/select", {
+            "client_id": "chrome-bg-test",
+            "browser": "chrome",
+            "label": "chrome",
+            "auth_user": "0",
+            "explicit": True,
+        })
+        self.assertEqual(ex_st, 200)
+        self.assertEqual(ex_data["active_relay_id"], "chrome-bg-test")
+        self.assertTrue(ex_data.get("is_active_relay"))
+
 
 ROOT_DIR = __import__("os").path.dirname(__import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 

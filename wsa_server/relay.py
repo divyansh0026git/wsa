@@ -319,16 +319,20 @@ def _clear_relay_sessions_on_email_change_locked(cid: str, prev_entry: Optional[
         new_email = _relay_provider_email(new_entry, pk).lower()
         email_changed = bool(old_email and new_email and old_email != new_email)
         auth_changed = False
+        old_auth = ""
+        new_auth = ""
         if pk == "gemini":
             old_auth = _relay_provider_auth_user(prev_entry, "gemini")
             new_auth = _relay_provider_auth_user(new_entry, "gemini")
             auth_changed = bool(old_auth and new_auth and old_auth != new_auth)
         if email_changed or auth_changed:
-            changed_providers.append((pk, old_email or "*", new_email or "*"))
+            old_tag = f"{old_email or '*'}(u/{old_auth})" if auth_changed else (old_email or "*")
+            new_tag = f"{new_email or '*'}(u/{new_auth})" if auth_changed else (new_email or "*")
+            changed_providers.append((pk, old_email or "*", old_tag, new_tag))
     if not changed_providers:
         return 0
     sessions = _dom_relay.get("sessions") or {}
-    changed_map = {pk: (old_e, new_e) for pk, old_e, new_e in changed_providers}
+    changed_map = {pk: old_e for pk, old_e, _old_tag, _new_tag in changed_providers}
     cleared = 0
     for s_key, sinfo in list(sessions.items()):
         if not isinstance(sinfo, dict):
@@ -336,7 +340,7 @@ def _clear_relay_sessions_on_email_change_locked(cid: str, prev_entry: Optional[
         owner_id = str(sinfo.get("relay_id") or "")
         s_prov = _normalize_provider(sinfo.get("provider") or "gemini")
         if s_prov in changed_map and owner_id in ("", cid):
-            old_e, _ = changed_map[s_prov]
+            old_e = changed_map[s_prov]
             old_url = str(sinfo.get("chat_url") or "").strip()
             if old_url:
                 _record_invalidated_chat_url_locked(old_url, account_email=old_e, explicit=(old_e == "*"))
@@ -345,8 +349,8 @@ def _clear_relay_sessions_on_email_change_locked(cid: str, prev_entry: Optional[
             cleared += 1
     if cleared:
         _persist_relay_sessions_locked()
-        for pk, old_e, new_e in changed_providers:
-            log(f"Cleared {cleared} stale {pk} relay chat(s) after account switch on {cid}: {old_e} -> {new_e}")
+        for pk, _old_e, old_tag, new_tag in changed_providers:
+            log(f"Cleared {cleared} stale {pk} relay chat(s) after account switch on {cid}: {old_tag} -> {new_tag}")
     return cleared
 
 
@@ -556,10 +560,12 @@ def select_active_relay(
     active_site: str = "",
     account_email: str = "",
     model_badge: str = "",
+    auth_user: Optional[str] = None,
 ) -> dict:
     """Bind a single browser relay (and its paired cookie file) to WSA."""
     now = time.time()
     sync_path = None
+    norm_auth = str(auth_user).strip() if auth_user not in (None, "") else ""
     with _dom_relay_lock:
         relays = _dom_relay.setdefault("relays", {})
         chosen_id = None
@@ -569,21 +575,24 @@ def select_active_relay(
             chosen_id = client_id
             b_tag = _sanitize_relay_tag(browser or "chrome")
             l_tag = str(label or b_tag).strip()
+            init_payload = {
+                "providers": providers or {},
+                "active_site": active_site,
+                "email": account_email,
+                "model_badge": model_badge,
+            }
+            if norm_auth:
+                init_payload["auth_user"] = norm_auth
             relays[chosen_id] = {
                 "client_id": chosen_id,
                 "browser": b_tag,
                 "label": l_tag,
-                "auth_user": "0",
+                "auth_user": norm_auth or "0",
                 "account_email": account_email,
                 "model_badge": model_badge,
                 "active_site": active_site,
                 "active_provider": _normalize_provider(active_site) if active_site else "",
-                "providers": _merge_relay_providers({}, {
-                    "providers": providers or {},
-                    "active_site": active_site,
-                    "email": account_email,
-                    "model_badge": model_badge,
-                }),
+                "providers": _merge_relay_providers({}, init_payload),
                 "last_seen": now,
                 "cookie_file": _relay_cookie_path(l_tag) if os.path.exists(_relay_cookie_path(l_tag)) else None,
             }
@@ -603,6 +612,7 @@ def select_active_relay(
         prev_snapshot = {
             "account_email": entry.get("account_email") or "",
             "active_provider": entry.get("active_provider") or "",
+            "auth_user": entry.get("auth_user") or "0",
             "providers": {
                 k: dict(v) for k, v in (entry.get("providers") or {}).items() if isinstance(v, dict)
             },
@@ -611,6 +621,8 @@ def select_active_relay(
             entry["browser"] = _sanitize_relay_tag(browser)
         if label:
             entry["label"] = str(label).strip() or entry.get("label") or entry["browser"]
+        if norm_auth:
+            entry["auth_user"] = norm_auth
         if account_email:
             entry["account_email"] = account_email
         if model_badge:
@@ -618,15 +630,52 @@ def select_active_relay(
         if active_site:
             entry["active_site"] = active_site
             entry["active_provider"] = _normalize_provider(active_site)
-        if providers or active_site or account_email or model_badge:
-            entry["providers"] = _merge_relay_providers(entry.get("providers"), {
+        if client_id:
+            entry["last_seen"] = now
+        if providers or active_site or account_email or model_badge or norm_auth:
+            merge_payload = {
                 "providers": providers or {},
                 "active_site": active_site or entry.get("active_site") or "",
                 "email": account_email or entry.get("account_email") or "",
                 "model_badge": model_badge or entry.get("model_badge") or "",
-            })
+            }
+            if norm_auth:
+                merge_payload["auth_user"] = norm_auth
+            entry["providers"] = _merge_relay_providers(entry.get("providers"), merge_payload)
 
         prev_active_id = _dom_relay.get("active_relay_id") or ""
+        cleared_sessions = _clear_relay_sessions_on_email_change_locked(chosen_id, prev_snapshot, entry)
+
+        prev_entry_online = bool(
+            prev_active_id
+            and prev_active_id != chosen_id
+            and prev_active_id in relays
+            and (
+                bool(_dom_relay.get("explicit_relay_lock"))
+                or (now - float(relays[prev_active_id].get("last_seen") or 0.0)) <= 30.0
+            )
+        )
+        if not explicit and prev_entry_online:
+            active_entry = relays[prev_active_id]
+            active_cfile = active_entry.get("cookie_file")
+            return {
+                "ok": True,
+                "active_relay_id": prev_active_id,
+                "active_relay_label": active_entry.get("label") or active_entry.get("browser"),
+                "is_active_relay": False,
+                "browser": active_entry.get("browser"),
+                "account_email": active_entry.get("account_email") or "",
+                "model_badge": active_entry.get("model_badge") or "",
+                "active_site": active_entry.get("active_site") or "",
+                "active_provider": active_entry.get("active_provider") or "",
+                "providers": dict(active_entry.get("providers") or {}),
+                "auth_user": str(active_entry.get("auth_user") or "0"),
+                "active_account": os.path.basename(active_cfile) if active_cfile else (active_entry.get("label") or prev_active_id),
+                "cookie_file": active_cfile,
+                "cleared_chats": cleared_sessions,
+            }
+
+        prev_explicit = bool(_dom_relay.get("explicit_relay_lock"))
         _dom_relay["active_relay_id"] = chosen_id
         _dom_relay["pinned_relay_label"] = entry.get("label") or entry.get("browser")
         _dom_relay["explicit_relay_lock"] = bool(explicit)
@@ -636,7 +685,6 @@ def select_active_relay(
         # only invalidates the session that requested the switch. Other projects
         # retain their own relay affinity and are checked again when resumed.
         sessions = _dom_relay.get("sessions") or {}
-        cleared_sessions = _clear_relay_sessions_on_email_change_locked(chosen_id, prev_snapshot, entry)
         for s_key, sinfo in list(sessions.items()):
             owner_id = sinfo.get("relay_id") or ""
             changed_owner = bool(owner_id and owner_id != chosen_id)
@@ -667,14 +715,16 @@ def select_active_relay(
     if sync_path:
         _sync_config_cookie_from_file(sync_path)
 
-    log(
-        f"Bound single active relay -> {entry.get('label') or chosen_id} "
-        f"(browser={entry.get('browser')}, id={chosen_id}, cleared_chats={cleared_sessions})"
-    )
+    if prev_active_id != chosen_id or cleared_sessions > 0 or (bool(explicit) and not prev_explicit):
+        log(
+            f"Bound single active relay -> {entry.get('label') or chosen_id} "
+            f"(browser={entry.get('browser')}, id={chosen_id}, cleared_chats={cleared_sessions})"
+        )
     return {
         "ok": True,
         "active_relay_id": chosen_id,
         "active_relay_label": entry.get("label") or entry.get("browser"),
+        "is_active_relay": True,
         "browser": entry.get("browser"),
         "account_email": entry.get("account_email") or "",
         "model_badge": entry.get("model_badge") or "",
@@ -1275,7 +1325,7 @@ def register_or_touch_relay(client_info: Optional[dict]) -> dict:
     cid = str(client_info["client_id"]).strip()
     browser = _sanitize_relay_tag(client_info.get("browser") or "chrome")
     label = str(client_info.get("label") or browser).strip() or browser
-    auth_user = str(client_info.get("auth_user") if client_info.get("auth_user") is not None else "0")
+    raw_auth_user = str(client_info.get("auth_user") or "").strip() if client_info.get("auth_user") is not None else ""
     email = str(client_info.get("email") or client_info.get("account_email") or "").strip()
     badge = str(client_info.get("model_badge") or "").strip()
     active_site = str(client_info.get("active_site") or client_info.get("site") or "").strip()
@@ -1291,6 +1341,7 @@ def register_or_touch_relay(client_info: Optional[dict]) -> dict:
     with _dom_relay_lock:
         relays = _dom_relay.setdefault("relays", {})
         prev = relays.get(cid) or {}
+        auth_user = raw_auth_user or str(prev.get("auth_user") or "0").strip() or "0"
         cfile = prev.get("cookie_file")
         default_cfile = _relay_cookie_path(label)
         if not cfile and os.path.exists(default_cfile):
@@ -2714,7 +2765,8 @@ def receive_cookie_sync(data: dict) -> dict:
     cid = str(data.get("client_id") or "").strip()
     browser = str(data.get("browser") or "").strip()
     label = str(data.get("label") or browser or "").strip()
-    auth_user = str(data.get("auth_user") if data.get("auth_user") is not None else "0")
+    raw_auth = str(data.get("auth_user") or "").strip() if data.get("auth_user") is not None else ""
+    auth_user = raw_auth or "0"
     account_email = str(data.get("account_email") or data.get("email") or "").strip()
     model_badge = str(data.get("model_badge") or "").strip()
     active_site = str(data.get("active_site") or data.get("site") or "").strip()
@@ -2737,12 +2789,13 @@ def receive_cookie_sync(data: dict) -> dict:
             "client_id": cid or _sanitize_relay_tag(label),
             "browser": browser or label or "chrome",
             "label": label or browser or cid,
-            "auth_user": auth_user,
             "email": account_email,
             "model_badge": model_badge,
             "active_site": active_site,
             "provider": provider,
         }
+        if raw_auth:
+            relay_info["auth_user"] = raw_auth
         if providers is not None:
             relay_info["providers"] = providers
         reg = register_or_touch_relay(relay_info)

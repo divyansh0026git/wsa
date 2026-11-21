@@ -196,12 +196,14 @@ class WSAHandler(BaseHTTPRequestHandler):
                         "client_id": (qs.get("client_id") or [""])[0],
                         "browser": (qs.get("browser") or ["chrome"])[0],
                         "label": (qs.get("label") or [""])[0],
-                        "auth_user": (qs.get("auth_user") or ["0"])[0],
                         "email": (qs.get("email") or [""])[0],
                         "model_badge": (qs.get("model_badge") or [""])[0],
                         "active_site": (qs.get("site") or qs.get("active_site") or [""])[0],
                         "provider": (qs.get("provider") or [""])[0],
                     }
+                    raw_auth = str((qs.get("auth_user") or [""])[0]).strip()
+                    if raw_auth:
+                        client_payload["auth_user"] = raw_auth
                     for prov_key in KNOWN_WEB_PROVIDERS:
                         for q_key in (f"has_{prov_key}", f"{prov_key}_email", f"{prov_key}_model"):
                             if q_key in qs:
@@ -394,12 +396,13 @@ class WSAHandler(BaseHTTPRequestHandler):
                     client_id=req.get("client_id"),
                     browser=req.get("browser"),
                     label=req.get("label"),
-                    explicit=True,
+                    explicit=bool(req.get("explicit", True)),
                     session_id=str(req.get("session_id") or ""),
                     providers=req.get("providers") if isinstance(req.get("providers"), dict) else None,
                     active_site=str(req.get("active_site") or req.get("site") or ""),
                     account_email=str(req.get("account_email") or req.get("email") or ""),
                     model_badge=str(req.get("model_badge") or ""),
+                    auth_user=req.get("auth_user"),
                 )
                 self.send_json(res, 200 if res.get("ok") else 400)
             elif req_path == "/sync-cookies":

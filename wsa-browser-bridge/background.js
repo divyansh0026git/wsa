@@ -7,6 +7,7 @@
  */
 
 const LOCAL_API = "http://127.0.0.1:8081";
+const GEMINI_RUNTIME_REV = 10;
 
 const EXPORT_ORDER = [
   "SID", "HSID", "SSID", "APISID", "SAPISID", "SIDCC", "OSID",
@@ -929,6 +930,9 @@ async function sendBusyHeartbeat(jobOverride = null, { triggerRelay = true } = {
       busy: "1",
       busy_req_id: job?.reqId || "",
     });
+    if (job?.authUser) {
+      qs.set("auth_user", String(job.authUser));
+    }
     if (job?.isGenerating) {
       qs.set("generating", "1");
     }
@@ -1260,6 +1264,9 @@ async function autoSyncRelayAndCookies(options = {}) {
   if (!enabled && !options.force) {
     return { ok: false, skipped: true, reason: "auto-sync disabled" };
   }
+  if (!options.force && injecting) {
+    return { ok: true, skipped: true, reason: "job_active" };
+  }
 
   if (autoSyncInFlight) {
     autoSyncPending = true;
@@ -1319,6 +1326,7 @@ async function autoSyncRelayAndCookies(options = {}) {
           provider: snap.provider || "",
           model_badge: snap.modelBadge || "",
           providers: snap.providers,
+          explicit: Boolean(options.force),
         }),
         signal: AbortSignal.timeout(3000),
       }).catch(() => null);
@@ -1326,13 +1334,16 @@ async function autoSyncRelayAndCookies(options = {}) {
       const bjson = br ? await br.json().catch(() => null) : null;
       if (bjson?.ok) {
         boundOk = true;
+        const isBoundNow = bjson.active_relay_id
+          ? (bjson.active_relay_id === snap.ident.clientId)
+          : true;
         serverBinding = {
-          isActive: true,
+          isActive: isBoundNow,
           activeRelayLabel: bjson.active_relay_label || snap.ident.label,
           activeRelayId: bjson.active_relay_id || snap.ident.clientId,
           updatedAt: Date.now(),
         };
-        await chrome.storage.local.set({ wasBoundRelay: true }).catch(() => {});
+        await chrome.storage.local.set({ wasBoundRelay: isBoundNow }).catch(() => {});
       }
 
       if (injecting || (await getStoredActiveJob())) {
@@ -2075,7 +2086,7 @@ async function ensurePageRuntime(tabId, provider = "gemini", world = "MAIN") {
       globalThis[rtKey].version === rtVer &&
       globalThis[rtKey].rev === rtRev
     ),
-    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), (p === "chatgpt" || p === "gemini") ? 9 : (p === "claude" ? 8 : 7)],
+    args: [spec.runtimeKey, spec.runtimeVersion, Boolean(spec.needsDomUtils), p === "gemini" ? GEMINI_RUNTIME_REV : (p === "chatgpt" ? 9 : (p === "claude" ? 8 : 7))],
   });
   if (probe?.[0]?.result) return true;
   if (spec.needsDomUtils) {
@@ -2785,15 +2796,49 @@ async function acquireAndStartRelay() {
 
     if (provider === "gemini" && pendingImages.length) {
       // A root URL can still contain a previous unsent screenshot. Preserve
-      // that draft and keep it out of this request's attachment verification.
+      // genuine user drafts, while auto-clearing WSA's own leftover failed prompt.
       const draft = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         world: "ISOLATED",
         func: () => {
-          const editor = document.querySelector("rich-textarea .ql-editor, [role='textbox'][contenteditable='true'], textarea");
-          const composer = editor?.closest("input-area-v2, form") || editor?.closest("fieldset");
-          return Boolean(composer?.querySelector("uploader-file-preview, gem-media-attachment, button[aria-label='close attachment' i]") ||
-            String(editor?.value || editor?.textContent || "").trim());
+          let editor = null;
+          for (const sel of ["rich-textarea .ql-editor", "div.ql-editor", "[role='textbox'][contenteditable='true']", "textarea"]) {
+            for (const cand of document.querySelectorAll(sel)) {
+              if (cand.classList?.contains?.("ql-clipboard")) continue;
+              editor = cand;
+              break;
+            }
+            if (editor) break;
+          }
+          const composer = editor?.closest?.("input-area-v2, form") || editor?.closest?.("fieldset") || editor?.parentElement?.parentElement;
+          const hasMedia = Boolean(composer?.querySelector?.("uploader-file-preview, gem-media-attachment, button[aria-label='close attachment' i]"));
+          if (hasMedia) return true;
+          const rawTxt = String(editor?.value || editor?.innerText || editor?.textContent || "").replace(/\s+/g, " ").trim();
+          if (!rawTxt) return false;
+          const lastHead = String(document.documentElement?.dataset?.wsaLastPromptHead || "").trim();
+          const isWsaLeftover = Boolean(
+            (lastHead && rawTxt.includes(lastHead.slice(0, 36))) ||
+            /^(?:\[Next step\]:|\[Tool result for |### CURRENT ACTIVE USER REQUEST|\[Tool Results\]|\[System Context)/i.test(rawTxt)
+          );
+          if (isWsaLeftover && editor) {
+            try {
+              const tag = (editor.tagName || "").toUpperCase();
+              if (tag === "TEXTAREA" || tag === "INPUT") {
+                editor.value = "";
+              } else if (typeof editor.replaceChildren === "function" && typeof document.createElement === "function") {
+                const p = document.createElement("p");
+                p.appendChild(document.createElement("br"));
+                editor.replaceChildren(p);
+                editor.classList?.add?.("ql-blank");
+              } else {
+                editor.textContent = "";
+              }
+              editor.dispatchEvent?.(new Event("input", { bubbles: true, composed: true }));
+              editor.dispatchEvent?.(new Event("change", { bubbles: true }));
+            } catch { /* ignore */ }
+            return false;
+          }
+          return true;
         },
       });
       if (draft?.[0]?.result === true) {
@@ -3237,6 +3282,8 @@ function _domInstallPageRuntimeFn() {
 
   function findEditor() {
     const selectors = [
+      "rich-textarea .ql-editor[contenteditable='true']",
+      "div.ql-editor[role='textbox']",
       "[role='textbox'][contenteditable='true']",
       "div[role='textbox']",
       "rich-textarea .ql-editor",
@@ -3245,6 +3292,7 @@ function _domInstallPageRuntimeFn() {
     ];
     for (const sel of selectors) {
       for (const el of document.querySelectorAll(sel)) {
+        if (el.classList?.contains?.("ql-clipboard")) continue;
         const r = el.getBoundingClientRect();
         if (r.width > 40 && r.height > 5) return el;
       }
@@ -3287,7 +3335,7 @@ function _domInstallPageRuntimeFn() {
   }
 
   function readModePickerBadge() {
-    const modelRe = /(?:Gemini\s+)?(Argon|Carbon|Pro|Flash(?:-Lite|\s+Lite)?|Fast|Thinking|Auto)\b/i;
+    const modelRe = /(?:Gemini\s+)?(Argon|Carbon|Neon|Pro|Flash(?:-Lite|\s+Lite)?|Fast|Thinking|Auto)\b/i;
     const cleanBadge = (s) => String(s || "")
       .replace(/\s+/g, " ")
       .replace(/^(?:menu|expand_more|keyboard_arrow_down|arrow_drop_down)\s+/i, "")
@@ -3722,9 +3770,54 @@ function _domInstallPageRuntimeFn() {
     return false;
   }
 
+  const _THOUGHT_SEL =
+    "model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], " +
+    ".thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container";
+
+  function countThoughtNodes() {
+    let n = 0;
+    for (const el of document.querySelectorAll(_THOUGHT_SEL)) {
+      if (typeof el.closest === "function" && el.closest("message-content, code-block, pre, user-query, input-container")) {
+        continue;
+      }
+      n++;
+    }
+    return n;
+  }
+
+  function modelResponseHasActions(mr) {
+    if (!mr) return false;
+    if (typeof mr.querySelectorAll === "function") {
+      for (const btn of mr.querySelectorAll(_ACTION_BTN_SEL)) {
+        if (isTurnActionButton(btn)) return true;
+      }
+    }
+    const sib = mr.nextElementSibling;
+    if (sib && typeof sib.querySelectorAll === "function" && (sib.tagName || "").toUpperCase() === "MESSAGE-ACTIONS") {
+      for (const btn of sib.querySelectorAll(_ACTION_BTN_SEL)) {
+        if (isTurnActionButton(btn)) return true;
+      }
+    }
+    return false;
+  }
+
   function detectGeminiBusy() {
     if (isStopButtonVisible()) return true;
     if (detectReactBusy()) return true;
+
+    const job = globalThis.__wsaActiveJob;
+    const allMrs = [...document.querySelectorAll("model-response")];
+    const hasIncompleteMr = allMrs.length > 0 && !modelResponseHasActions(allMrs[allMrs.length - 1]);
+    const isHistoricalOrCompletedMr = (el) => {
+      const mr = typeof el?.closest === "function" ? el.closest("model-response") : null;
+      if (!mr) return false;
+      if (job) {
+        if (job.beforeLastModelEl && mr === job.beforeLastModelEl) return true;
+        const idx = allMrs.indexOf(mr);
+        if (idx >= 0 && idx < (job.beforeModelCount || 0)) return true;
+      }
+      return modelResponseHasActions(mr);
+    };
 
     // 1. Angular/Material spinners & progress bars
     const spinners = document.querySelectorAll(
@@ -3732,6 +3825,8 @@ function _domInstallPageRuntimeFn() {
       ".loading-spinner, .spinner, [aria-busy='true'], .gemini-loader, .loading-pulse"
     );
     for (const sp of spinners) {
+      if (typeof sp.closest === "function" && sp.closest("user-query, code-block, pre")) continue;
+      if (isHistoricalOrCompletedMr(sp)) continue;
       if (isVisibleElement(sp)) return true;
     }
 
@@ -3743,21 +3838,41 @@ function _domInstallPageRuntimeFn() {
       "[jsname='bC5vW'], [jsname='wEk2pe']"
     );
     const analyzingRe = /^(?:(?:\.|\u2026|\*)\s*)?(?:analyzing|thinking|generating|working|loading|searching|processing|examining|comparing|reading)\b/i;
+    const completedThoughtRe = /^(?:(?:show|hide)\s+thinking|thought\s+(?:for|about)\b|\d+(?:\.\d+)?s\b)/i;
     for (const el of statusEls) {
       if (typeof el.closest === "function" && el.closest("message-content, code-block, pre, user-query, input-container")) continue;
+      if (isHistoricalOrCompletedMr(el)) continue;
+      if (job && !hasIncompleteMr && Array.isArray(job.beforeThoughtEls) && job.beforeThoughtEls.includes(el)) {
+        continue;
+      }
       if (isVisibleElement(el)) {
         const text = (el.innerText || el.textContent || "").trim();
-        if (text && (analyzingRe.test(text) || (typeof el.matches === "function" && el.matches(".thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container")))) {
+        if (!text || completedThoughtRe.test(text)) continue;
+        if (analyzingRe.test(text) || (typeof el.matches === "function" && el.matches(".thoughts-status-message, thinking-overlay, [jsname='bC5vW']"))) {
           return true;
         }
       }
     }
 
-    // 3. Status text in chat thread or live announcer
+    // 3. Status text in chat thread or live announcer (ignore lingering announcer text once a fresh response has actions)
+    const hasFreshMr = job
+      ? (allMrs.length > (job.beforeModelCount || 0) || (allMrs.length > 0 && job.beforeLastModelEl && allMrs[allMrs.length - 1] !== job.beforeLastModelEl))
+      : (allMrs.length > 0);
+    const newCompletedMr = Boolean(hasFreshMr && allMrs.length > 0 && !hasIncompleteMr);
     const announcerEls = document.querySelectorAll(".cdk-live-announcer-element, [aria-live='polite'], [aria-live='assertive']");
-    for (const ann of announcerEls) {
-      const annText = (ann.innerText || ann.textContent || "").trim();
-      if (annText && analyzingRe.test(annText)) return true;
+    if (announcerEls.length > 0 && !newCompletedMr) {
+      const curAnn = [...announcerEls].map(el => (el.innerText || el.textContent || "").trim()).join("\n");
+      if (job && !job.announcerChanged && typeof job.beforeAnnouncerSnapshot === "string" && curAnn !== job.beforeAnnouncerSnapshot) {
+        job.announcerChanged = true;
+      }
+      if (!job || job.announcerChanged || hasIncompleteMr) {
+        if (!allMrs.length || hasIncompleteMr || job?.announcerChanged) {
+          for (const ann of announcerEls) {
+            const annText = (ann.innerText || ann.textContent || "").trim();
+            if (annText && analyzingRe.test(annText)) return true;
+          }
+        }
+      }
     }
 
     // 4. Composer non-interactive / disabled state during active processing
@@ -4020,7 +4135,7 @@ function _domInstallPageRuntimeFn() {
       // Never select a button that contains stop icons or represents stopping/generation control
       if (btn.querySelector?.("mat-icon[fonticon*='stop' i], mat-icon[data-mat-icon-name*='stop' i], [data-test-id*='stop' i], [data-testid*='stop' i], [aria-label*='stop' i], svg rect")) return false;
       if (btn.matches?.("button[aria-label*='stop' i], .stop-button, [data-test-id*='stop' i], [data-testid*='stop' i]")) return false;
-      // Gemini places .send-button on a component wrapping the native control.
+      // Gemini places .send-button on a component wrapping the native control (<gem-icon-button class="send-button ..."><button aria-label="Send message">).
       // Clicking the host bypasses the listener on its child.
       if (btn.tagName !== "BUTTON" && btn.querySelector?.("button")) return false;
       if (btn.disabled || btn.getAttribute("aria-disabled") === "true" || btn.classList.contains("disabled")) return false;
@@ -4033,7 +4148,12 @@ function _domInstallPageRuntimeFn() {
         (btn.innerText || "")
       ).toLowerCase();
       if (/\b(?:stop|pause|feedback|voice|dictate|mic|microphone)\b/i.test(meta)) return false;
+      const hostSendMatch = Boolean(
+        typeof btn.closest === "function" &&
+        btn.closest("gem-icon-button.send-button, .send-button-container .send-button, gem-icon-button.submit")
+      );
       const isExplicitSend =
+        hostSendMatch ||
         btn.classList.contains("send-button") ||
         (btn.getAttribute("data-test-id") || "").toLowerCase().includes("send-button") ||
         (btn.getAttribute("data-testid") || "").toLowerCase().includes("send-button") ||
@@ -4048,10 +4168,21 @@ function _domInstallPageRuntimeFn() {
       }
       return meta.includes("send message") || meta.trim() === "send" || btn.classList.contains("send-button") || /\bsend\b/.test(meta);
     };
+    const candSel =
+      "button[aria-label='Send message' i], .send-button-container gem-icon-button.send-button button, " +
+      "gem-icon-button.send-button.submit button, button, [role='button'], .send-button, div.send-button, " +
+      "[data-test-id*='send' i], [data-testid*='send' i]";
     for (const root of roots) {
-      const candidates = [...root.querySelectorAll("button, [role='button'], .send-button, div.send-button, [data-test-id*='send' i], [data-testid*='send' i]")].filter(isSendCandidate);
+      const rawCands = [...root.querySelectorAll(candSel)];
+      const seen = new Set();
+      const candidates = [];
+      for (const b of rawCands) {
+        if (seen.has(b)) continue;
+        seen.add(b);
+        if (isSendCandidate(b)) candidates.push(b);
+      }
       if (candidates.length > 0) {
-        return candidates.find(b => b.classList.contains("send-button") || (b.getAttribute("aria-label") || "").toLowerCase().includes("send message")) || candidates[0];
+        return candidates.find(b => b.classList.contains("send-button") || (b.getAttribute("aria-label") || "").toLowerCase().includes("send message") || (typeof b.closest === "function" && b.closest("gem-icon-button.send-button"))) || candidates[0];
       }
     }
     return null;
@@ -4095,9 +4226,38 @@ function _domInstallPageRuntimeFn() {
     } catch { /* ignore */ }
   }
 
+  function clearEditorContents(inputEl) {
+    if (!inputEl) return false;
+    try {
+      const tag = (inputEl.tagName || "").toUpperCase();
+      if (tag === "TEXTAREA" || tag === "INPUT") {
+        inputEl.value = "";
+      } else if (typeof document.createElement === "function" && typeof inputEl.replaceChildren === "function") {
+        const p = document.createElement("p");
+        p.appendChild(document.createElement("br"));
+        inputEl.replaceChildren(p);
+        inputEl.classList?.add?.("ql-blank");
+      } else {
+        inputEl.textContent = "";
+      }
+      if (typeof Event === "function" && typeof inputEl.dispatchEvent === "function") {
+        try { inputEl.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
+        try { inputEl.dispatchEvent(new Event("change", { bubbles: true })); } catch { /* ignore */ }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function setPromptTextInEditor(inputEl, promptText) {
     const cleanText = String(promptText || "").replace(/\r\n/g, "\n");
     if (!inputEl) return;
+    try {
+      if (typeof document !== "undefined" && document?.documentElement?.dataset) {
+        document.documentElement.dataset.wsaLastPromptHead = normalizeCompareText(cleanText).slice(0, 80);
+      }
+    } catch { /* ignore */ }
     if (typeof inputEl.focus === "function") inputEl.focus();
     const tag = (inputEl.tagName || "").toUpperCase();
     if (tag === "TEXTAREA" || tag === "INPUT") {
@@ -4110,12 +4270,15 @@ function _domInstallPageRuntimeFn() {
       return;
     }
     autoDismissWaitPrompts();
-    const isLongText = cleanText.length > 1200 || cleanText.split("\n").length > 15;
-    selectEditorContents(inputEl);
+    const linesAll = cleanText.split("\n");
+    const isLongText = cleanText.length > 1200 || linesAll.length > 15;
     let inserted = false;
     const expNorm = normalizeCompareText(cleanText);
     const probePrefix = expNorm.slice(0, 24).trim();
     const probeTail = expNorm.slice(-24).trim();
+    const probeMid = expNorm.length > 160
+      ? expNorm.slice(Math.floor(expNorm.length / 2) - 12, Math.floor(expNorm.length / 2) + 12).trim()
+      : "";
     const hasExpectedText = () => {
       const composerScope = (typeof inputEl.closest === "function" && inputEl.closest("form, [class*='composer' i], fieldset, [data-testid*='composer' i], [class*='input-area' i]")) || (inputEl.parentElement && inputEl.parentElement.parentElement) || document;
       const hasAttachmentChip = Boolean(
@@ -4129,16 +4292,19 @@ function _domInstallPageRuntimeFn() {
       const curNorm = normalizeCompareText(curRaw);
       if (!expNorm) return Boolean(curNorm) || cleanText.length === 0;
       if (!curNorm.includes(probePrefix)) return false;
+      if (probeMid && !curNorm.includes(probeMid)) return false;
       if (probeTail && !curNorm.includes(probeTail)) return false;
-      if (expNorm.length > 64 && Math.abs(curNorm.length - expNorm.length) > Math.max(80, Math.floor(expNorm.length * 0.15))) {
+      if (expNorm.length > 64 && Math.abs(curNorm.length - expNorm.length) > Math.max(120, Math.floor(expNorm.length * 0.25))) {
         return false;
       }
       return true;
     };
 
-    // For long text, prefer paste event first to avoid Quill's O(N^2) character-by-character layout freeze
+    // For long text, try ClipboardEvent first; if unhandled synchronously (Quill 1.x uses .ql-clipboard asynchronously),
+    // skip execCommand("insertText") completely so large prompts never freeze the main thread.
     if (isLongText && typeof ClipboardEvent === "function" && typeof DataTransfer === "function") {
       try {
+        selectEditorContents(inputEl);
         const dt = new DataTransfer();
         dt.setData("text/plain", cleanText);
         inputEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
@@ -4146,55 +4312,68 @@ function _domInstallPageRuntimeFn() {
       } catch { /* ignore */ }
     }
 
-    if (!inserted) {
+    if (!isLongText && !inserted) {
+      selectEditorContents(inputEl);
       try {
         inserted = Boolean(document.execCommand && document.execCommand("insertText", false, cleanText));
       } catch { /* ignore */ }
+      if (!inserted || !hasExpectedText()) {
+        try {
+          if (typeof ClipboardEvent === "function" && typeof DataTransfer === "function") {
+            selectEditorContents(inputEl);
+            const dt = new DataTransfer();
+            dt.setData("text/plain", cleanText);
+            inputEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
+            if (hasExpectedText()) inserted = true;
+          }
+        } catch { /* ignore */ }
+      }
     }
 
     if (!inserted || !hasExpectedText()) {
-      try {
-        if (typeof ClipboardEvent === "function" && typeof DataTransfer === "function") {
-          selectEditorContents(inputEl);
-          const dt = new DataTransfer();
-          dt.setData("text/plain", cleanText);
-          inputEl.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
-          if (hasExpectedText()) inserted = true;
-        }
-      } catch { /* ignore */ }
-    }
-    if (!inserted || !hasExpectedText()) {
+      inputEl.classList?.remove?.("ql-blank");
       if (typeof document.createElement === "function" && typeof inputEl.replaceChildren === "function") {
-        const lines = cleanText.split("\n");
         const frag = typeof document.createDocumentFragment === "function" ? document.createDocumentFragment() : null;
-        if (lines.length > 80) {
-          for (let i = 0; i < lines.length; i += 20) {
-            const chunk = lines.slice(i, i + 20).join("\n");
+        if (linesAll.length > 80) {
+          const chunkNodes = [];
+          for (let i = 0; i < linesAll.length; i += 20) {
+            const chunk = linesAll.slice(i, i + 20).join("\n");
             const p = document.createElement("p");
             p.textContent = chunk;
-            if (frag) frag.appendChild(p); else inputEl.appendChild(p);
+            if (frag) frag.appendChild(p); else chunkNodes.push(p);
           }
           if (frag) inputEl.replaceChildren(frag);
+          else inputEl.replaceChildren(...chunkNodes);
         } else {
-          const pNodes = lines.map((line) => {
+          const pNodes = linesAll.map((line) => {
             const p = document.createElement("p");
             if (line) p.appendChild(document.createTextNode(line));
             else p.appendChild(document.createElement("br"));
             return p;
           });
-          inputEl.replaceChildren(...pNodes);
+          if (frag) {
+            for (const p of pNodes) frag.appendChild(p);
+            inputEl.replaceChildren(frag);
+          } else {
+            inputEl.replaceChildren(...pNodes);
+          }
         }
       } else {
         inputEl.textContent = cleanText;
       }
       if (typeof InputEvent === "function") {
-        try {
-          inputEl.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, composed: true, inputType: "insertText", data: cleanText }));
-        } catch { /* ignore */ }
-        inputEl.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: cleanText }));
+        inputEl.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          composed: true,
+          inputType: isLongText ? "insertFromPaste" : "insertText",
+        }));
       } else if (typeof Event === "function") {
         inputEl.dispatchEvent(new Event("input", { bubbles: true }));
       }
+      if (typeof Event === "function") {
+        try { inputEl.dispatchEvent(new Event("change", { bubbles: true })); } catch { /* ignore */ }
+      }
+      placeCaretAtEditorEnd(inputEl);
     }
     autoDismissWaitPrompts();
   }
@@ -4524,23 +4703,48 @@ function _domInstallPageRuntimeFn() {
         if (!isStopButtonVisible() && !detectGeminiBusy()) break;
         await sleepMs(300);
       }
+      // Re-snapshot baseline counts right before inserting so any previous turn finishing during busy-wait is excluded.
+      const preJob = globalThis.__wsaActiveJob;
+      const curDomSnap = readDomAssistantState(0);
+      const baseMcNodes = [...document.querySelectorAll("message-content")].filter(isVisibleElement);
+      const baseModelNodes = [...document.querySelectorAll("model-response")];
+      const liveDomCount = Math.max(beforeDomCount || 0, curDomSnap.count);
+      const liveModelCount = baseModelNodes.length;
+      const liveThoughtCount = countThoughtNodes();
+      const liveUserQueryCount = document.querySelectorAll("user-query").length;
+      if (preJob) {
+        preJob.beforeDomCount = Math.max(preJob.beforeDomCount || 0, liveDomCount);
+        preJob.beforeModelCount = Math.max(preJob.beforeModelCount || 0, liveModelCount);
+        preJob.beforeActionCount = Math.max(preJob.beforeActionCount || 0, countVisibleActionButtons());
+        preJob.beforeThoughtCount = Math.max(preJob.beforeThoughtCount || 0, liveThoughtCount);
+        preJob.beforeUserQueryCount = Math.max(preJob.beforeUserQueryCount || 0, liveUserQueryCount);
+        preJob.beforeThoughtEls = [...document.querySelectorAll(_THOUGHT_SEL)];
+        if (baseModelNodes.length) preJob.beforeLastModelEl = baseModelNodes[baseModelNodes.length - 1];
+        if (baseMcNodes.length) preJob.beforeLastMcEl = baseMcNodes[baseMcNodes.length - 1];
+      }
       log("Submitting via Angular/Quill DOM (" + prompt.length + " chars)");
       setPromptTextInEditor(inputEl, prompt);
-      await sleepMs(160);
+      await sleepMs(180);
 
       const root = resolveComposerAttachmentRoot(findEditor() || inputEl);
       const beforeMediaCount = countComposerMediaPreviews(root);
       const hasMedia = beforeMediaCount > 0;
-      const maxBtnWait = hasMedia ? 40 : 20;
+      const maxBtnWait = hasMedia ? 40 : 24;
 
       let sendBtn = null;
       for (let i = 0; i < maxBtnWait; i++) {
         sendBtn = findEnabledSendButton(inputEl);
         if (sendBtn) break;
+        const liveEd = findEditor() || inputEl;
         if (i === 8 || (hasMedia && i === 24)) {
-          setPromptTextInEditor(findEditor() || inputEl, prompt);
-        } else if ((i === 4 || i === 12 || i === 20) && typeof Event === "function") {
-          const liveEd = findEditor() || inputEl;
+          if (!isPromptStillInEditor(liveEd, prompt)) {
+            setPromptTextInEditor(liveEd, prompt);
+          } else if (typeof Event === "function" && liveEd) {
+            liveEd.classList?.remove?.("ql-blank");
+            try { liveEd.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
+            try { liveEd.dispatchEvent(new Event("change", { bubbles: true })); } catch { /* ignore */ }
+          }
+        } else if ((i === 4 || i === 12 || i === 20) && typeof Event === "function" && liveEd) {
           try { liveEd.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
           try { liveEd.dispatchEvent(new Event("change", { bubbles: true, composed: true })); } catch { /* ignore */ }
         }
@@ -4548,18 +4752,29 @@ function _domInstallPageRuntimeFn() {
       }
 
       const beforeBanner = readErrorBanner();
+      const baseModelCnt = preJob?.beforeModelCount ?? liveModelCount;
+      const baseThoughtCnt = preJob?.beforeThoughtCount ?? liveThoughtCount;
+      const baseUserQueryCnt = preJob?.beforeUserQueryCount ?? liveUserQueryCount;
       const hasSubmitEffect = () => {
-        if (isStopButtonVisible() || detectReactBusy() || detectGeminiBusy()) return true;
-        if (readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
-        if (document.querySelectorAll("model-response").length > (globalThis.__wsaActiveJob?.beforeModelCount || 0)) return true;
-        if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container").length > 0) return true;
         const curEd = findEditor() || inputEl;
+        const promptStillInEd = Boolean(curEd && isPromptStillInEditor(curEd, prompt));
+        const userQueryIncreased = document.querySelectorAll("user-query").length > baseUserQueryCnt;
+        if (userQueryIncreased) return true;
         if (curEd) {
           if (curEd.getAttribute?.("contenteditable") === "false" || curEd.getAttribute?.("aria-disabled") === "true" || curEd.disabled || (typeof curEd.hasAttribute === "function" && curEd.hasAttribute("inert"))) return true;
-          if (!isPromptStillInEditor(curEd, prompt)) return true;
+          if (!promptStillInEd) return true;
+        } else {
+          return true;
         }
         if (hasMedia && countComposerMediaPreviews(resolveComposerAttachmentRoot(findEditor() || inputEl)) < beforeMediaCount) return true;
         if (readErrorBanner() !== beforeBanner) return true;
+        const modelIncreased = document.querySelectorAll("model-response").length > baseModelCnt;
+        const domIncreased = readDomAssistantState(liveDomCount).count > liveDomCount;
+        const thoughtIncreased = countThoughtNodes() > baseThoughtCnt;
+        const busySignal = isStopButtonVisible() || detectReactBusy() || detectGeminiBusy();
+        if ((busySignal || modelIncreased || domIncreased || thoughtIncreased) && (!promptStillInEd || userQueryIncreased)) {
+          return true;
+        }
         return false;
       };
 
@@ -4697,12 +4912,15 @@ function _domInstallPageRuntimeFn() {
 
   globalThis.__wsaRuntime = {
     version: 2,
-    rev: 9,
+    rev: 10,
     log,
     computeTailDomRange,
     isVisibleElement,
     findEditor,
     findEnabledSendButton,
+    clearEditorContents,
+    countThoughtNodes,
+    modelResponseHasActions,
     inspectReactContext,
     readModePickerBadge,
     readRelayCandidates,
@@ -4858,8 +5076,15 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
   const initialCtx = rt.inspectReactContext(inputEl);
   const beforeRelayObj = rt.readRelayCandidates(initialCtx.relayEnv);
   const beforeDomCount = rt.readDomAssistantState(0).count;
-  const beforeModelCount = document.querySelectorAll("model-response").length;
+  const beforeModelNodes = [...document.querySelectorAll("model-response")];
+  const beforeModelCount = beforeModelNodes.length;
+  const beforeMcNodes = [...document.querySelectorAll("message-content")].filter(rt.isVisibleElement || (() => true));
   const beforeActionCount = rt.countVisibleActionButtons();
+  const beforeThoughtCount = typeof rt.countThoughtNodes === "function" ? rt.countThoughtNodes() : 0;
+  const beforeThoughtEls = [...document.querySelectorAll(
+    "model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container"
+  )];
+  const beforeUserQueryCount = document.querySelectorAll("user-query").length;
   const beforeImageCount = typeof rt.countGeneratedImages === "function" ? rt.countGeneratedImages(0) : 0;
   const beforeAnnouncerSnapshot = [...document.querySelectorAll(".cdk-live-announcer-element")]
     .map(el => (el.innerText || el.textContent || "").trim())
@@ -4884,6 +5109,11 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
     beforeDomCount,
     beforeModelCount,
     beforeActionCount,
+    beforeThoughtCount,
+    beforeThoughtEls,
+    beforeUserQueryCount,
+    beforeLastModelEl: beforeModelNodes[beforeModelNodes.length - 1] || null,
+    beforeLastMcEl: beforeMcNodes[beforeMcNodes.length - 1] || null,
     beforeImageCount,
     lastImageCount: beforeImageCount,
     hasGeneratedImage: false,
@@ -4913,14 +5143,24 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
 
   if (imagesAttached && submitted === false) {
     const hasLateEffect = () => {
-      if (rt.isStopButtonVisible() || rt.detectReactBusy() || (typeof rt.detectGeminiBusy === "function" && rt.detectGeminiBusy())) return true;
-      if (document.querySelectorAll("model-response").length > beforeModelCount) return true;
-      if (rt.readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
-      if (document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container").length > 0) return true;
+      const activeJob = globalThis.__wsaActiveJob;
+      const baseDom = activeJob?.beforeDomCount ?? beforeDomCount;
+      const baseModel = activeJob?.beforeModelCount ?? beforeModelCount;
+      const baseThought = activeJob?.beforeThoughtCount ?? beforeThoughtCount;
+      const baseUq = activeJob?.beforeUserQueryCount ?? beforeUserQueryCount;
       const live = rt.findEditor() || inputEl;
+      const promptStill = Boolean(live && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(live, prompt));
+      const userQueryAdded = document.querySelectorAll("user-query").length > baseUq;
+      const modelAdded = document.querySelectorAll("model-response").length > baseModel;
+      const domAdded = rt.readDomAssistantState(baseDom).count > baseDom;
+      const thoughtAdded = typeof rt.countThoughtNodes === "function" && rt.countThoughtNodes() > baseThought;
+      if (userQueryAdded) return true;
       if (live) {
         if (live.getAttribute?.("contenteditable") === "false" || live.getAttribute?.("aria-disabled") === "true" || live.disabled || (typeof live.hasAttribute === "function" && live.hasAttribute("inert"))) return true;
-        if (typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(live, prompt)) return true;
+        if (!promptStill) return true;
+      }
+      if ((rt.isStopButtonVisible() || rt.detectReactBusy() || (typeof rt.detectGeminiBusy === "function" && rt.detectGeminiBusy()) || modelAdded || domAdded || thoughtAdded) && (!promptStill || userQueryAdded)) {
+        return true;
       }
       return false;
     };
@@ -4947,6 +5187,7 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
     globalThis.__wsaActiveJob.sawEditorCleared = true;
   }
   const afterSubmit = Date.now();
+  globalThis.__wsaActiveJob.startedAt = afterSubmit;
   globalThis.__wsaActiveJob.lastBusyAt = afterSubmit;
   globalThis.__wsaActiveJob.lastTextChangeAt = afterSubmit;
   globalThis.__wsaActiveJob.lastRetryAt = afterSubmit;
@@ -4988,6 +5229,21 @@ function _domPollTurnFn(reqId) {
   const liveCtx = rt.inspectReactContext(liveEd);
   const currentRelay = rt.readRelayCandidates(liveCtx.relayEnv);
   const relayPicked = rt.pickBestChangedRelayCandidate(currentRelay, job.beforeRelayObj);
+
+  const allVisibleMc = [...document.querySelectorAll("message-content")].filter(rt.isVisibleElement || (() => true));
+  const latestVisibleMc = allVisibleMc.length ? allVisibleMc[allVisibleMc.length - 1] : null;
+  const isPromptStillForVirt = Boolean(liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, job.prompt));
+  const userQueryGrewForVirt = document.querySelectorAll("user-query").length > (job.beforeUserQueryCount || 0);
+  if (
+    job.beforeLastMcEl &&
+    latestVisibleMc &&
+    latestVisibleMc !== job.beforeLastMcEl &&
+    allVisibleMc.length <= job.beforeDomCount &&
+    (!isPromptStillForVirt || userQueryGrewForVirt)
+  ) {
+    job.beforeDomCount = Math.max(0, allVisibleMc.length - 1);
+  }
+
   const currentDomState = rt.readDomAssistantState(job.beforeDomCount);
 
   let effectiveDomCount = currentDomState.count;
@@ -5004,8 +5260,18 @@ function _domPollTurnFn(reqId) {
   ) {
     // Historical thread hydration while our prompt still sits unsent in the composer: rebase instead of returning old turn.
     job.beforeDomCount = effectiveDomCount;
-    job.beforeModelCount = document.querySelectorAll("model-response").length;
+    const rebaseMrs = [...document.querySelectorAll("model-response")];
+    job.beforeModelCount = rebaseMrs.length;
     job.beforeActionCount = rt.countVisibleActionButtons();
+    if (typeof rt.countThoughtNodes === "function") {
+      job.beforeThoughtCount = rt.countThoughtNodes();
+    }
+    job.beforeThoughtEls = [...document.querySelectorAll(
+      "model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container"
+    )];
+    job.beforeUserQueryCount = document.querySelectorAll("user-query").length;
+    if (rebaseMrs.length) job.beforeLastModelEl = rebaseMrs[rebaseMrs.length - 1];
+    if (latestVisibleMc) job.beforeLastMcEl = latestVisibleMc;
   }
 
   if (relayPicked.sawNewTurn || effectiveDomCount > job.beforeDomCount) {
@@ -5112,9 +5378,14 @@ function _domPollTurnFn(reqId) {
   }
 
   const isPromptInEd = Boolean(job.prompt && liveEd && typeof rt.isPromptStillInEditor === "function" && rt.isPromptStillInEditor(liveEd, job.prompt));
+  const userQueryAdded = document.querySelectorAll("user-query").length > (job.beforeUserQueryCount || 0);
+  const thoughtAdded = typeof rt.countThoughtNodes === "function"
+    ? rt.countThoughtNodes() > (job.beforeThoughtCount || 0)
+    : false;
   const hasModelResponseStarted = Boolean(
+    userQueryAdded ||
     document.querySelectorAll("model-response").length > (job.beforeModelCount || 0) ||
-    document.querySelectorAll("model-thoughts, thinking-overlay, .thoughts-content, [data-test-id*='thought' i], .thoughts-status-message, [jsname='bC5vW'], thought-view, .thought-container").length > 0 ||
+    thoughtAdded ||
     job.lastThinking ||
     job.lastText ||
     effectiveDomCount > job.beforeDomCount ||
@@ -5142,8 +5413,14 @@ function _domPollTurnFn(reqId) {
   }
   if (promptUnsent && typeof rt.triggerDomSubmit === "function" && (job.submitRetries || 0) < 4 && (now - (job.lastRetryAt || job.startedAt)) >= 1800) {
     const sendMissing = typeof rt.findEnabledSendButton === "function" && !rt.findEnabledSendButton(liveEd);
-    if (sendMissing && isPromptInEd && (job.submitRetries || 0) < 2 && typeof rt.setPromptTextInEditor === "function") {
-      rt.setPromptTextInEditor(liveEd, job.prompt);
+    if (sendMissing && liveEd) {
+      if (!isPromptInEd && (job.submitRetries || 0) < 2 && typeof rt.setPromptTextInEditor === "function") {
+        rt.setPromptTextInEditor(liveEd, job.prompt);
+      } else if (isPromptInEd && typeof Event === "function") {
+        liveEd.classList?.remove?.("ql-blank");
+        try { liveEd.dispatchEvent(new Event("input", { bubbles: true, composed: true })); } catch { /* ignore */ }
+        try { liveEd.dispatchEvent(new Event("change", { bubbles: true })); } catch { /* ignore */ }
+      }
     }
     rt.triggerDomSubmit(liveEd, (job.submitRetries || 0) >= 1);
     job.submitRetries = (job.submitRetries || 0) + 1;
@@ -5151,11 +5428,15 @@ function _domPollTurnFn(reqId) {
   }
 
   const stuckUnsentStall = Boolean(promptUnsent && (job.submitRetries || 0) >= 3 && (now - job.startedAt) >= 14000);
-  const neverStartedStall = Boolean(!job.sawNewTurn && !busy && !job.lastText && !job.lastThinking && (now - job.startedAt) >= 45000);
+  const neverStartedCutoffMs = userQueryAdded ? 120000 : 65000;
+  const neverStartedStall = Boolean(!job.sawNewTurn && !busy && !job.lastText && !job.lastThinking && (now - job.startedAt) >= neverStartedCutoffMs);
   if (stuckUnsentStall || neverStartedStall) {
     const fallbackBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
     const tooLongMsg = typeof rt.detectPromptTooLongMessage === "function" ? rt.detectPromptTooLongMessage(fallbackBanner, true) : "";
     const limitMsg = !tooLongMsg && typeof rt.detectLimitMessage === "function" ? rt.detectLimitMessage(fallbackBanner, true) : "";
+    if (stuckUnsentStall && liveEd && isPromptInEd && typeof rt.clearEditorContents === "function") {
+      rt.clearEditorContents(liveEd);
+    }
     delete globalThis.__wsaActiveJob;
     return {
       done: false,

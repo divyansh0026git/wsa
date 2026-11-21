@@ -305,4 +305,280 @@ assert.strictEqual(
 );
 console.log("   [PASS] detectGeminiBusy & thinking extraction passed.");
 
-console.log("\nALL GEMINI ACCOUNT SWITCHING & STREAM GUARD TESTS PASSED!");
+console.log("--> Testing Turn 2+ historical thoughts isolation, lm-input-redesign selectors, ql-clipboard skip & fast 25K insertion...");
+(async () => {
+  // Minimal flexible MockDom to verify real Gemini Angular + Quill 1.x behavior
+  class DomNode {
+    constructor(tag, attrs = {}, cls = "", text = "") {
+      this.nodeType = 1;
+      this.tagName = String(tag || "div").toUpperCase();
+      this.attrs = Object.assign({}, attrs);
+      this.className = cls || "";
+      this._text = String(text || "");
+      this.children = [];
+      this.childNodes = [];
+      this.parentElement = null;
+      this.parentNode = null;
+      this.disabled = false;
+      this.listeners = {};
+      this.dataset = {};
+      this._clickHandler = null;
+      const self = this;
+      this.classList = {
+        contains: (c) => self.className.split(/\s+/).filter(Boolean).includes(c),
+        add: (c) => {
+          const set = new Set(self.className.split(/\s+/).filter(Boolean));
+          set.add(c);
+          self.className = [...set].join(" ");
+        },
+        remove: (c) => {
+          const set = new Set(self.className.split(/\s+/).filter(Boolean));
+          set.delete(c);
+          self.className = [...set].join(" ");
+        },
+      };
+    }
+    get textContent() {
+      if (this.children.length) return this.children.map(c => c.textContent || "").join("\n");
+      return this._text;
+    }
+    set textContent(v) {
+      this.children = [];
+      this._text = String(v ?? "");
+      this.childNodes = this._text ? [{ nodeType: 3, textContent: this._text, nodeValue: this._text }] : [];
+    }
+    get innerText() { return this.textContent; }
+    set innerText(v) { this.textContent = v; }
+    appendChild(ch) {
+      if (!ch) return ch;
+      if (ch.nodeType === 11 && Array.isArray(ch.children)) {
+        for (const sub of [...ch.children]) this.appendChild(sub);
+        return ch;
+      }
+      if (typeof ch === "object") { ch.parentElement = this; ch.parentNode = this; }
+      this.children.push(ch);
+      this.childNodes.push(ch);
+      return ch;
+    }
+    replaceChildren(...nodes) {
+      this.children = [];
+      this.childNodes = [];
+      for (const n of nodes) this.appendChild(n);
+    }
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; }
+    setAttribute(k, v) { this.attrs[k] = String(v); }
+    hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); }
+    getBoundingClientRect() {
+      if (this.classList.contains("ql-clipboard")) return { width: 1, height: 1, top: 0, left: -100000 };
+      return { width: 420, height: 48, top: 10, left: 10 };
+    }
+    getClientRects() { return [this.getBoundingClientRect()]; }
+    get offsetParent() { return this.parentElement || {}; }
+    focus() {}
+    scrollIntoView() {}
+    addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
+    dispatchEvent(e) {
+      for (const fn of (this.listeners[e.type] || [])) fn(e);
+      return true;
+    }
+    click() {
+      if (typeof this._clickHandler === "function") this._clickHandler();
+      this.dispatchEvent({ type: "click" });
+    }
+    get nextElementSibling() {
+      const sibs = this.parentElement?.children || [];
+      const i = sibs.indexOf(this);
+      return (i >= 0 && i + 1 < sibs.length) ? sibs[i + 1] : null;
+    }
+    closest(sel) {
+      let cur = this;
+      while (cur) {
+        if (cur.matches(sel)) return cur;
+        cur = cur.parentElement;
+      }
+      return null;
+    }
+    _matchesPart(part) {
+      const p = part.trim();
+      if (!p) return false;
+      const chunks = p.split(/\s+/);
+      if (chunks.length > 1) {
+        if (!this._matchesSimple(chunks[chunks.length - 1])) return false;
+        let cur = this.parentElement;
+        for (let ci = chunks.length - 2; ci >= 0; ci--) {
+          while (cur && !cur._matchesSimple(chunks[ci])) cur = cur.parentElement;
+          if (!cur) return false;
+          cur = cur.parentElement;
+        }
+        return true;
+      }
+      return this._matchesSimple(p);
+    }
+    _matchesSimple(s) {
+      if (s === this.tagName.toLowerCase()) return true;
+      if (s.includes("gem-icon-button.send-button") && this.tagName === "GEM-ICON-BUTTON" && this.classList.contains("send-button")) return true;
+      if (s === "gem-icon-button.submit" && this.tagName === "GEM-ICON-BUTTON" && this.classList.contains("submit")) return true;
+      if (s.includes(".ql-editor") && this.classList.contains("ql-editor")) {
+        if (s.includes("[contenteditable='true']")) return this.attrs.contenteditable === "true";
+        if (s.includes("[role='textbox']")) return this.attrs.role === "textbox";
+        return true;
+      }
+      if (s === "button[aria-label='Send message' i]" && this.tagName === "BUTTON" && /^send message$/i.test(this.attrs["aria-label"] || "")) return true;
+      if (s === "[role='textbox'][contenteditable='true']" && this.attrs.role === "textbox" && this.attrs.contenteditable === "true") return true;
+      if (s === "message-actions button" && this.tagName === "BUTTON" && Boolean(this.parentElement?.tagName === "MESSAGE-ACTIONS")) return true;
+      if (s.startsWith(".") && this.classList.contains(s.slice(1).split("[")[0])) return true;
+      if (s === "[data-test-id='bard-mode-menu-button']" && this.attrs["data-test-id"] === "bard-mode-menu-button") return true;
+      return false;
+    }
+    matches(sel) {
+      return String(sel).split(",").some(p => this._matchesPart(p));
+    }
+    querySelectorAll(sel) {
+      const out = [];
+      const walk = (n) => {
+        for (const ch of (n.children || [])) {
+          if (ch.nodeType === 1) {
+            if (ch.matches(sel)) out.push(ch);
+            walk(ch);
+          }
+        }
+      };
+      walk(this);
+      return out;
+    }
+    querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+  }
+
+  const root = new DomNode("div");
+  const docEl = new DomNode("html");
+  const modeBtn = new DomNode("button", { "data-test-id": "bard-mode-menu-button", "aria-label": "Open mode picker, currently Neon High" }, "", "Neon High");
+  root.appendChild(modeBtn);
+
+  // Turn 1 (historical, completed): model-response containing model-thoughts + message-content + message-actions + stale live announcer
+  const mr1 = new DomNode("model-response");
+  const mt1 = new DomNode("model-thoughts");
+  const mtDesc = new DomNode("div", {}, "thought-description", "Analyzing visual details from Turn 1");
+  mt1.appendChild(mtDesc);
+  mr1.appendChild(mt1);
+  mr1.appendChild(new DomNode("message-content", {}, "", "Turn 1 answer"));
+  const ma1 = new DomNode("message-actions");
+  ma1.appendChild(new DomNode("button", { "aria-label": "Copy response" }));
+  mr1.appendChild(ma1);
+  root.appendChild(new DomNode("user-query", {}, "", "First user query"));
+  root.appendChild(mr1);
+
+  const staleAnn = new DomNode("div", {}, "cdk-live-announcer-element", "Thinking...");
+  root.appendChild(staleAnn);
+
+  // Composer: rich-textarea with hidden .ql-clipboard BEFORE .ql-editor, and <gem-icon-button class="send-button has-input submit"><button aria-label="Send message">
+  const form = new DomNode("form", {}, "input-area");
+  const rich = new DomNode("rich-textarea", {}, "text-input-field_textarea ql-container");
+  const qlClip = new DomNode("div", { contenteditable: "true" }, "ql-clipboard");
+  const qlEd = new DomNode("div", { role: "textbox", contenteditable: "true" }, "ql-editor ql-blank textarea");
+  rich.appendChild(qlClip);
+  rich.appendChild(qlEd);
+  form.appendChild(rich);
+
+  const sendContainer = new DomNode("div", {}, "send-button-container");
+  const gemHost = new DomNode("gem-icon-button", {}, "send-button has-input submit");
+  // Deliberately omit aria-label/send classes on inner button to verify gem-icon-button.send-button host detection too,
+  // while keeping aria-label on gem-icon-button or localized label on inner button
+  const innerSendBtn = new DomNode("button", { "aria-label": "Send message" }, "mdc-icon-button mat-mdc-icon-button");
+  let sendClicks = 0;
+  innerSendBtn._clickHandler = () => { sendClicks++; };
+  gemHost.appendChild(innerSendBtn);
+  sendContainer.appendChild(gemHost);
+  form.appendChild(sendContainer);
+  root.appendChild(form);
+
+  let execCalls = 0;
+  let replaceCalls = 0;
+  const origReplace = qlEd.replaceChildren.bind(qlEd);
+  qlEd.replaceChildren = (...a) => { replaceCalls++; return origReplace(...a); };
+
+  const sb2 = {
+    Element: DomNode,
+    Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
+    document: {
+      documentElement: docEl,
+      body: root,
+      createElement: (t) => new DomNode(t),
+      createTextNode: (t) => ({ nodeType: 3, textContent: t, nodeValue: t }),
+      createDocumentFragment: () => new DomNode("#fragment"),
+      execCommand: () => { execCalls++; return true; },
+      querySelectorAll: (s) => root.querySelectorAll(s),
+      querySelector: (s) => root.querySelector(s),
+    },
+    InputEvent: function(t, o) { this.type = t; Object.assign(this, o || {}); },
+    Event: function(t, o) { this.type = t; Object.assign(this, o || {}); },
+    PointerEvent: function(t, o) { this.type = t; Object.assign(this, o || {}); },
+    MouseEvent: function(t, o) { this.type = t; Object.assign(this, o || {}); },
+    KeyboardEvent: function(t, o) { this.type = t; Object.assign(this, o || {}); },
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    Date,
+    setTimeout: (fn) => { fn(); return 1; },
+    clearTimeout: () => {},
+    location: { href: "https://gemini.google.com/u/4/app/conv-turn2", pathname: "/u/4/app/conv-turn2" },
+    console: { log: () => {}, warn: () => {}, error: () => {} },
+  };
+  sb2.window = sb2;
+  sb2.globalThis = sb2;
+  vm.runInNewContext("(" + bg._domInstallPageRuntimeFn.toString() + ")()", sb2);
+  const rt2 = sb2.__wsaRuntime;
+
+  assert.strictEqual(rt2.rev, 10, "Gemini runtime rev must be 10");
+  assert.strictEqual(rt2.readModePickerBadge(), "Neon High", "Should parse Neon High badge");
+  assert.strictEqual(rt2.findEditor(), qlEd, "findEditor must skip .ql-clipboard and pick .ql-editor");
+  assert.strictEqual(rt2.detectGeminiBusy(), false, "Historical completed turn + stale announcer must NOT trigger detectGeminiBusy()");
+  assert.strictEqual(rt2.findEnabledSendButton(qlEd), innerSendBtn, "Must find inner <button> inside gem-icon-button.send-button");
+
+  // Long multi-line prompt (~25K chars, 400 lines)
+  const longLines = [];
+  for (let li = 0; li < 400; li++) {
+    longLines.push(`Line ${li}: ` + "X".repeat(55));
+  }
+  const prompt25k = longLines.join("\n");
+  const tStart = Date.now();
+  rt2.setPromptTextInEditor(qlEd, prompt25k);
+  const elapsedMs = Date.now() - tStart;
+  assert.strictEqual(execCalls, 0, "Long text must NEVER call slow document.execCommand('insertText')");
+  assert.strictEqual(replaceCalls, 1, "Long text must use single atomic replaceChildren(frag)");
+  assert.strictEqual(elapsedMs < 200, true, "25K insertion must complete quickly without freezing");
+  assert.strictEqual(qlEd.classList.contains("ql-blank"), false, "Must remove .ql-blank");
+  assert.strictEqual(rt2.isPromptStillInEditor(qlEd, prompt25k), true, "Full 25K prompt must match in editor");
+  assert.ok(docEl.dataset.wsaLastPromptHead.includes("Line 0:"), "Must record wsaLastPromptHead dataset");
+
+  // If clicking Send fails to clear editor or mount user-query, submitPromptToPage must NOT be fooled by Turn 1's historical model-thoughts
+  const ctx2 = rt2.inspectReactContext(qlEd);
+  const subOk = await rt2.submitPromptToPage(prompt25k, qlEd, ctx2, 1);
+  assert.strictEqual(subOk, false, "Historical model-thoughts must NOT trick hasSubmitEffect() into returning true when prompt is still unsent");
+  assert.ok(sendClicks >= 1, "Must still have clicked Send");
+
+  // Clear via clearEditorContents
+  rt2.clearEditorContents(qlEd);
+  assert.strictEqual(rt2.isPromptStillInEditor(qlEd, prompt25k), false, "clearEditorContents must remove stranded prompt");
+  assert.strictEqual(qlEd.classList.contains("ql-blank"), true, "clearEditorContents must restore .ql-blank");
+
+  // Verify lingering announcer text ("Thinking...") does NOT lock detectGeminiBusy()=true after a new model-response completes with message-actions
+  sb2.__wsaActiveJob = {
+    reqId: "req-ann-done",
+    beforeModelCount: 1,
+    beforeAnnouncerSnapshot: "",
+    announcerChanged: true,
+    beforeLastModelEl: mr1,
+  };
+  const mr2 = new DomNode("model-response");
+  mr2.appendChild(new DomNode("message-content", {}, "", "Turn 2 completed answer"));
+  const ma2 = new DomNode("message-actions");
+  ma2.appendChild(new DomNode("button", { "aria-label": "Copy response" }));
+  mr2.appendChild(ma2);
+  root.appendChild(mr2);
+  assert.strictEqual(rt2.detectGeminiBusy(), false, "Lingering announcer text must NOT keep detectGeminiBusy()=true once fresh model-response has message-actions");
+  delete sb2.__wsaActiveJob;
+
+  console.log("   [PASS] Turn 2+ historical isolation, lm-input-redesign, ql-clipboard skip & fast 25K passed.");
+  console.log("\nALL GEMINI ACCOUNT SWITCHING & STREAM GUARD TESTS PASSED!");
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

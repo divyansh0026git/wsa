@@ -8119,7 +8119,7 @@ async function run() {
     });
     vm.runInNewContext("(" + bg._domInstallPageRuntimeFn.toString() + ")()", sb);
     assert.strictEqual(sb.__wsaRuntime.version, 2);
-    assert.strictEqual(sb.__wsaRuntime.rev, 9);
+    assert.strictEqual(sb.__wsaRuntime.rev, 10);
     assert.strictEqual(sb.__wsaRuntime.findEnabledSendButton(ed), sendBtn);
 
     sb.__wsaRuntime.setPromptTextInEditor(ed, promptMulti);
