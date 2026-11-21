@@ -124,6 +124,8 @@ class _StyledCodeBlock(_RichCodeBlock):
 
     def __rich_console__(self, _console, _options):
         code = str(self.text).rstrip()
+        if _looks_like_tool_json_body(code, unclosed=True):
+            return
         lexer = (self.lexer_name or "text").strip() or "text"
         lexer_lower = lexer.lower()
         border_col = "#52525b" if Theme.BORDER == "#3f3f46" else Theme.BORDER
@@ -382,7 +384,7 @@ _STREAM_PARTIAL_TOOL_FENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_JSON_FENCE_RE = re.compile(
-    r"(?:^|(?<=\n))[ \t]*(?P<ticks>`{3,}|~{3,})[\u200b\u200c\u200d\ufeff \t]*(?:json|javascript|js)?[ \t]*\r?\n(?P<body>(?![ \t]*(?:`{3,}|~{3,}))[\s\S]*?)(?:(?P=ticks)(?:[\u200b\u200c\u200d\ufeff \t]*_\])?[ \t]*(?:\r?\n|$)|$)",
+    r"(?:^|(?<=\n))[ \t]*(?P<ticks>`{3,}|~{3,})[\u200b\u200c\u200d\ufeff \t]*(?:json|javascript|js|text|txt|plain|tool_call|code)?[ \t]*\r?\n(?P<body>(?![ \t]*(?:`{3,}|~{3,}))[\s\S]*?)(?:(?P=ticks)(?:[\u200b\u200c\u200d\ufeff \t]*_\])?[ \t]*(?:\r?\n|$)|$)",
     re.IGNORECASE,
 )
 _CODE_SNIPPET_TOOL_RE = re.compile(
@@ -402,8 +404,13 @@ def _looks_like_tool_json_body(body: str, unclosed: bool = False) -> bool:
     if _TOOL_JSON_HEAD_RE.match(s):
         if ('"name"' in s and ('"arguments"' in s or '"args"' in s)) or unclosed:
             return True
-    if unclosed and re.match(
-        r'^[\{\[](?:[\s\{\[]{0,24}(?:"[A-Za-z_]{0,12})?)?$',
+        if re.match(
+            r'^(?:\{\s*"(?:name|tool|function|action)"\s*:\s*"[^"]{0,64}"|\{\s*"(?:name|arguments|args)"\s*:|\{\s*"\s*$|\[\s*\{\s*")',
+            s,
+        ):
+            return True
+    if re.match(
+        r'^[\{\[](?:[\s\{\[]{0,24}(?:"[A-Za-z_]{0,12}"?)?)?$',
         s,
     ):
         return True

@@ -214,20 +214,28 @@ function parseAuthUserFromUrl(url) {
 
 function hasIncompleteStreamText(text) {
   if (!text || typeof text !== "string") return false;
-  // 1. Unclosed code blocks (odd number of ``` or ```` fences)
-  const codeFences = (text.match(/`{3,}/g) || []).length;
+  // 1. Unclosed code blocks (odd number of ``` or ~~~ fences)
+  const codeFences = (text.match(/(?:`{3,}|~{3,})/g) || []).length;
   if (codeFences % 2 !== 0) return true;
 
-  // 2. Trailing unclosed JSON tool calls (e.g. {"name": "apply_patch", "arguments": ...)
   const trimmed = text.trim();
-  const toolCallStart = trimmed.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/);
-  if (toolCallStart !== -1) {
+  if (!trimmed) return false;
+
+  // 2. Trailing 'Code snippet' header or trailing unclosed start
+  if (/(?:^|\r?\n)Code snippet\s*$/i.test(trimmed)) return true;
+  if (/(?:^|\r?\n)Code snippet[ \t]*\r?\n\s*[\{\[][^\n]*$/i.test(trimmed)) return true;
+
+  // 3. Trailing incomplete tool call or JSON head (e.g. `{"`, `[{"`, `{"name"`, `{"arguments":`, `{`)
+  if (/[\{\[]\s*(?:"[A-Za-z_]{0,12}"?)?\s*$/.test(trimmed)) return true;
+
+  // Helper to test if a string has unbalanced JSON braces or brackets or unclosed quotes
+  function checkUnbalanced(str, startPos = 0) {
     let braceDepth = 0;
     let bracketDepth = 0;
     let inString = false;
     let escaped = false;
-    for (let i = toolCallStart; i < trimmed.length; i++) {
-      const c = trimmed[i];
+    for (let i = startPos; i < str.length; i++) {
+      const c = str[i];
       if (escaped) {
         escaped = false;
         continue;
@@ -247,8 +255,41 @@ function hasIncompleteStreamText(text) {
         else if (c === "]") bracketDepth--;
       }
     }
-    if (braceDepth > 0 || bracketDepth > 0 || inString) return true;
+    return braceDepth > 0 || bracketDepth > 0 || inString;
   }
+
+  // 4. Check all fenced code blocks for unclosed JSON
+  const fenceRegex = /(?:`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)(?:(?:`{3,}|~{3,})|$)/g;
+  let fm;
+  while ((fm = fenceRegex.exec(text)) !== null) {
+    const blockBody = (fm[1] || "").trim();
+    if (!blockBody) continue;
+    if (blockBody[0] === "{" || blockBody[0] === "[") {
+      try {
+        JSON.parse(blockBody);
+      } catch {
+        if (
+          checkUnbalanced(blockBody) ||
+          blockBody.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits|path)"\s*:)/) !== -1 ||
+          /^[\{\[](?:[\s\{\[]{0,24}(?:"[A-Za-z_]{0,12}"?)?)?$/.test(blockBody)
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+
+  // 5. Check trailing slice or any tool-call JSON start in un-fenced or partially-fenced text
+  const toolCallIndices = [];
+  const toolPattern = /\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/g;
+  let tm;
+  while ((tm = toolPattern.exec(trimmed)) !== null) {
+    toolCallIndices.push(tm.index);
+  }
+  for (const idx of toolCallIndices) {
+    if (checkUnbalanced(trimmed, idx)) return true;
+  }
+
   return false;
 }
 
@@ -3370,6 +3411,7 @@ function _domInstallPageRuntimeFn() {
       // In-flight streaming tool call: detect partial JSON structure before full parse settles
       const toolStart = trimmed.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/);
       if (toolStart !== -1) return true;
+      if (/^[\{\[](?:[\s\{\[]{0,24}(?:"[A-Za-z_]{0,12}"?)?)?$/.test(trimmed)) return true;
       return false;
     }
   }
@@ -3777,20 +3819,28 @@ function _domInstallPageRuntimeFn() {
 
   function hasIncompleteStreamText(text) {
     if (!text || typeof text !== "string") return false;
-    // 1. Unclosed code blocks (odd number of ``` or ```` fences)
-    const codeFences = (text.match(/`{3,}/g) || []).length;
+    // 1. Unclosed code blocks (odd number of ``` or ~~~ fences)
+    const codeFences = (text.match(/(?:`{3,}|~{3,})/g) || []).length;
     if (codeFences % 2 !== 0) return true;
 
-    // 2. Trailing unclosed JSON tool calls (e.g. {"name": "apply_patch", "arguments": ...)
     const trimmed = text.trim();
-    const toolCallStart = trimmed.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/);
-    if (toolCallStart !== -1) {
+    if (!trimmed) return false;
+
+    // 2. Trailing 'Code snippet' header or trailing unclosed start
+    if (/(?:^|\r?\n)Code snippet\s*$/i.test(trimmed)) return true;
+    if (/(?:^|\r?\n)Code snippet[ \t]*\r?\n\s*[\{\[][^\n]*$/i.test(trimmed)) return true;
+
+    // 3. Trailing incomplete tool call or JSON head (e.g. `{"`, `[{"`, `{"name"`, `{"arguments":`, `{`)
+    if (/[\{\[]\s*(?:"[A-Za-z_]{0,12}"?)?\s*$/.test(trimmed)) return true;
+
+    // Helper to test if a string has unbalanced JSON braces or brackets or unclosed quotes
+    function checkUnbalanced(str, startPos = 0) {
       let braceDepth = 0;
       let bracketDepth = 0;
       let inString = false;
       let escaped = false;
-      for (let i = toolCallStart; i < trimmed.length; i++) {
-        const c = trimmed[i];
+      for (let i = startPos; i < str.length; i++) {
+        const c = str[i];
         if (escaped) {
           escaped = false;
           continue;
@@ -3810,8 +3860,41 @@ function _domInstallPageRuntimeFn() {
           else if (c === "]") bracketDepth--;
         }
       }
-      if (braceDepth > 0 || bracketDepth > 0 || inString) return true;
+      return braceDepth > 0 || bracketDepth > 0 || inString;
     }
+
+    // 4. Check all fenced code blocks for unclosed JSON
+    const fenceRegex = /(?:`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)(?:(?:`{3,}|~{3,})|$)/g;
+    let fm;
+    while ((fm = fenceRegex.exec(text)) !== null) {
+      const blockBody = (fm[1] || "").trim();
+      if (!blockBody) continue;
+      if (blockBody[0] === "{" || blockBody[0] === "[") {
+        try {
+          JSON.parse(blockBody);
+        } catch {
+          if (
+            checkUnbalanced(blockBody) ||
+            blockBody.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits|path)"\s*:)/) !== -1 ||
+            /^[\{\[](?:[\s\{\[]{0,24}(?:"[A-Za-z_]{0,12}"?)?)?$/.test(blockBody)
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+
+    // 5. Check trailing slice or any tool-call JSON start in un-fenced or partially-fenced text
+    const toolCallIndices = [];
+    const toolPattern = /\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/g;
+    let tm;
+    while ((tm = toolPattern.exec(trimmed)) !== null) {
+      toolCallIndices.push(tm.index);
+    }
+    for (const idx of toolCallIndices) {
+      if (checkUnbalanced(trimmed, idx)) return true;
+    }
+
     return false;
   }
 
@@ -3819,6 +3902,7 @@ function _domInstallPageRuntimeFn() {
     text,
     stopVisible,
     reactBusy,
+    geminiBusy = false,
     hasTurnActions,
     sawNewTurn,
     now,
@@ -3833,7 +3917,7 @@ function _domInstallPageRuntimeFn() {
     const thinkStableMs = lastThinkChangeAt > 0 ? Math.max(0, now - lastThinkChangeAt) : textStableMs;
     const quietSinceBusyMs = lastBusyAt > 0 ? Math.max(0, now - lastBusyAt) : textStableMs;
 
-    if (stopVisible) return false;
+    if (stopVisible || geminiBusy) return false;
 
     const isIncomplete = hasIncompleteStreamText(text);
     if (isIncomplete) {
@@ -3846,31 +3930,34 @@ function _domInstallPageRuntimeFn() {
 
     if (imageGen) {
       if (!hasGeneratedImage && text && /\b(?:creating|generating|working\s+on)\b/i.test(text)) {
-        return Boolean(!stopVisible && !reactBusy && textStableMs >= 15000);
+        return Boolean(!stopVisible && !reactBusy && !geminiBusy && textStableMs >= 15000);
       }
       if (hasGeneratedImage) {
-        if (!stopVisible && !reactBusy && textStableMs >= 1800 && (hasTurnActions || quietSinceBusyMs >= 1800)) {
+        if (!stopVisible && !reactBusy && !geminiBusy && textStableMs >= 1800 && (hasTurnActions || quietSinceBusyMs >= 1800)) {
           return true;
         }
-        if (!stopVisible && hasTurnActions && textStableMs >= 2500) {
+        if (!stopVisible && !geminiBusy && hasTurnActions && textStableMs >= 2500) {
           return true;
         }
-        if (!stopVisible && sawNewTurn && textStableMs >= 6500 && thinkStableMs >= 4000) {
+        if (!stopVisible && !geminiBusy && sawNewTurn && textStableMs >= 6500 && thinkStableMs >= 4000) {
           return true;
         }
         return false;
       }
     }
 
-    if (!stopVisible && !reactBusy && textStableMs >= 1400 && (hasTurnActions || quietSinceBusyMs >= 1400)) {
+    const hasToolCallMarker = /(?:```tool_call|Code snippet|"(?:name|tool|action)"\s*:)/.test(text);
+    const minStableMs = hasToolCallMarker ? 3000 : 1400;
+
+    if (!stopVisible && !reactBusy && !geminiBusy && textStableMs >= minStableMs && (hasTurnActions || quietSinceBusyMs >= minStableMs)) {
       return true;
     }
     // Safeguard when React sessionObj.isStreaming stays true even after Copy/Feedback toolbar renders
-    if (!stopVisible && hasTurnActions && textStableMs >= 2200) {
+    if (!stopVisible && !geminiBusy && hasTurnActions && textStableMs >= (hasToolCallMarker ? 4000 : 2200)) {
       return true;
     }
     // Ironclad idle fallback for slower feedback toolbars / custom UI variants
-    if (!stopVisible && sawNewTurn && textStableMs >= 6000 && thinkStableMs >= 4000) {
+    if (!stopVisible && !geminiBusy && sawNewTurn && textStableMs >= 6000 && thinkStableMs >= 4000) {
       return true;
     }
     return false;
@@ -5092,6 +5179,7 @@ function _domPollTurnFn(reqId) {
     text: job.lastText,
     stopVisible,
     reactBusy,
+    geminiBusy,
     hasTurnActions,
     sawNewTurn: job.sawNewTurn,
     now,

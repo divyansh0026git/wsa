@@ -20,11 +20,29 @@ assert.strictEqual(
   true
 );
 assert.strictEqual(bg.hasIncompleteStreamText('{"name": "'), true);
+assert.strictEqual(bg.hasIncompleteStreamText('{"name": "read_file",'), true);
+assert.strictEqual(bg.hasIncompleteStreamText('{"name"'), true);
+assert.strictEqual(bg.hasIncompleteStreamText('{"'), true);
+assert.strictEqual(bg.hasIncompleteStreamText('[{"'), true);
+assert.strictEqual(bg.hasIncompleteStreamText('Code snippet\n'), true);
+assert.strictEqual(bg.hasIncompleteStreamText('Code snippet\n{"'), true);
 assert.strictEqual(bg.hasIncompleteStreamText('{"name": "read_file", "arguments": {"path": "main.ts"'), true);
+assert.strictEqual(
+  bg.hasIncompleteStreamText('```tool_call\n{"name": "read_file", "arguments": {"path": "a.ts"}}\n```\n\n```tool_call\n{"name": "read_file",\n```'),
+  true
+);
+assert.strictEqual(
+  bg.hasIncompleteStreamText('```tool_call\n{"name": "read_file", "arguments": {"path": "a.ts"}}\n```\n\n```\n{"\n```'),
+  true
+);
 
 // 5. Complete tool call
 assert.strictEqual(
   bg.hasIncompleteStreamText('{"name": "apply_patch", "arguments": {"edits": [{"path": "src/shaders/cinematicPass.ts"}]}}'),
+  false
+);
+assert.strictEqual(
+  bg.hasIncompleteStreamText('```tool_call\n{"name": "read_file", "arguments": {"path": "a.ts"}}\n```\n\n```tool_call\n{"name": "read_file", "arguments": {"path": "b.ts"}}\n```'),
   false
 );
 
@@ -99,11 +117,12 @@ assert.strictEqual(
   "Incomplete JSON should hold turn open at 2500ms even with hasTurnActions=true"
 );
 
-// Once JSON completes, it can complete normally
+// Tool calls require 3000ms stability to prevent premature cutoff between code blocks
 const completeTurnState = {
   text: '{"name": "apply_patch", "arguments": {"edits": [{"path": "src/shaders/cinematicPass.ts"}]}}',
   stopVisible: false,
   reactBusy: false,
+  geminiBusy: false,
   hasTurnActions: true,
   sawNewTurn: true,
   now: t0 + 1500,
@@ -113,8 +132,42 @@ const completeTurnState = {
 };
 assert.strictEqual(
   rt.evaluateTurnCompletionState(completeTurnState),
+  false,
+  "Tool call should hold turn open at 1500ms to allow multi-block rendering"
+);
+
+completeTurnState.now = t0 + 3100;
+assert.strictEqual(
+  rt.evaluateTurnCompletionState(completeTurnState),
   true,
-  "Completed JSON should complete normally once idle threshold is reached"
+  "Completed JSON should complete normally once 3000ms stability threshold is reached"
+);
+
+// Plain prose without tool calls completes at 1500ms
+const proseTurnState = {
+  text: "Here is the summary of changes.",
+  stopVisible: false,
+  reactBusy: false,
+  geminiBusy: false,
+  hasTurnActions: true,
+  sawNewTurn: true,
+  now: t0 + 1500,
+  lastTextChangeAt: t0,
+  lastThinkChangeAt: t0,
+  lastBusyAt: t0,
+};
+assert.strictEqual(
+  rt.evaluateTurnCompletionState(proseTurnState),
+  true,
+  "Plain prose should complete at 1400ms threshold"
+);
+
+// geminiBusy holds turn open even if text is stable
+proseTurnState.geminiBusy = true;
+assert.strictEqual(
+  rt.evaluateTurnCompletionState(proseTurnState),
+  false,
+  "geminiBusy must hold turn open"
 );
 
 // Fallback after 8s of sustained silence on incomplete JSON
@@ -132,6 +185,16 @@ assert.strictEqual(
   rt.isToolCallPayload('{"name": "apply_patch", "arguments": {"edits": [{"path": "src/shaders/cinematicPass.'),
   true,
   "In-flight streaming tool call should be recognized by isToolCallPayload"
+);
+assert.strictEqual(
+  rt.isToolCallPayload('{"name": "read_file",'),
+  true,
+  "Partial tool call header should be recognized by isToolCallPayload"
+);
+assert.strictEqual(
+  rt.isToolCallPayload('{"'),
+  true,
+  "Early opening brace-quote should be recognized by isToolCallPayload"
 );
 assert.strictEqual(
   rt.isToolCallPayload('Just regular prose without tool call'),
