@@ -250,12 +250,15 @@ _SCROLL_MOTION = re.compile(
 
 # Debugging, Bug Fixing, Optimization & Browser QA signals
 _FAILURE = re.compile(
-    r"\b(debug(?:ging)?|troubleshoot(?:ing)?|bugs?|buggy|glitch(?:es|y)?|jank(?:y)?|"
-    r"regressions?|crash(?:es|ing|ed)?|broken|broke|cooked|busted|fails?|failing|failures?|"
-    r"traceback|exceptions?|errors?|stack\s+trace|timed?\s+out|timeout|hang(?:s|ing)?|"
-    r"freez(?:e|es|ing)|unresponsive|stuck|infinite\s+loop|not\s+working|doesn['’]?t\s+work|"
-    r"won['’]?t\s+load|blank\s+screen|white\s+screen|hydration\s+error|console\s+error|"
-    r"500\s+error|404\s+error|cors\s+error|race\s+condition|memory\s+leak)\b",
+    r"\b(debug(?:ging)?|troubleshoot(?:ing)?|fix(?:ing)?\s+(?:the\s+)?(?:bug|glitch|regression|crash|error|failure|issue)|"
+    r"regressions?|crash(?:es|ing|ed)?|infinite\s+loop|memory\s+leak|"
+    r"traceback|stack\s+trace|timed?\s+out|timeout|hang(?:s|ing)?|"
+    r"freez(?:e|es|ing)|unresponsive|stuck\s+(?:on|at|in)?|"
+    r"not\s+working|doesn['’]?t\s+work|won['’]?t\s+load|blank\s+screen|white\s+screen|"
+    r"hydration\s+error|console\s+error|500\s+error|404\s+error|cors\s+error|race\s+condition|"
+    r"(?:test|build|assertion|script|step)\s+(?:fail(?:s|ed|ing)?|failure|error)|"
+    r"(?:fail(?:s|ed|ing)?|failure|error)\s+(?:in|on|with|at)\s+\S+|"
+    r"root\s+cause)\b",
     re.I,
 )
 _OPTIMIZATION = re.compile(
@@ -424,6 +427,13 @@ def analyze_prompt_skills(
     has_software = bool(_SOFTWARE.search(text))
     has_grill_git = bool(_GRILL_OR_GIT.search(text))
     has_live_docs = bool(_LIVE_DOCS_FRAMEWORKS.search(text))
+
+    is_pure_question = bool(
+        re.match(r"^\s*(?:what|why|how|explain|can|could|does|is|are|tell\s+me)\b", text, re.I)
+        and not re.search(r"\b(?:fix|debug|resolve|troubleshoot|repair|patch|solve|investigate|diagnose)\b", text, re.I)
+    )
+    if is_pure_question:
+        has_failure = False
 
     # Detect explicit anti-slop only prompt ("Unslop this page") vs full UI design
     explicit_unslop_only = (
@@ -640,9 +650,16 @@ def _fit_section_to_budget(heading: str, lines: List[str], budget: int) -> Tuple
         if len(ln) <= per_line_cap:
             condensed.append(ln)
         else:
-            head_n = int((per_line_cap - 3) * 0.62)
-            tail_n = max(16, per_line_cap - 3 - head_n)
-            condensed.append(ln[:head_n].rstrip() + " … " + ln[-tail_n:].lstrip())
+            # Bound line cleanly at sentence or word boundary, never slicing mid-word
+            sub = ln[:per_line_cap]
+            cut_idx = -1
+            for sep in (". ", "; ", ", ", " — ", " - ", " "):
+                idx = sub.rfind(sep)
+                if idx >= max(20, int(per_line_cap * 0.52)):
+                    cut_idx = idx
+                    break
+            clean_sub = sub[:cut_idx].rstrip() if cut_idx > 0 else sub.rstrip()
+            condensed.append(clean_sub + "…")
 
     out_lines: List[str] = []
     used = 0
@@ -651,7 +668,15 @@ def _fit_section_to_budget(heading: str, lines: List[str], budget: int) -> Tuple
         if used + need > avail:
             rem = avail - used - (1 if out_lines else 0)
             if rem >= 32:
-                out_lines.append(ln[: rem - 1].rstrip() + "…")
+                sub = ln[:rem]
+                cut_idx = -1
+                for sep in (". ", "; ", ", ", " "):
+                    idx = sub.rfind(sep)
+                    if idx >= max(16, int(rem * 0.50)):
+                        cut_idx = idx
+                        break
+                clean_sub = sub[:cut_idx].rstrip() if cut_idx > 0 else sub[: rem - 1].rstrip()
+                out_lines.append(clean_sub + "…")
             elif not out_lines:
                 out_lines.append(ln[: max(24, avail - 1)].rstrip() + "…")
             break
@@ -734,15 +759,20 @@ def _compress_markdown_losslessly(text: str, max_chars: int = 2400) -> str:
             break
 
     fitted_parts: List[str] = []
+    omitted_sections: List[str] = []
     any_trimmed = False
     for i, (h, lns, _, _) in enumerate(prepared):
         sec_str, was_trimmed = _fit_section_to_budget(h, lns, allocs.get(i, 160))
         if sec_str:
             fitted_parts.append(sec_str)
+        elif h and h != "Overview":
+            omitted_sections.append(h)
         if was_trimmed:
             any_trimmed = True
 
     result = "\n\n".join(fitted_parts).strip()
+    if omitted_sections:
+        result = f"{result}\n[Omitted sections: {', '.join(omitted_sections)}; call read_skill(name='...', section='<name>') for full text]"
     if any_trimmed and footer not in result:
         result = f"{result}\n{footer}"
     return result

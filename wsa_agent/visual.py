@@ -280,8 +280,55 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
         var cBf = ccs.backdropFilter || ccs.webkitBackdropFilter || 'none';
         if (cBf && cBf !== 'none') hasHBlur = true;
       }
-      if (maxA < 0.78 || (maxA < 0.90 && !hasHBlur)) {
-        headerBleeds.push(cssLabel(hdr) + ' (transparent sticky header bleeds scrolled content)');
+      // Opaque header cannot bleed
+      if (maxA >= 0.88) return;
+      // Design-intentional frosted glass with blur and non-zero background alpha is not a bleed
+      if (hasHBlur && maxA >= 0.18) return;
+
+      // Grounded collision check: test if actual scrolled/scrollable content lies behind the header rect
+      var sampleXs = [hr.left + hr.width * 0.25, hr.left + hr.width * 0.5, hr.left + hr.width * 0.75];
+      var sampleYs = [hr.top + hr.height * 0.35, hr.top + hr.height * 0.65];
+      var collidingEl = null;
+      for (var sxi = 0; sxi < sampleXs.length; sxi++) {
+        for (var syi = 0; syi < sampleYs.length; syi++) {
+          var px = sampleXs[sxi], py = sampleYs[syi];
+          if (px < 0 || px >= vw || py < 0 || py >= vh) continue;
+          var els = document.elementsFromPoint(px, py) || [];
+          for (var ei = 0; ei < els.length; ei++) {
+            var el = els[ei];
+            if (!el || el === hdr || hdr.contains(el)) continue;
+            var tname = (el.tagName || '').toLowerCase();
+            if (tname === 'html' || tname === 'body' || tname === 'canvas') continue;
+            var ecs = getComputedStyle(el);
+            // Fixed elements or elements inside a fixed container do not scroll under header
+            if (ecs.position === 'fixed') continue;
+            var isFixedParent = false;
+            var pNode = el.parentElement;
+            while (pNode && pNode !== document.body) {
+              if (getComputedStyle(pNode).position === 'fixed') { isFixedParent = true; break; }
+              pNode = pNode.parentElement;
+            }
+            if (isFixedParent) continue;
+            var elTxt = String(el.innerText || '').trim();
+            var elBg = parseRgba(ecs.backgroundColor);
+            if (elTxt.length > 0 || elBg[3] > 0.2) {
+              collidingEl = el;
+              break;
+            }
+          }
+          if (collidingEl) break;
+        }
+        if (collidingEl) break;
+      }
+      if (collidingEl) {
+        var cSel = cssLabel(collidingEl);
+        var cR = collidingEl.getBoundingClientRect();
+        var cTxt = String(collidingEl.innerText || '').slice(0, 20).replace(/\s+/g, ' ').trim();
+        var txtHint = cTxt ? (' "' + cTxt + '"') : '';
+        headerBleeds.push(
+          cssLabel(hdr) + ' (alpha=' + maxA.toFixed(2) + (hasHBlur ? '+blur' : '') +
+          ') bleeds scrolled ' + cSel + ' at (' + Math.round(cR.left) + ',' + Math.round(cR.top) + ')' + txtHint
+        );
       }
     });
   }
@@ -378,6 +425,21 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
     document.documentElement.appendChild(overlay);
   }
 
+  var glInfo = { renderer: 'none', vendor: 'none' };
+  try {
+    var cElem = document.querySelector('canvas') || document.createElement('canvas');
+    var gl = cElem.getContext('webgl2') || cElem.getContext('webgl');
+    if (gl) {
+      var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) {
+        glInfo.renderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || 'webgl');
+        glInfo.vendor = String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || '');
+      } else {
+        glInfo.renderer = String(gl.getParameter(gl.RENDERER) || 'webgl');
+      }
+    }
+  } catch(e) {}
+
   return {
     title: String(document.title || '').slice(0, 120),
     url: String(location.href || ''),
@@ -391,7 +453,13 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
     header_bleeds: headerBleeds.slice(0, 3),
     text_boxes: textBoxes.slice(0, 24),
     occluded_controls: occludedControls.slice(0, 8),
-    marks: marks
+    marks: marks,
+    gl_info: glInfo,
+    scroll_state: {
+      scrollY: Math.round(window.scrollY || 0),
+      scrollX: Math.round(window.scrollX || 0),
+      maxScrollY: Math.max(0, Math.round(sh - vh))
+    }
   };
 })"""
 
@@ -528,6 +596,7 @@ class _HeadlessCDPClient:
         self.console_errors: List[str] = []
         self.page_exceptions: List[str] = []
         self.failed_requests: List[str] = []
+        self.eval_results: List[Dict[str, Any]] = []
 
     def __enter__(self) -> "_HeadlessCDPClient":
         try:
@@ -788,6 +857,27 @@ class _HeadlessCDPClient:
             })
             self.drain_events(100)
 
+    def freeze_page_animations(self) -> None:
+        """Pause Web Animations API and freeze CSS keyframes to eliminate animation diff noise."""
+        freeze_js = """(function() {
+            try {
+                if (typeof document.getAnimations === "function") {
+                    document.getAnimations().forEach(function(anim) {
+                        try { anim.pause(); } catch(e) {}
+                    });
+                }
+                var st = document.createElement("style");
+                st.id = "__wsa_freeze_anim__";
+                st.textContent = "* { animation-play-state: paused !important; }";
+                (document.head || document.documentElement).appendChild(st);
+                return true;
+            } catch(e) { return false; }
+        })()"""
+        try:
+            self.evaluate(freeze_js)
+        except Exception:
+            pass
+
     def evaluate(self, expression: str) -> Any:
         res = self.call("Runtime.evaluate", {
             "expression": expression,
@@ -997,6 +1087,66 @@ class _HeadlessCDPClient:
                     log_lines.append(f"type({selector or 'focused'})")
                 else:
                     log_lines.append(f"type({selector or 'focused'}) [no text]")
+            elif kind in ("eval", "evaluate", "js"):
+                expr = str(act.get("expression") or act.get("expr") or act.get("code") or "").strip()
+                if expr:
+                    try:
+                        eval_res = self.evaluate(f"(function() {{ try {{ return ({expr}); }} catch (e) {{ return 'ERROR: ' + e.message; }} }})()")
+                        log_lines.append(f"eval({expr[:28]}) -> {json.dumps(eval_res, default=str)[:64]}")
+                        self.eval_results.append({"expression": expr, "result": eval_res})
+                    except Exception as exc:
+                        log_lines.append(f"eval({expr[:28]}) -> error: {exc}")
+                        self.eval_results.append({"expression": expr, "error": str(exc)})
+            elif kind in ("read_state", "state"):
+                state_js = """(function() {
+                    return {
+                        title: String(document.title || ''),
+                        url: String(location.href || ''),
+                        scrollY: Math.round(window.scrollY || 0),
+                        scrollX: Math.round(window.scrollX || 0),
+                        maxScrollY: Math.max(0, Math.round(document.documentElement.scrollHeight - window.innerHeight)),
+                        activeElement: document.activeElement ? (document.activeElement.tagName + (document.activeElement.id ? '#' + document.activeElement.id : '')) : null,
+                        readyState: document.readyState
+                    };
+                })()"""
+                try:
+                    st_val = self.evaluate(state_js)
+                    log_lines.append(f"read_state(scrollY={st_val.get('scrollY')}/{st_val.get('maxScrollY')}px)")
+                    self.eval_results.append({"action": "read_state", "result": st_val})
+                except Exception as exc:
+                    log_lines.append(f"read_state -> error: {exc}")
+            elif kind in ("wait_frames", "wait_frame"):
+                n_frames = max(1, min(int(act.get("frames") or act.get("n") or 30), 120))
+                wait_js = f"""new Promise(function(resolve) {{
+                    var count = 0;
+                    function tick() {{
+                        count++;
+                        if (count >= {n_frames}) resolve(count);
+                        else requestAnimationFrame(tick);
+                    }}
+                    requestAnimationFrame(tick);
+                }})"""
+                try:
+                    self.evaluate(wait_js)
+                    log_lines.append(f"wait_frames({n_frames})")
+                except Exception:
+                    self.drain_events(min(2000, n_frames * 16))
+                    log_lines.append(f"wait_frames({n_frames}) [fallback]")
+            elif kind in ("wait_idle", "idle"):
+                timeout_ms = max(100, min(int(act.get("timeout_ms") or act.get("ms") or 1500), 5000))
+                idle_js = f"""new Promise(function(resolve) {{
+                    if (typeof requestIdleCallback === "function") {{
+                        requestIdleCallback(function() {{ resolve(true); }}, {{ timeout: {timeout_ms} }});
+                    }} else {{
+                        setTimeout(function() {{ resolve(true); }}, 200);
+                    }}
+                }})"""
+                try:
+                    self.evaluate(idle_js)
+                    log_lines.append(f"wait_idle({timeout_ms}ms)")
+                except Exception:
+                    self.drain_events(250)
+                    log_lines.append(f"wait_idle({timeout_ms}ms) [fallback]")
             else:
                 log_lines.append(f"action({kind}) [unrecognized action kind]")
         return log_lines
@@ -1388,6 +1538,9 @@ def capture_visual_inspection(
     disable_webgl: bool = False,
     wait_ms: int = 500,
     browser_bin: Optional[str] = None,
+    accepted_flags: Optional[List[str]] = None,
+    freeze_animations: bool = True,
+    baseline_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Capture a multi-viewport grounded visual inspection contact sheet + telemetry in total background isolation."""
     exe = browser_bin or find_chromium_binary()
@@ -1405,9 +1558,10 @@ def capture_visual_inspection(
     primary_png: Optional[bytes] = None
     action_log: List[str] = []
     diff_pct: Optional[float] = None
+    eval_results: List[Dict[str, Any]] = []
 
     def _run_with_url(target_url: str) -> Dict[str, Any]:
-        nonlocal primary_png, action_log, diff_pct
+        nonlocal primary_png, action_log, diff_pct, eval_results
         with _HeadlessCDPClient(exe, disable_webgl=disable_webgl) as cdp:
             if color_scheme in ("dark", "light"):
                 cdp.set_color_scheme(color_scheme)
@@ -1421,8 +1575,12 @@ def capture_visual_inspection(
                 if idx == 0:
                     primary_viewport = (vw, vh, is_mobile)
                     cdp.navigate(target_url, wait_ms=wait_ms)
+                    if freeze_animations:
+                        cdp.freeze_page_animations()
                 else:
                     cdp.drain_events(250)
+                    if freeze_animations:
+                        cdp.freeze_page_animations()
 
                 want_som = bool(annotate and idx == 0)
                 audit = cdp.evaluate(f"{_AUDIT_AND_SOM_JS}({json.dumps(want_som)}, 24, {int(vw)})") or {}
@@ -1466,12 +1624,15 @@ def capture_visual_inspection(
                     "height": vh,
                     "audit": audit,
                     "pixels": pix,
+                    "scroll_state": audit.get("scroll_state"),
+                    "webgl_renderer": (audit.get("gl_info") or {}).get("renderer"),
                 })
 
             if actions:
                 width, height, mobile = primary_viewport
                 cdp.set_viewport(width, height, mobile=mobile)
                 action_log = cdp.run_actions(actions)
+                eval_results = list(getattr(cdp, "eval_results", []))
                 after_png = cdp.screenshot_png(full_page=False)
                 tiles.append(("AFTER INTERACTION", after_png))
 
@@ -1483,8 +1644,15 @@ def capture_visual_inspection(
             failed_requests = list(cdp.failed_requests)
 
         if primary_png is not None:
-            baseline = (Path(project_root).resolve(), cache_key, primary_viewport,
-                        color_scheme, bool(full_page), bool(disable_webgl))
+            baseline = (
+                Path(project_root).resolve(),
+                cache_key,
+                str(baseline_name or "default"),
+                primary_viewport,
+                color_scheme,
+                bool(full_page),
+                bool(disable_webgl),
+            )
             with _PREVIOUS_CAPTURES_LOCK:
                 prev_png = _PREVIOUS_CAPTURES.pop(baseline, None)
                 _PREVIOUS_CAPTURES[baseline] = primary_png
@@ -1496,6 +1664,26 @@ def capture_visual_inspection(
                     diff_pct = pct
                     if include_diff and len(tiles) < 4:
                         tiles.append((f"PIXEL DIFF ({pct:.1f}% changed)", diff_bytes))
+
+        # Save individual native-resolution viewport images to disk so detail is never lost
+        individual_images: List[Dict[str, Any]] = []
+        try:
+            shots_dir = Path(tempfile.gettempdir()) / "wsa_browser_shots"
+            shots_dir.mkdir(parents=True, exist_ok=True)
+            ts = int(time.time() * 1000)
+            for (lbl, p_bytes) in tiles:
+                if not p_bytes:
+                    continue
+                clean_lbl = re.sub(r"[^a-zA-Z0-9_-]+", "_", lbl.lower()).strip("_")
+                shot_path = shots_dir / f"visual_{clean_lbl}_{ts}.png"
+                shot_path.write_bytes(p_bytes)
+                individual_images.append({
+                    "label": lbl,
+                    "path": str(shot_path),
+                    "size_kb": max(1, len(p_bytes) // 1024),
+                })
+        except Exception:
+            pass
 
         sheet_bytes, sheet_mime, sheet_w, sheet_h = compose_contact_sheet(tiles)
         return {
@@ -1509,6 +1697,9 @@ def capture_visual_inspection(
             "tiles": [lbl for (lbl, _) in tiles],
             "viewports": viewport_reports,
             "actions": action_log,
+            "eval_results": eval_results,
+            "individual_images": individual_images,
+            "accepted_flags": accepted_flags or [],
             "diff_pct": diff_pct,
             "console_errors": console_errors,
             "suppressed_webgl_notices": suppressed_webgl_notices,
@@ -1526,16 +1717,30 @@ def capture_visual_inspection(
         return {"ok": False, "error": f"Headless visual capture failed: {type(exc).__name__}: {exc}"}
 
 
-def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> str:
+def format_visual_report(
+    res: Dict[str, Any],
+    saved_path_summary: str = "",
+    accepted_flags: Optional[List[str]] = None,
+) -> str:
     """Format compact, deterministic visual telemetry + Set-of-Mark legend for the coding agent."""
     if not res or not res.get("ok"):
         return f"[Error] {res.get('error', 'Visual inspection failed')}"
+
+    accepted_set = set(str(f).upper().strip() for f in (accepted_flags or res.get("accepted_flags") or []))
 
     lines: List[str] = [
         f"[OK] Visual capture attached ({', '.join(res.get('tiles') or [])}) -> {saved_path_summary or 'queued'}"
     ]
     if res.get("actions"):
         lines.append(f"Actions executed: {', '.join(res['actions'])}")
+    if res.get("eval_results"):
+        lines.append("Page evaluation / state results:")
+        for ev in res["eval_results"]:
+            if "expression" in ev:
+                lines.append(f"  eval({ev['expression']}) -> {json.dumps(ev.get('result', ev.get('error')), default=str)}")
+            elif "action" in ev:
+                st = ev.get("result") or {}
+                lines.append(f"  state -> scrollY={st.get('scrollY')}/{st.get('maxScrollY')}px, active={st.get('activeElement')}, title={json.dumps(st.get('title'))}")
     if res.get("diff_pct") is not None:
         lines.append(f"Pixel diff vs previous capture: {res['diff_pct']:.2f}% pixels changed")
 
@@ -1549,28 +1754,47 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
         status_flags = []
         if not audit or not pix.get("ok"):
             status_flags.append("INCOMPLETE_CAPTURE")
+            passed = False
         if ovx > 0:
-            status_flags.append(f"OVERFLOW_X=+{ovx}px")
+            if "OVERFLOW_X" in accepted_set:
+                status_flags.append(f"OVERFLOW_X=+{ovx}px (accepted)")
+            else:
+                status_flags.append(f"OVERFLOW_X=+{ovx}px")
+                passed = False
         if pix.get("blank"):
             status_flags.append("WARNING: BLANK/UNIFORM RENDER")
+            passed = False
         if audit.get("broken_images"):
             status_flags.append(f"BROKEN_IMAGES={len(audit['broken_images'])}")
+            passed = False
         if audit.get("occluded_controls"):
             status_flags.append(f"OCCLUDED={len(audit['occluded_controls'])}")
+            passed = False
         if audit.get("clipped_texts"):
             status_flags.append(f"CLIPPED_TEXT={len(audit['clipped_texts'])}")
+            passed = False
         if audit.get("low_contrast_texts"):
-            status_flags.append(f"LOW_CONTRAST={len(audit['low_contrast_texts'])}")
+            if "LOW_CONTRAST" in accepted_set:
+                status_flags.append(f"LOW_CONTRAST={len(audit['low_contrast_texts'])} (accepted)")
+            else:
+                status_flags.append(f"LOW_CONTRAST={len(audit['low_contrast_texts'])}")
+                passed = False
         if audit.get("header_bleeds"):
-            status_flags.append(f"HEADER_BLEED={len(audit['header_bleeds'])}")
+            if "HEADER_BLEED" in accepted_set or "HEADER_BLEEDS" in accepted_set:
+                status_flags.append(f"HEADER_BLEED={len(audit['header_bleeds'])} (accepted)")
+            else:
+                status_flags.append(f"HEADER_BLEED={len(audit['header_bleeds'])}")
+                passed = False
         if audit.get("canvas_palette_warnings"):
             status_flags.append("CANVAS_PALETTE_MISMATCH")
-        if status_flags:
             passed = False
         flag_str = " | ".join(status_flags) if status_flags else "layout clean"
+        sc_info = vp.get("scroll_state") or (audit.get("scroll_state") if isinstance(audit, dict) else None)
+        sc_tag = f", scrollY={sc_info.get('scrollY')}/{sc_info.get('maxScrollY')}px" if sc_info else ""
+        gl_tag = f", gl={vp.get('webgl_renderer')}" if vp.get("webgl_renderer") else ""
         lines.append(
             f"Viewport [{vname} {vw}x{vh}]: {flag_str} "
-            f"(luma_std={pix.get('std_luma')}, colors={pix.get('unique_buckets')})"
+            f"(luma_std={pix.get('std_luma')}, colors={pix.get('unique_buckets')}{sc_tag}{gl_tag})"
         )
         if audit.get("canvases"):
             c_desc = ", ".join(
@@ -1596,6 +1820,13 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
                 occ = " [OCCLUDED]" if m.get("occluded") else ""
                 txt = f' "{m["text"]}"' if m.get("text") else ""
                 lines.append(f"    [{m['id']}] {m['selector']} ({m['x']},{m['y']} {m['w']}x{m['h']}){txt}{occ}")
+            if len(marks) > 16:
+                lines.append(f"    ... (+{len(marks) - 16} more interactive elements mapped)")
+
+    if res.get("individual_images") and len(res["individual_images"]) > 1:
+        lines.append("Individual unscaled viewport captures:")
+        for im_info in res["individual_images"][:4]:
+            lines.append(f"  - {im_info.get('label')}: {im_info.get('path')} ({im_info.get('size_kb')} KB)")
 
     errs = list(res.get("console_errors") or []) + list(res.get("page_exceptions") or [])
     if errs:
@@ -1613,4 +1844,5 @@ def format_visual_report(res: Dict[str, Any], saved_path_summary: str = "") -> s
     if suppressed:
         lines.append(f"WebGL-Disabled Fallback Notices: {len(suppressed)} expected context-creation log(s) suppressed")
     lines.append("Visual checks: pass" if passed else "Visual checks: fail")
+    return "\n".join(lines)
     return "\n".join(lines)

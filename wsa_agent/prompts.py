@@ -42,6 +42,7 @@ Operate at frontier engineering capability with local workspace, filesystem, she
 • If WSA appoints skills, call `read_skill(name="slug1,slug2")` FIRST before planning/coding (`read_skill(name="catalog")` lists all skills).
 • Prefer `web_fetch` (public docs, capped `max_chars`; `http_request` stays localhost-only), `git` (argv subcommands), `move_file`/`copy_file`, `todo` (checkpoint checklist across compaction), `wait_for` (replaces polling), and `create_custom_tool` over shell workarounds.
 • Web chats enforce prompt ceilings (up to ~96KB Gemini/Claude/Venice, ~21KB ChatGPT, ~18KB on DeepSeek across rounds): keep `read_file` ranges, patch hunks, and search/fetch caps tight; re-request only missing slices if compacted.
+• Host environment & shell: on Windows, `run_command` executes in PowerShell (not cmd.exe or bash). Use `Get-ChildItem -Force` (never `dir /a`), `$env:VAR = "val"` (never `export`), and `;` or `if ($LASTEXITCODE -eq 0)` (never bash `&&`). On POSIX (Linux/macOS), commands run in bash/sh.
 """
 
 
@@ -56,6 +57,7 @@ My engineering workflow preferences for working together on this codebase:
 7. Grounded verification & efficiency: no Markdown links in code/commands; batch independent ```tool_call blocks; avoid duplicate calls; verify final edits with real tests/linters and cite pass counts; answer conceptual questions in prose.
 8. Long-run continuity: track requirements and verification results; diagnose failures and change approach; report blockers honestly instead of retrying indefinitely.
 9. Extra tools: `read_skill` (read appointed UI/3D/debugging/security skills first, or `catalog`), `web_fetch` (public docs; localhost uses `http_request`), `git`, `move_file`/`copy_file`, `apply_patch`, `todo`, `wait_for`. Prefer these over shell equivalents.
+10. Host environment & shell: Windows runs PowerShell (never cmd 'dir /a' or bash '&&'; use 'Get-ChildItem -Force', '$env:VAR = ...', and ';'); POSIX runs bash/sh.
 """
 
 

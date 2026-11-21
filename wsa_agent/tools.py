@@ -159,7 +159,6 @@ IGNORE_FILES_PATTERNS = {
     "*-journal", "*-wal", "*-shm",
     "*.lock", "*.log", "*.min.js", "*.min.css", "*.map", "*.tsbuildinfo", "*.wasm",
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
-    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.ico",
     "*.woff", "*.woff2", "*.ttf", "*.eot", "*.otf",
     "*.mp4", "*.mp3", "*.wav",
     "*.zip", "*.tar", "*.gz", "*.7z", "*.rar",
@@ -717,13 +716,16 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "target":        {"type": "string",  "description": "Local HTML/SVG path, workspace dir (serving index.html), or http(s) URL (default: 'index.html')"},
                     "viewports":     {"type": "array",   "description": "Optional viewport list (defaults to full desktop laptop 1440x900). Pass extra viewports only when specifically checking mobile/tablet, e.g. [{\"name\":\"desktop\",\"width\":1440,\"height\":900}, {\"name\":\"mobile\",\"width\":390,\"height\":844,\"mobile\":true}]"},
-                    "actions":       {"type": "array",   "description": "Optional interactions before interactive tile: click, hover, scroll, drag (for 3D/canvas), type, wait"},
-                    "annotate":      {"type": "boolean", "description": "Overlay Set-of-Mark [1][2][3] element badges on primary tile (default: false for clean captures)"},
-                    "full_page":     {"type": "boolean", "description": "Capture full scroll height on primary tile (default: false)"},
-                    "include_diff":  {"type": "boolean", "description": "Include pixel-diff heatmap tile vs previous capture (default: false for clean captures)"},
-                    "color_scheme":  {"type": "string",  "description": "Optional CSS prefers-color-scheme emulation: 'dark' or 'light'"},
-                    "disable_webgl": {"type": "boolean", "description": "Disable WebGL to test 2D/poster fallback rendering (default: false)"},
-                    "wait_ms":       {"type": "integer", "description": "Settle delay in ms after page load (default: 500)"},
+                    "actions":           {"type": "array",   "description": "Optional interactions: click, hover, scroll, drag, type, wait, eval ({'type':'eval','expression':'window.scrollY'}), read_state ({'type':'read_state'}), wait_frames ({'type':'wait_frames','frames':30}), wait_idle ({'type':'wait_idle'})"},
+                    "annotate":          {"type": "boolean", "description": "Overlay Set-of-Mark [1][2][3] element badges on primary tile (default: false for clean captures)"},
+                    "full_page":         {"type": "boolean", "description": "Capture full scroll height on primary tile (default: false)"},
+                    "include_diff":      {"type": "boolean", "description": "Include pixel-diff heatmap tile vs previous capture (default: false for clean captures)"},
+                    "color_scheme":      {"type": "string",  "description": "Optional CSS prefers-color-scheme emulation: 'dark' or 'light'"},
+                    "disable_webgl":     {"type": "boolean", "description": "Disable WebGL to test 2D/poster fallback rendering (default: false)"},
+                    "wait_ms":           {"type": "integer", "description": "Settle delay in ms after page load (default: 500)"},
+                    "accepted_flags":    {"type": "array",   "description": "Optional defect flag names to accept/suppress (e.g. ['HEADER_BLEED']) so intentional designs pass audits"},
+                    "freeze_animations": {"type": "boolean", "description": "Pause CSS keyframes and Web Animations to eliminate diff animation noise (default: true)"},
+                    "baseline_name":     {"type": "string",  "description": "Optional named baseline to compare diff against (default: auto)"},
                 },
                 "required": [],
             },
@@ -734,12 +736,12 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "run_command",
             "description": (
-                "Run a shell command or direct argv array in project root; use run_python for multi-line Python."
+                "Run a native shell command (PowerShell on Windows, sh on POSIX) or direct argv array in project root. On Windows PowerShell, use ';' or 'if ($LASTEXITCODE -eq 0)' rather than bash '&&', and 'Get-ChildItem -Force' rather than cmd 'dir /a'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Native shell command to execute (omit when passing argv)"},
+                    "command": {"type": "string", "description": "Native shell command to execute in PowerShell (Windows) or sh (POSIX). Omit when passing argv"},
                     "argv":    {"type": "array", "items": {"type": "string"}, "description": "Direct [exe, ...args] list bypassing shell quoting"},
                     "cwd":     {"type": "string", "description": "Optional working directory relative to project root"},
                     "timeout": {"type": "integer", "description": "Timeout in seconds (default: 120, max: 600)"},
@@ -2679,7 +2681,7 @@ def _contains_lazy_placeholder(path: str, content: str) -> Optional[str]:
     )
 
 
-def _unified_diff_preview(path: str, old_text: str, new_text: str, max_lines: int = 44) -> str:
+def _unified_diff_preview(path: str, old_text: str, new_text: str, max_lines: int = 120) -> str:
     """Build a bounded unified diff for review and TUI inline diff display."""
     diff_lines = list(difflib.unified_diff(
         old_text.splitlines(keepends=False),
@@ -2690,7 +2692,7 @@ def _unified_diff_preview(path: str, old_text: str, new_text: str, max_lines: in
         n=2,
     ))
     if len(diff_lines) > max_lines:
-        diff_lines = diff_lines[: max_lines - 2] + ["... (diff truncated)"]
+        diff_lines = diff_lines[: max_lines - 2] + [f"... (diff preview capped at {max_lines} lines)"]
     return "\n".join(diff_lines) if diff_lines else "(no changes)"
 
 
@@ -2918,6 +2920,9 @@ def _patch_file_unlocked(
                         f"[Error] Hunk {i+1} ambiguous inside lines {s_idx+1}-{e_idx}: matches {count} locations. "
                         "Narrow start_line/end_line or add context lines."
                     )
+                m_pos = region.find(matched)
+                h_line = prefix.count("\n") + region[:m_pos].count("\n") + 1
+                h_end_line = h_line + matched.count("\n")
                 working = prefix + region.replace(matched, new, 1) + suffix
                 line_delta += new.count("\n") - matched.count("\n")
             else:
@@ -2933,9 +2938,14 @@ def _patch_file_unlocked(
                         f"[Error] Hunk {i+1} ambiguous: old matches {count} locations in {path} "
                         f"(at lines {', '.join(match_lines)}). Add 3-5 surrounding context lines."
                     )
+                m_pos = working.find(matched)
+                h_line = working[:m_pos].count("\n") + 1
+                h_end_line = h_line + matched.count("\n")
                 working = working.replace(matched, new, 1)
                 line_delta += new.count("\n") - matched.count("\n")
-            results.append(f"  Hunk {i+1}: OK")
+            delta_lines = new.count("\n") - matched.count("\n")
+            delta_tag = f"+{delta_lines}" if delta_lines >= 0 else f"{delta_lines}"
+            results.append(f"  Hunk {i+1} (L{h_line}-L{h_end_line}): OK ({delta_tag} lines)")
         syntax_err = _validate_code_content(path, working)
         if syntax_err:
             return syntax_err
@@ -4813,6 +4823,23 @@ def _refresh_bg_entry_locked(entry: Dict[str, Any]) -> Optional[int]:
     return rc
 
 
+def _clean_powershell_clixml(text: str) -> str:
+    """Extract human-readable error/warning messages from PowerShell CLIXML stream noise."""
+    if "#< CLIXML" not in text and "<Objs Version=" not in text:
+        return text
+    extracted: List[str] = []
+    for line in text.splitlines():
+        if line.startswith("#< CLIXML") or "<Objs Version=" in line or line.startswith("</Objs>") or line.startswith("<Obj ") or line.startswith("</Obj>"):
+            continue
+        m = re.search(r'<S S="(?:Error|Warning|Verbose|Debug)">(.*?)</S>', line)
+        if m:
+            val = m.group(1).replace("_x000D__x000A_", "\n").replace("_x000A_", "\n").replace("_x000D_", "").replace("_x001B_", "\x1b")
+            extracted.append(val.strip())
+        elif not line.strip().startswith("<") and not line.strip().endswith(">"):
+            extracted.append(line)
+    return "\n".join(l for l in extracted if l).strip()
+
+
 def _tail_log_file(path: Path, max_lines: int = 15, max_chars: int = 2400) -> str:
     if not path or not path.is_file():
         return ""
@@ -4824,7 +4851,7 @@ def _tail_log_file(path: Path, max_lines: int = 15, max_chars: int = 2400) -> st
             raw = stream.read(64_000).decode("utf-8", errors="replace")
     except OSError:
         return ""
-    clean = _ANSI_ESCAPE_RE.sub("", raw).strip()
+    clean = _clean_powershell_clixml(_ANSI_ESCAPE_RE.sub("", raw).strip())
     if not clean:
         return ""
     lines = clean.splitlines()
@@ -6247,6 +6274,9 @@ def _visual_inspect(
     color_scheme: str = "",
     disable_webgl: bool = False,
     wait_ms: int = 500,
+    accepted_flags: Optional[List[str]] = None,
+    freeze_animations: bool = True,
+    baseline_name: Optional[str] = None,
 ) -> str:
     """Headless CDP visual inspection tool: zero focus stealing, 2x2 contact sheet + Set-of-Mark + telemetry."""
     from .visual import capture_visual_inspection, format_visual_report
@@ -6271,9 +6301,12 @@ def _visual_inspect(
         color_scheme=str(color_scheme or ""),
         disable_webgl=bool(disable_webgl),
         wait_ms=max(0, min(int(wait_ms or 500), 8000)),
+        accepted_flags=accepted_flags,
+        freeze_animations=bool(freeze_animations),
+        baseline_name=baseline_name,
     )
     if not res.get("ok"):
-        return format_visual_report(res)
+        return format_visual_report(res, accepted_flags=accepted_flags)
 
     saved_desc = _queue_visual_bytes(
         res.get("image_bytes") or b"",
@@ -6284,4 +6317,4 @@ def _visual_inspect(
     )
     if not saved_desc:
         return "[Error] Visual capture could not be attached (empty or over the image size limit)."
-    return format_visual_report(res, saved_path_summary=saved_desc)
+    return format_visual_report(res, saved_path_summary=saved_desc, accepted_flags=accepted_flags)

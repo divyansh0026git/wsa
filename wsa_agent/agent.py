@@ -152,6 +152,10 @@ def _compact_head_tail_with_lines(content: str, head_n: int = 15, tail_n: int = 
     range_desc = _describe_omitted_lines(lines, omit_start, omit_end)
     preview = "\n".join(lines[:head_n])
     tail = "\n".join(lines[-tail_n:])
+    if not call_hint and "file lines " in range_desc:
+        m = re.search(r"file lines (\d+)-(\d+)", range_desc)
+        if m:
+            call_hint = f"call read_file with start_line={m.group(1)}, end_line={m.group(2)} to re-read"
     suffix = f". {call_hint}" if call_hint else ""
     return (
         f"{preview}\n"
@@ -4754,8 +4758,8 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
                 model=state.model,
                 use_tools=False,
                 session_id=f"{state.session_id}:role:workflow_router",
-                chat_url=None,
-                new_chat=True,
+                chat_url=active_url or None,
+                new_chat=False,
             )
             if sr is not None:
                 stream_kwargs["on_thinking"] = sr.feed_thinking
@@ -4773,6 +4777,10 @@ def _judge_workflow(user_input: str, state: SessionState, client: WSAClient, fal
                 c_url = str(um.get("chat_url") or "")
                 if c_url and is_provider_thread_url(c_url):
                     state._router_chat_url = c_url
+                    if not getattr(state, "active_chat_url", ""):
+                        state.active_chat_url = c_url
+                        if hasattr(state, "chat_urls") and isinstance(state.chat_urls, dict):
+                            state.chat_urls[state.model] = c_url
             raw = str(response.get("content") or "").strip()
             thinking = str(response.get("thinking") or "").strip()
             decision = _parse_workflow_decision(raw)
