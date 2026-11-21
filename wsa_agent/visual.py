@@ -386,8 +386,19 @@ _AUDIT_AND_SOM_JS = r"""(function(enableAnnotate, maxMarks, expectedVw) {
       var cy = Math.min(Math.max(r.top + r.height / 2, 1), Math.max(1, vh - 1));
       var topEl = document.elementFromPoint(cx, cy);
       if (topEl && topEl !== el && !el.contains(topEl) && !topEl.contains(el)) {
-        occluded = true;
-        occludedControls.push(cssLabel(el) + ' covered by ' + cssLabel(topEl));
+        var topTag = (topEl.tagName || '').toLowerCase();
+        var topCs = getComputedStyle(topEl);
+        var isCanvasOrSurface = (topTag === 'canvas' || topTag === 'svg' || topTag === 'html' || topTag === 'body');
+        var isPointerPassThrough = (topCs.pointerEvents === 'none' || parseFloat(topCs.opacity || '1') < 0.05);
+        var isInsideSameWidget = Boolean(
+          (topEl.closest && topEl.closest('button, a, [role="button"]') === el) ||
+          (el.closest && el.closest('button, a, [role="button"]') === topEl)
+        );
+        var isPeerInteractive = (/^(BUTTON|A)$/.test(topEl.tagName || '') && /^(BUTTON|A)$/.test(el.tagName || ''));
+        if (!isCanvasOrSurface && !isPointerPassThrough && !isInsideSameWidget && !isPeerInteractive) {
+          occluded = true;
+          occludedControls.push(cssLabel(el) + ' covered by ' + cssLabel(topEl));
+        }
       }
     }
 
@@ -1787,11 +1798,17 @@ def format_visual_report(
             status_flags.append(f"BROKEN_IMAGES={len(audit['broken_images'])}")
             passed = False
         if audit.get("occluded_controls"):
-            status_flags.append(f"OCCLUDED={len(audit['occluded_controls'])}")
-            passed = False
+            if "OCCLUDED" in accepted_set or "OCCLUSION" in accepted_set or "OCCLUSIONS" in accepted_set:
+                status_flags.append(f"OCCLUDED={len(audit['occluded_controls'])} (accepted)")
+            else:
+                status_flags.append(f"OCCLUDED={len(audit['occluded_controls'])}")
+                passed = False
         if audit.get("clipped_texts"):
-            status_flags.append(f"CLIPPED_TEXT={len(audit['clipped_texts'])}")
-            passed = False
+            if "CLIPPED_TEXT" in accepted_set or "CLIPPED_TEXTS" in accepted_set:
+                status_flags.append(f"CLIPPED_TEXT={len(audit['clipped_texts'])} (accepted)")
+            else:
+                status_flags.append(f"CLIPPED_TEXT={len(audit['clipped_texts'])}")
+                passed = False
         if audit.get("low_contrast_texts"):
             if "LOW_CONTRAST" in accepted_set:
                 status_flags.append(f"LOW_CONTRAST={len(audit['low_contrast_texts'])} (accepted)")

@@ -888,7 +888,7 @@ def messages_to_prompt(messages: list, tools: list = None, provider: str = "gemi
                     t_name = str(msg.get("name", "") or "tool")
                     raw_c = str(content)
                     if len(raw_c) > 1200:
-                        safe_content = f"[{t_name} output ({len(raw_c):,} chars completed in earlier turn; files remain on disk)]"
+                        safe_content = f"[{t_name} output ({len(raw_c):,} chars completed in earlier turn; earlier carried-over output trimmed cleanly; files remain on disk)]"
                     else:
                         safe_content = _sanitize_claude_tool_result(_escape_tool_fences(raw_c))
                     prior_entries.append((i, "tool", f"Earlier local output returned by my `wsa` CLI for `{t_name}`:\n{safe_content}"))

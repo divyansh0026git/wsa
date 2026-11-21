@@ -1851,12 +1851,12 @@ def _format_tool_header(name: str, args: Optional[dict]) -> tuple[str, str]:
 
 
 def print_tool_call(name: str, args: Optional[dict] = None) -> None:
-    """Render tool invocation as a crisp Claude Code bullet: ● Verb(arg)."""
+    """Render tool invocation as a crisp bullet: ● Verb(arg) with green status indicator."""
     sync_theme()
     verb, arg_preview = _format_tool_header(name, args)
     t = Text()
     t.append("  ")
-    t.append("● ", style=Theme.ACCENT)
+    t.append("● ", style=Theme.TOOL_OK)
     t.append(verb, style=f"bold {Theme.PRIMARY}")
     if arg_preview:
         t.append("(", style=Theme.DIM)
@@ -1880,7 +1880,7 @@ def _render_diff_tree(lines: list[str], dur: str) -> bool:
         return False
 
     header = re.sub(r"^\[OK\]\s*", "", lines[0].strip()) if lines else "Updated"
-    _print_tree_line(f"{header}{dur}", style=Theme.SECONDARY, first=True)
+    _print_tree_line(f"{header}{dur}", style=Theme.TOOL_OK, first=True)
     max_diff = 10
     for dline in diff_lines[:max_diff]:
         if dline.startswith("+"):
@@ -2034,12 +2034,14 @@ def print_tool_result(
     clip = lambda s: (s[: max_w - 1].rstrip() + "…") if len(s) > max_w else s
 
     if len(filtered) <= 6:
-        _print_tree_line(f"{clip(filtered[0])}{dur}", style=Theme.SECONDARY, first=True)
+        first_style = Theme.TOOL_OK if any(filtered[0].startswith(p) for p in ("[OK]", "OK", "Success", "tsc=0", "Port", "Done", "Listening:")) else Theme.SECONDARY
+        _print_tree_line(f"{clip(filtered[0])}{dur}", style=first_style, first=True)
         for ln in filtered[1:]:
             _print_tree_line(clip(ln), style=Theme.SECONDARY)
         return
 
-    _print_tree_line(f"{clip(filtered[0])}{dur}", style=Theme.SECONDARY, first=True)
+    first_style = Theme.TOOL_OK if any(filtered[0].startswith(p) for p in ("[OK]", "OK", "Success", "tsc=0", "Port", "Done", "Listening:")) else Theme.SECONDARY
+    _print_tree_line(f"{clip(filtered[0])}{dur}", style=first_style, first=True)
     _print_tree_line(clip(filtered[1]), style=Theme.SECONDARY)
     omitted = len(filtered) - 5
     _print_tree_line(f"… ({omitted} more lines)", style=Theme.DIM)
@@ -2430,7 +2432,7 @@ def print_subagent_event(stage_label: str, kind: str, payload: dict) -> None:
         verb, preview = _format_tool_header(tname, payload.get("args") or {})
         t = Text()
         t.append("  ")
-        t.append("● ", style=Theme.ACCENT)
+        t.append("● ", style=Theme.TOOL_OK)
         if stage_label:
             t.append(f"{sanitize_surrogates(str(stage_label))} ", style=Theme.INFO)
         t.append(verb, style=f"bold {Theme.PRIMARY}")
