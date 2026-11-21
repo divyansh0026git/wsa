@@ -212,6 +212,46 @@ function parseAuthUserFromUrl(url) {
   }
 }
 
+function hasIncompleteStreamText(text) {
+  if (!text || typeof text !== "string") return false;
+  // 1. Unclosed code blocks (odd number of ``` or ```` fences)
+  const codeFences = (text.match(/`{3,}/g) || []).length;
+  if (codeFences % 2 !== 0) return true;
+
+  // 2. Trailing unclosed JSON tool calls (e.g. {"name": "apply_patch", "arguments": ...)
+  const trimmed = text.trim();
+  const toolCallStart = trimmed.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/);
+  if (toolCallStart !== -1) {
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = toolCallStart; i < trimmed.length; i++) {
+      const c = trimmed[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (c === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (c === "{") braceDepth++;
+        else if (c === "}") braceDepth--;
+        else if (c === "[") bracketDepth++;
+        else if (c === "]") bracketDepth--;
+      }
+    }
+    if (braceDepth > 0 || bracketDepth > 0 || inString) return true;
+  }
+  return false;
+}
+
 async function readLiveTabIdentity(tab, options = {}) {
   const forceProbe = Boolean(options?.forceProbe);
   const provider = detectTabProvider(tab?.url || "") || "gemini";
@@ -1425,26 +1465,74 @@ function computeTailDomRange(totalCount, afterCount = 0) {
   };
 }
 
-function pickBestTabForProvider(tabs, provider = "gemini", savedSession = null, fallbackChatUrl = "") {
+function pickBestTabForProvider(
+  tabs,
+  provider = "gemini",
+  savedSession = null,
+  fallbackChatUrl = "",
+  expectedAuthUser = "",
+  expectedEmail = ""
+) {
   if (!Array.isArray(tabs) || tabs.length === 0) return null;
+  const normProv = normalizeProviderKey(provider) || "gemini";
   const matching = tabs.filter(t => {
     const p = detectTabProvider(t.url);
-    return !p || p === provider;
+    return !p || p === normProv;
   });
-  const pool = matching.length ? matching : (provider === "gemini" ? tabs : []);
+  const pool = matching.length ? matching : (normProv === "gemini" ? tabs : []);
   if (!pool.length) return null;
 
-  const targetConvId = savedSession?.convId || extractConvId(fallbackChatUrl, provider);
+  const pathRe = PROVIDERS[normProv]?.pathRe || /\/app/i;
+  const expAuth = String(expectedAuthUser || savedSession?.authUser || (fallbackChatUrl ? parseAuthUserFromUrl(fallbackChatUrl) : "") || "").trim();
+  const expEmail = String(expectedEmail || savedSession?.accountEmail || "").trim().toLowerCase();
+
+  const isGeminiAuthMatch = (t) => {
+    if (normProv !== "gemini") return true;
+    if (!expAuth) return true;
+    const tabAuth = parseAuthUserFromUrl(t.url || "");
+    return tabAuth === expAuth;
+  };
+
+  const isEmailMatch = (t) => {
+    if (!expEmail) return true;
+    const cached = cachedTabIdentities[normProv];
+    if (cached && cached.tabId === t.id && cached.accountEmail) {
+      return cached.accountEmail.toLowerCase() === expEmail;
+    }
+    return true;
+  };
+
+  let candidatePool = pool;
+  if (normProv === "gemini" && expAuth) {
+    const authMatches = pool.filter(isGeminiAuthMatch);
+    if (authMatches.length > 0) {
+      candidatePool = authMatches;
+    }
+  }
+  if (expEmail) {
+    const emailMatches = candidatePool.filter(isEmailMatch);
+    if (emailMatches.length > 0) {
+      candidatePool = emailMatches;
+    }
+  }
+
+  const targetConvId = savedSession?.convId || extractConvId(fallbackChatUrl, normProv);
   if (targetConvId) {
-    const convMatch = pool.find(t => extractConvId(t.url, provider) === targetConvId);
+    const convMatch = candidatePool.find(t => extractConvId(t.url, normProv) === targetConvId) ||
+      pool.find(t => extractConvId(t.url, normProv) === targetConvId);
     if (convMatch) return convMatch;
   }
   if (savedSession?.tabId) {
-    const idMatch = pool.find(t => t.id === savedSession.tabId);
+    const idMatch = candidatePool.find(t => t.id === savedSession.tabId) ||
+      pool.find(t => t.id === savedSession.tabId);
     if (idMatch) return idMatch;
   }
-  const pathRe = PROVIDERS[normalizeProviderKey(provider)]?.pathRe || /\/app/i;
+
   return (
+    candidatePool.find(t => t.active && pathRe.test(t.url || "")) ||
+    candidatePool.find(t => t.active) ||
+    candidatePool.find(t => pathRe.test(t.url || "")) ||
+    candidatePool[0] ||
     pool.find(t => t.active && pathRe.test(t.url || "")) ||
     pool.find(t => t.active) ||
     pool.find(t => pathRe.test(t.url || "")) ||
@@ -1740,7 +1828,7 @@ async function ensureAliveGeminiTab(tab, preferredUrl = "") {
   return ensureAliveAiTab(tab, preferredUrl, "gemini");
 }
 
-async function ensureCleanNewChat(tab, provider = "gemini") {
+async function ensureCleanNewChat(tab, provider = "gemini", expectedAuthUser = "") {
   let alreadyClean = false;
   let clickedSpaNewChat = false;
   try {
@@ -1871,8 +1959,9 @@ async function ensureCleanNewChat(tab, provider = "gemini") {
     } else if (provider === "venice") {
       target = /\/chat\/classic/i.test(tab.url || "") ? "https://venice.ai/chat/classic" : "https://venice.ai/chat/agent";
     } else {
-      const m = (tab.url || "").match(/^https:\/\/gemini\.google\.com(\/u\/\d+)?/);
-      target = (m ? m[0] : "https://gemini.google.com") + "/app";
+      const m = (tab.url || "").match(/^https:\/\/gemini\.google\.com(?:\/u\/(\d+))?/i);
+      const authPrefix = (m && m[1]) ? `/u/${m[1]}` : (expectedAuthUser && expectedAuthUser !== "0" ? `/u/${expectedAuthUser}` : "");
+      target = `https://gemini.google.com${authPrefix}/app`;
     }
     await chrome.tabs.update(tab.id, { url: target, autoDiscardable: false });
     await waitForTabComplete(tab.id, 30000);
@@ -2570,15 +2659,30 @@ async function acquireAndStartRelay() {
       : selectEffectiveChatUrl(savedSession, hintChatUrl || pending.chat_url || "", provider);
     const effectiveChatUrl = chosenChat.chatUrl;
     const effectiveConvId = chosenChat.convId;
+    const expectedEmail = String(pending.account_email || savedSession?.accountEmail || "").trim();
     const expectedAuthUser = provider === "gemini"
-      ? (savedSession?.authUser || (effectiveChatUrl ? parseAuthUserFromUrl(effectiveChatUrl) : ""))
+      ? String(pending.auth_user || (effectiveChatUrl ? parseAuthUserFromUrl(effectiveChatUrl) : "") || savedSession?.authUser || "").trim()
       : "0";
-    const expectedEmail = savedSession?.accountEmail || pending.account_email || "";
+
+    // If savedSession exists but belongs to a different account or authUser, discard it immediately
+    if (savedSession && !needsNewChat) {
+      const emailClash = Boolean(expectedEmail && savedSession.accountEmail && expectedEmail.toLowerCase() !== savedSession.accountEmail.toLowerCase());
+      const authClash = Boolean(provider === "gemini" && expectedAuthUser && savedSession.authUser && expectedAuthUser !== savedSession.authUser);
+      if (emailClash || authClash) {
+        if (sessionId) {
+          await clearRelaySession(sessionId, provider);
+        }
+        savedSession = null;
+        needsNewChat = true;
+      }
+    }
 
     const providerTabs = snap.tabsByProvider?.[provider] || [];
-    let tab = pickBestTabForProvider(providerTabs, provider, savedSession, effectiveChatUrl) || snap.bestByProvider?.[provider] || null;
+    let tab = pickBestTabForProvider(providerTabs, provider, savedSession, effectiveChatUrl, expectedAuthUser, expectedEmail) || snap.bestByProvider?.[provider] || null;
     let promptToInject = pending.prompt;
-    const defaultUrl = PROVIDERS[provider]?.defaultUrl || "https://gemini.google.com/app";
+    const defaultUrl = (provider === "gemini" && expectedAuthUser && expectedAuthUser !== "0")
+      ? `https://gemini.google.com/u/${expectedAuthUser}/app`
+      : (PROVIDERS[provider]?.defaultUrl || "https://gemini.google.com/app");
     const alive = await ensureAliveAiTab(tab, effectiveChatUrl || defaultUrl, provider);
     tab = alive.tab;
     let reloadedForRelay = Boolean(alive?.recovered);
@@ -2661,7 +2765,7 @@ async function acquireAndStartRelay() {
       }
     }
     if (needsNewChat) {
-      await ensureCleanNewChat(tab, provider);
+      await ensureCleanNewChat(tab, provider, expectedAuthUser);
       reloadedForRelay = false;
     } else if (reloadedForRelay) {
       // Allow freshly reloaded React/ProseMirror/Angular SPAs to finish attaching composer listeners and hydrating turns.
@@ -2717,8 +2821,8 @@ async function acquireAndStartRelay() {
       clientId: ident.clientId,
       relayIdentity: ident,
       sessionId,
-      authUser: curTabMeta.authUser || (provider === "gemini" ? parseAuthUserFromUrl(tab.url || "") : "0"),
-      accountEmail: curTabMeta.accountEmail || "",
+      authUser: curTabMeta.authUser || expectedAuthUser || (provider === "gemini" ? parseAuthUserFromUrl(tab.url || "") : "0"),
+      accountEmail: curTabMeta.accountEmail || expectedEmail || "",
       modelBadge: startRes.model || curTabMeta.modelBadge || "",
       startedAt: Date.now(),
       lastProgressAt: Date.now(),
@@ -3551,14 +3655,19 @@ function _domInstallPageRuntimeFn() {
   function isStopButtonVisible() {
     const stopBtns = document.querySelectorAll(
       "button[aria-label*='Stop response' i], button[aria-label*='Stop streaming' i], button[aria-label*='Stop generating' i], " +
-      "button[aria-label='Stop' i], button[mattooltip*='Stop' i], button[data-test-id*='stop' i]"
+      "button[aria-label='Stop' i], button[mattooltip*='Stop' i], button[data-test-id*='stop' i], " +
+      "button[data-testid*='stop' i], [data-test-id*='stop-button' i], [data-testid*='stop-button' i], " +
+      "button.stop-button, .stop-button, button[aria-label*='stop' i]"
     );
     for (const btn of stopBtns) {
       if (isVisibleElement(btn) && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
         return true;
       }
     }
-    for (const icon of document.querySelectorAll("mat-icon[fonticon='stop'], mat-icon[data-mat-icon-name='stop']")) {
+    for (const icon of document.querySelectorAll(
+      "mat-icon[fonticon='stop'], mat-icon[data-mat-icon-name='stop'], mat-icon[fonticon='stop_circle'], " +
+      "mat-icon[data-mat-icon-name='stop_circle'], mat-icon[fonticon*='stop' i]"
+    )) {
       const btn = typeof icon.closest === "function" ? icon.closest("button") : null;
       if (btn && isVisibleElement(btn) && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
         return true;
@@ -3608,6 +3717,46 @@ function _domInstallPageRuntimeFn() {
     return { text: "", source: "" };
   }
 
+  function hasIncompleteStreamText(text) {
+    if (!text || typeof text !== "string") return false;
+    // 1. Unclosed code blocks (odd number of ``` or ```` fences)
+    const codeFences = (text.match(/`{3,}/g) || []).length;
+    if (codeFences % 2 !== 0) return true;
+
+    // 2. Trailing unclosed JSON tool calls (e.g. {"name": "apply_patch", "arguments": ...)
+    const trimmed = text.trim();
+    const toolCallStart = trimmed.search(/\{(?:[^{}]*"(?:name|tool|tool_name|action|function|call|edits)"\s*:)/);
+    if (toolCallStart !== -1) {
+      let braceDepth = 0;
+      let bracketDepth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = toolCallStart; i < trimmed.length; i++) {
+        const c = trimmed[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (c === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (c === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (!inString) {
+          if (c === "{") braceDepth++;
+          else if (c === "}") braceDepth--;
+          else if (c === "[") bracketDepth++;
+          else if (c === "]") bracketDepth--;
+        }
+      }
+      if (braceDepth > 0 || bracketDepth > 0 || inString) return true;
+    }
+    return false;
+  }
+
   function evaluateTurnCompletionState({
     text,
     stopVisible,
@@ -3625,6 +3774,17 @@ function _domInstallPageRuntimeFn() {
     const textStableMs = lastTextChangeAt > 0 ? Math.max(0, now - lastTextChangeAt) : 0;
     const thinkStableMs = lastThinkChangeAt > 0 ? Math.max(0, now - lastThinkChangeAt) : textStableMs;
     const quietSinceBusyMs = lastBusyAt > 0 ? Math.max(0, now - lastBusyAt) : textStableMs;
+
+    if (stopVisible) return false;
+
+    const isIncomplete = hasIncompleteStreamText(text);
+    if (isIncomplete) {
+      // Incomplete code fence or tool call JSON requires sustained idle before fallback
+      if (textStableMs >= 8000 && quietSinceBusyMs >= 8000) {
+        return true;
+      }
+      return false;
+    }
 
     if (imageGen) {
       if (!hasGeneratedImage && text && /\b(?:creating|generating|working\s+on)\b/i.test(text)) {
@@ -4224,6 +4384,7 @@ function _domInstallPageRuntimeFn() {
       const hasSubmitEffect = () => {
         if (isStopButtonVisible() || detectReactBusy()) return true;
         if (readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
+        if (document.querySelectorAll("model-response").length > (globalThis.__wsaActiveJob?.beforeModelCount || 0)) return true;
         if (!isPromptStillInEditor(findEditor() || inputEl, prompt)) return true;
         if (hasMedia && countComposerMediaPreviews(resolveComposerAttachmentRoot(findEditor() || inputEl)) < beforeMediaCount) return true;
         if (readErrorBanner() !== beforeBanner) return true;
@@ -4238,13 +4399,14 @@ function _domInstallPageRuntimeFn() {
         if (!isPromptStillInEditor(liveEd, prompt)) return false;
       }
       triggerDomSubmit(inputEl, false);
-      for (let i = 0; i < 18; i++) {
+      const maxSubmitPolls = hasMedia ? 36 : 18;
+      for (let i = 0; i < maxSubmitPolls; i++) {
         await sleepMs(140);
         if (hasSubmitEffect()) {
           submitted = true;
           break;
         }
-        if (i === 3 || i === 8 || i === 14) {
+        if (i === 3 || i === 8 || i === 14 || (hasMedia && (i === 20 || i === 28))) {
           triggerDomSubmit(inputEl, i >= 8);
         }
       }
@@ -4384,6 +4546,7 @@ function _domInstallPageRuntimeFn() {
     detectTurnCompletionActions,
     selectLiveTurnText,
     evaluateTurnCompletionState,
+    hasIncompleteStreamText,
     collectThinkingText,
     attachImagesToPage,
     setPromptTextInEditor,
@@ -4563,7 +4726,7 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
     announcerChanged: false,
   };
 
-  const submitted = await rt.submitPromptToPage(prompt, inputEl, initialCtx, beforeDomCount);
+  let submitted = await rt.submitPromptToPage(prompt, inputEl, initialCtx, beforeDomCount);
 
   const curBanner = typeof rt.readErrorBanner === "function" ? rt.readErrorBanner() : "";
   const curLimit = (curBanner && typeof rt.detectLimitMessage === "function") ? rt.detectLimitMessage(curBanner, true) : "";
@@ -4575,10 +4738,31 @@ async function _domStartTurnFn(reqId, prompt, images = [], imageGen = false) {
   }
 
   if (imagesAttached && submitted === false) {
-    if (isDowngraded) {
-      return { ok: false, error: `[LIMIT_REACHED] Gemini: Limit reached (active model: ${curBadge})` };
+    const hasLateEffect = () => {
+      if (rt.isStopButtonVisible() || rt.detectReactBusy()) return true;
+      if (document.querySelectorAll("model-response").length > beforeModelCount) return true;
+      if (rt.readDomAssistantState(beforeDomCount).count > beforeDomCount) return true;
+      const live = rt.findEditor() || inputEl;
+      if (live && typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(live, prompt)) return true;
+      return false;
+    };
+    if (hasLateEffect()) {
+      submitted = true;
+    } else {
+      for (let w = 0; w < 14; w++) {
+        await sleepMs(250);
+        if (hasLateEffect()) {
+          submitted = true;
+          break;
+        }
+      }
     }
-    return { ok: false, error: "Gemini did not acknowledge the screenshot and prompt submission." };
+    if (submitted === false) {
+      if (isDowngraded) {
+        return { ok: false, error: `[LIMIT_REACHED] Gemini: Limit reached (active model: ${curBadge})` };
+      }
+      return { ok: false, error: "Gemini did not acknowledge the screenshot and prompt submission." };
+    }
   }
   const afterEd = rt.findEditor() || inputEl;
   if (!afterEd || (typeof rt.isPromptStillInEditor === "function" && !rt.isPromptStillInEditor(afterEd, prompt))) {
@@ -9408,6 +9592,7 @@ if (typeof module !== "undefined" && module.exports) {
     extractVeniceConvId,
     extractConvId,
     parseAuthUserFromUrl,
+    hasIncompleteStreamText,
     pickBestTabForProvider,
     pickGeminiTab,
     getRelaySessions,

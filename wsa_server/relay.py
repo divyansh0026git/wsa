@@ -2338,6 +2338,13 @@ def dom_relay_get_pending(client_id: Optional[str] = None) -> Optional[dict]:
                 _srec = (_dom_relay.get("sessions") or {}).get(s_key) or {}
                 sess_url = _srec.get("chat_url") or ""
                 sess_email = _srec.get("account_email") or ""
+
+            target_entry = (_dom_relay.get("relays") or {}).get(item.get("dispatched_to") or item.get("target_relay_id") or "") or {}
+            target_email = _relay_provider_email(target_entry, prov)
+            target_auth = _relay_provider_auth_user(target_entry, prov)
+            effective_email = sess_email or target_email or str(target_entry.get("account_email") or "").strip()
+            effective_auth = target_auth or str(target_entry.get("auth_user") or "0")
+
             return {
                 "id": req_id,
                 "provider": prov,
@@ -2347,7 +2354,9 @@ def dom_relay_get_pending(client_id: Optional[str] = None) -> Optional[dict]:
                 "image_gen": bool(item.get("image_gen", False)),
                 "session_id": sess_id,
                 "chat_url": sess_url,
-                "account_email": sess_email,
+                "hint_chat_url": str(item.get("hint_chat_url") or "").strip(),
+                "account_email": effective_email,
+                "auth_user": effective_auth,
                 "new_chat": bool(item.get("new_chat")),
                 "client_id": item["dispatched_to"],
                 "target_relay_id": item.get("target_relay_id") or "",
